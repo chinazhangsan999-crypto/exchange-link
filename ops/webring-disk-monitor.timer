@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Star Ring Navigation disk monitor every five minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+RandomizedDelaySec=20s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

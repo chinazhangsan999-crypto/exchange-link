@@ -1,0 +1,8 @@
+[Unit]
+Description=Star Ring Navigation disk capacity monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/webring-disk-monitor

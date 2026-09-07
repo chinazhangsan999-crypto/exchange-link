@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR=/home/niaiwo/app
+STATE_DIR=/var/lib/webring-ops
+STATE_FILE="$STATE_DIR/disk-state"
+NOTIFIER="$APP_DIR/scripts/send-ops-alert.js"
+ENV_FILE=/home/niaiwo/.config/webring/production.env
+
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
+
+usage_pct=$(df -P "$APP_DIR" | awk 'NR == 2 { gsub(/%/, "", $5); print $5 }')
+available=$(df -hP "$APP_DIR" | awk 'NR == 2 { print $4 }')
+mountpoint=$(df -P "$APP_DIR" | awk 'NR == 2 { print $6 }')
+
+if (( usage_pct >= 90 )); then
+  status=critical
+elif (( usage_pct >= 80 )); then
+  status=warning
+else
+  status=normal
+fi
+
+previous=normal
+last_alert=0
+if [[ -f "$STATE_FILE" ]]; then
+  read -r previous last_alert < "$STATE_FILE" || true
+fi
+now=$(date +%s)
+should_alert=0
+title=''
+
+if [[ "$status" != "$previous" ]]; then
+  should_alert=1
+elif [[ "$status" == critical && $((now - last_alert)) -ge 21600 ]]; then
+  should_alert=1
+fi
+
+if (( should_alert )); then
+  case "$status" in
+    normal) title='🟢 磁盘空间已恢复' ;;
+    warning) title='🟡 磁盘空间预警' ;;
+    critical) title='🔴 磁盘空间严重告警' ;;
+  esac
+  message="主机磁盘使用率：${usage_pct}%\n可用空间：${available}\n挂载点：${mountpoint}\n检测时间：$(date '+%F %T %Z')"
+  if runuser -u niaiwo -- /bin/bash -c 'set -a; . "$1"; set +a; exec /usr/bin/node "$2" "$3" "$4"' _ "$ENV_FILE" "$NOTIFIER" "$title" "$message"; then
+    last_alert=$now
+  else
+    logger -t webring-disk-monitor "failed to send disk alert status=$status usage=${usage_pct}%"
+  fi
+fi
+
+printf '%s %s\n' "$status" "$last_alert" > "$STATE_FILE"
