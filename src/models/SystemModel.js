@@ -23,6 +23,8 @@ const CONFIG_DEFAULTS = {
   max_hourly_burst_ratio: '0.6',
   empty_referer_threshold: '0.5',
   pv_uv_ratio_threshold: '100.0',
+  // 首次启用风险 Webhook 时只建立现有风险基线，避免把历史存量一次性刷屏。
+  risk_alert_webhook_baselined: '0',
   csv_url_partners: '',
   csv_url_ads: '',
   csv_url_mirrors: ''
@@ -276,6 +278,15 @@ async function initializeDatabase() {
     }
   }
   await run("CREATE TABLE IF NOT EXISTS site_configs (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '', updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+  await run(`CREATE TABLE IF NOT EXISTS risk_alert_states (
+    partner_id INTEGER PRIMARY KEY,
+    fingerprint TEXT NOT NULL,
+    first_detected_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_alerted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at DATETIME DEFAULT NULL,
+    FOREIGN KEY(partner_id) REFERENCES partners(id) ON DELETE CASCADE
+  )`);
+  await run('CREATE INDEX IF NOT EXISTS idx_risk_alert_active ON risk_alert_states(resolved_at)');
 
   const existing = await get('SELECT COUNT(*) AS count FROM partners');
   if (existing.count === 0) {

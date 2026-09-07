@@ -19,6 +19,7 @@ const AdModel = require('../models/AdsModel');
 const MirrorModel = require('../models/MirrorModel');
 const InspectionService = require('../services/InspectionService');
 const PingService = require('../services/PingService');
+const RiskService = require('../services/RiskService');
 const CacheService = require('../services/CacheService');
 const { sendAdminAlert } = require('../services/AlertService');
 const { runTrackedJob } = require('../jobs/cron');
@@ -211,14 +212,7 @@ async function getDashboardStats(req, res) {
       LogModel.listRiskPartnerMetrics()
     ]);
     const suspiciousPartners = partners.map(item => {
-      const pv = Number(item.pv_24h);
-      const uv = Number(item.score_24h);
-      const ratio = uv ? pv / uv : 0;
-      const ipRatio = pv ? Number(item.top_ip_requests) / pv : 0;
-      const reasons = [];
-      if (ratio >= 4 && pv >= 20) reasons.push('PV/UV 异常偏高');
-      if (ipRatio >= 0.35) reasons.push('单一 IP 请求占比过高');
-      if (uv >= 30 && Number(item.outflow_clicks) === 0) reasons.push('高 UV 但无出站点击');
+      const { reasons, pv, uv } = RiskService.dashboardRiskReasons(item);
       return {
         id: item.id,
         name: item.name,
@@ -256,6 +250,11 @@ async function getPartners(req, res) {
 
 async function getPartnerAnalytics(req, res) {
   try {
+    // Webhook 定时扫描与后台弹窗复用同一份指标计算，避免诊断口径漂移。
+    const report = await RiskService.analyzePartner(Number(req.params.id));
+    if (!report) return fail(res, '友链不存在', 404);
+    return ok(res, report);
+
     const partner = await PartnerModel.findAnalyticsPartner(Number(req.params.id));
     if (!partner) return fail(res, '友链不存在', 404);
     const [{ summary, inflowLogs, requestRows, interaction, hourlyPeak }, thresholds] = await Promise.all([

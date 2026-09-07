@@ -5,6 +5,7 @@ const LogModel = require('../models/LogModel');
 const SystemModel = require('../models/SystemModel');
 const InspectionService = require('../services/InspectionService');
 const PingService = require('../services/PingService');
+const RiskService = require('../services/RiskService');
 const CacheService = require('../services/CacheService');
 const { sendAdminAlert } = require('../services/AlertService');
 
@@ -12,6 +13,7 @@ let started = false;
 let backlinkTask = null;
 let databaseMaintenanceTask = null;
 let deepRevivalTask = null;
+let riskAlertTask = null;
 const intervals = [];
 const runningJobs = new Set();
 let stopping = false;
@@ -86,6 +88,16 @@ function startJobs() {
     });
   }, { timezone: 'Asia/Shanghai' });
 
+  // 独立于后台页面访问运行：避免管理员刷新仪表盘时重复触发 Webhook。
+  riskAlertTask = cron.schedule('*/30 * * * *', () => {
+    runTrackedJob('疑似刷量告警扫描', async () => {
+      const result = await RiskService.scanAndNotify({ sendAdminAlert });
+      if (Number(result?.sent || 0) > 0) {
+        console.info(`疑似刷量告警已发送 ${result.sent} 条（候选 ${result.candidates} 个）。`);
+      }
+    });
+  }, { timezone: 'Asia/Shanghai' });
+
   const cleanupTimer = setInterval(() => {
     runTrackedJob('定时清理过期流水', async () => {
       reportCleanupFailures(await LogModel.cleanupOldLogs());
@@ -118,10 +130,11 @@ async function stopCronTask(task) {
 async function stopJobs({ drainTimeoutMs = 15000 } = {}) {
   stopping = true;
 
-  const cronTasks = [backlinkTask, databaseMaintenanceTask, deepRevivalTask].filter(Boolean);
+  const cronTasks = [backlinkTask, databaseMaintenanceTask, deepRevivalTask, riskAlertTask].filter(Boolean);
   backlinkTask = null;
   databaseMaintenanceTask = null;
   deepRevivalTask = null;
+  riskAlertTask = null;
 
   while (intervals.length) clearInterval(intervals.pop());
 
