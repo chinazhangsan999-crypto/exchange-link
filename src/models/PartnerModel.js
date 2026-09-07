@@ -297,6 +297,9 @@ async function syncPartnersFromCsv(items) {
     let inserted = 0;
     let updated = 0;
     for (const item of items) {
+      // CSV 是分类的运营配置源；首次出现的新分类一并写入，避免友链分类成为孤立值。
+      await txRun(`INSERT OR IGNORE INTO categories(name, sort_order)
+        VALUES (?, COALESCE((SELECT MAX(sort_order) + 1 FROM categories), 0))`, [item.category]);
       // 兼容历史上保存过子域名的记录；更新时会将它们收敛为主域名。
       const existing = await txGet(`SELECT id FROM partners
         WHERE lower(domain) = lower(?) OR lower(domain) LIKE lower(?)
