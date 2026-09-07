@@ -23,6 +23,7 @@ const RiskService = require('../services/RiskService');
 const CacheService = require('../services/CacheService');
 const { sendAdminAlert } = require('../services/AlertService');
 const { runTrackedJob } = require('../jobs/cron');
+const { runPromisePool } = require('../utils/asyncPool');
 
 const ANALYTICS_CONFIG_KEYS = [
   'umami_enabled',
@@ -211,17 +212,22 @@ async function getDashboardStats(req, res) {
       LogModel.getNewPartnerTraffic(),
       LogModel.listRiskPartnerMetrics()
     ]);
-    const suspiciousPartners = partners.map(item => {
-      const { reasons, pv, uv } = RiskService.dashboardRiskReasons(item);
-      return {
-        id: item.id,
-        name: item.name,
-        domain: item.domain,
-        score_24h: uv,
-        pv_24h: pv,
-        risk_reasons: reasons
-      };
-    }).filter(item => item.risk_reasons.length)
+    const riskCandidates = partners.filter(item => Number(item.score_24h || 0) >= 30);
+    const riskResults = await runPromisePool(riskCandidates, 3, candidate => RiskService.analyzePartner(candidate.id, { includeClients: false }), 15000);
+    const suspiciousPartners = riskResults
+      .filter(result => result.status === 'fulfilled' && result.value?.risk?.alertable)
+      .map(result => {
+        const report = result.value;
+        return {
+          id: report.partner.id,
+          name: report.partner.name,
+          domain: report.partner.domain,
+          score_24h: report.uv24h,
+          pv_24h: report.pv24h,
+          risk_level: report.risk.level,
+          risk_reasons: report.risk.reasons
+        };
+      })
       .sort((a, b) => b.score_24h - a.score_24h || b.pv_24h - a.pv_24h);
 
     const inboundCount = Number(todayExchange.inbound?.count || 0);

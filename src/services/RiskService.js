@@ -9,17 +9,46 @@ const { runPromisePool } = require('../utils/asyncPool');
 
 const asNumber = value => Number(value || 0);
 const ratio = (numerator, denominator, digits = 4) => denominator ? Number((numerator / denominator).toFixed(digits)) : 0;
+const MIN_ALERT_UV = 30;
+const MIN_ATTRIBUTED_SESSIONS = 10;
+const SINGLE_IP_RATIO_THRESHOLD = 0.35;
 
-function dashboardRiskReasons(item) {
-  const pv = asNumber(item.pv_24h);
-  const uv = asNumber(item.score_24h);
-  const pvUv = uv ? pv / uv : 0;
-  const topIpRatio = pv ? asNumber(item.top_ip_requests) / pv : 0;
-  const reasons = [];
-  if (pvUv >= 4 && pv >= 20) reasons.push('PV/UV 异常偏高');
-  if (topIpRatio >= 0.35) reasons.push('单一 IP 请求占比过高');
-  if (uv >= 30 && asNumber(item.outflow_clicks) === 0) reasons.push('高 UV 但无出站点击');
-  return { reasons, pv, uv, pvUv, topIpRatio };
+function buildRiskAssessment(uv, diagnostics) {
+  const attributedVisits = asNumber(diagnostics.attributed_inbound_visits);
+  if (uv < MIN_ALERT_UV || attributedVisits < MIN_ATTRIBUTED_SESSIONS) {
+    return {
+      alertable: false,
+      level: null,
+      reasons: [],
+      data_insufficient: true,
+      sample_note: uv < MIN_ALERT_UV
+        ? `近24h UV 少于 ${MIN_ALERT_UV}`
+        : `可归因会话少于 ${MIN_ATTRIBUTED_SESSIONS}`
+    };
+  }
+
+  const highReasons = [];
+  const mediumReasons = [];
+  if (diagnostics.dead_water_low) highReasons.push('近24h 死水交互率偏低');
+  if (diagnostics.attributed_interaction_low) highReasons.push('30分钟可归因站内互动率偏低');
+  if (diagnostics.time_burst) mediumReasons.push('1 小时流量集中爆发');
+  if (diagnostics.empty_referer) mediumReasons.push('空 Referer 占比异常');
+  if (diagnostics.pv_uv_anomaly) mediumReasons.push('PV/UV 异常偏高');
+  if (diagnostics.single_ip_concentrated) mediumReasons.push('单一 IP 请求占比过高');
+
+  const level = highReasons.length ? 'high' : (mediumReasons.length ? 'medium' : null);
+  return {
+    alertable: Boolean(level),
+    level,
+    reasons: [...highReasons, ...mediumReasons],
+    data_insufficient: false,
+    sample_note: ''
+  };
+}
+
+function dashboardRiskReasons(report) {
+  const risk = report?.risk || {};
+  return { reasons: risk.reasons || [], level: risk.level || null, dataInsufficient: Boolean(risk.data_insufficient) };
 }
 
 function clientName(parsed) {
@@ -78,6 +107,7 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
   const attributedInteractedVisits = asNumber(attributedInteraction?.interacted_visits);
   const attributedVisits = asNumber(attributedInteraction?.attributed_inbound_visits);
   const peakHourlyUv = asNumber(hourlyPeak?.peak_hourly_uv);
+  const maxIpRequests = requestRows.reduce((max, row) => Math.max(max, asNumber(row.requests)), 0);
   const emptyRefererCount = asNumber(summary.empty_referer_count);
   const pvUvRatio = ratio(pv, uv, 2);
   const deadWaterInteractionRate = ratio(deadWaterInteractedUv, deadWaterInboundUv);
@@ -86,11 +116,11 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
   const emptyRefererRatio = ratio(emptyRefererCount, pv);
   const diagnostics = {
     // 两种互动率均只生成审核信号，绝不自动封禁；历史记录没有 visit_id 时不判定可归因互动率。
-    dead_water_low: uv > 100 && deadWaterInboundUv > 0 && deadWaterInteractionRate < thresholds.min_interaction_rate,
+    dead_water_low: uv >= 100 && deadWaterInboundUv > 0 && deadWaterInteractionRate < thresholds.min_interaction_rate,
     dead_water_interaction_rate: deadWaterInteractionRate,
     dead_water_interacted_uv: deadWaterInteractedUv,
     dead_water_inbound_uv: deadWaterInboundUv,
-    attributed_interaction_low: uv > 100 && attributedVisits > 0 && attributedInteractionRate < thresholds.min_attributed_interaction_rate,
+    attributed_interaction_low: uv >= 100 && attributedVisits > 0 && attributedInteractionRate < thresholds.min_attributed_interaction_rate,
     attributed_interaction_rate: attributedInteractionRate,
     attributed_interacted_visits: attributedInteractedVisits,
     attributed_inbound_visits: attributedVisits,
@@ -100,14 +130,12 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
     empty_referer: pv > 0 && emptyRefererRatio > thresholds.empty_referer_threshold,
     empty_referer_ratio: emptyRefererRatio,
     empty_referer_count: emptyRefererCount,
+    top_ip_ratio: ratio(maxIpRequests, pv),
+    single_ip_concentrated: pv >= 20 && ratio(maxIpRequests, pv) >= SINGLE_IP_RATIO_THRESHOLD,
     pv_uv_anomaly: pvUvRatio > thresholds.pv_uv_ratio_threshold, pv_uv_ratio: pvUvRatio, thresholds
   };
-  const riskReasons = [];
-  if (diagnostics.dead_water_low) riskReasons.push('近24h 死水交互率偏低');
-  if (diagnostics.attributed_interaction_low) riskReasons.push('30分钟可归因站内互动率偏低');
-  if (diagnostics.time_burst) riskReasons.push('1 小时流量集中爆发');
-  if (diagnostics.pv_uv_anomaly) riskReasons.push('PV/UV 异常偏高');
-  if (diagnostics.empty_referer) riskReasons.push('空 Referer 占比异常');
+  const risk = buildRiskAssessment(uv, diagnostics);
+  const riskReasons = risk.reasons;
 
   const deviceStats = makeStats(deviceCounts, inflowLogs.length, ['电脑', '手机', '平板'], 3);
   const osStats = makeStats(osCounts, inflowLogs.length);
@@ -115,7 +143,7 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
     partner, pv24h: pv, uv24h: uv, pvUvRatio, outflowClicks: asNumber(partner.outflow_clicks),
     roi: Number((asNumber(partner.outflow_clicks) / (uv + 1)).toFixed(3)), complianceRate: asNumber(summary.compliance_rate),
     device_type_stats: deviceStats, os_stats: osStats, operatingSystems: osStats, browsers: makeStats(browserCounts, inflowLogs.length),
-    inflow_ips: clientRows || [], all_inflow_ips: clientRows || [], topIps, diagnostics, riskReasons,
+    inflow_ips: clientRows || [], all_inflow_ips: clientRows || [], topIps, diagnostics, risk, riskReasons,
     warnings: { pvUvHigh: diagnostics.pv_uv_anomaly, singleIpHigh: (topIps[0]?.ratio || 0) > 30,
       deadWaterLow: diagnostics.dead_water_low, attributedInteractionLow: diagnostics.attributed_interaction_low,
       timeBurst: diagnostics.time_burst, emptyReferer: diagnostics.empty_referer }
@@ -128,9 +156,11 @@ const formatDistribution = items => (items || []).slice(0, 10).map(item => `${it
 function formatRiskAlert(report, dashboardReasons) {
   const d = report.diagnostics;
   const reasons = [...new Set([...(dashboardReasons || []), ...(report.riskReasons || [])])];
+  const level = report.risk?.level === 'high' ? '高风险' : '中风险';
   return [
     `站点：${report.partner.name}`, `域名：${report.partner.domain}`, `站点 ID：${report.partner.id}`,
-    `24h UV / PV：${report.uv24h} / ${report.pv24h}`, `风险原因：${reasons.join('、') || '风控指标异常'}`, '',
+    `风险等级：${level}`, `24h UV / PV：${report.uv24h} / ${report.pv24h}`,
+    `命中规则：${reasons.join('、') || '风控指标异常'}`, `建议动作：人工审核，不自动封禁。`, '',
     `死水交互率（近24h）：${formatPercent(d.dead_water_interaction_rate)}（${d.dead_water_interacted_uv}/${d.dead_water_inbound_uv} 入站 IP，阈值 ${formatPercent(d.thresholds.min_interaction_rate)}；仅供人工审核）`,
     `可归因站内互动率（30min）：${formatPercent(d.attributed_interaction_rate)}（${d.attributed_interacted_visits}/${d.attributed_inbound_visits} 会话，阈值 ${formatPercent(d.thresholds.min_attributed_interaction_rate)}）`,
     `1 小时峰值 UV 占比：${formatPercent(d.peak_hourly_ratio)}（阈值 ${formatPercent(d.thresholds.max_hourly_burst_ratio)}）`,
@@ -146,20 +176,22 @@ async function scanAndNotify({ sendAdminAlert } = {}) {
   if (typeof sendAdminAlert !== 'function') return { skipped: 'missing_sender' };
   if (!String(await SystemModel.configValue('webhook_url')).trim()) return { skipped: 'missing_webhook' };
   const metrics = await LogModel.listRiskPartnerMetrics();
-  const candidates = metrics.map(item => ({ item, ...dashboardRiskReasons(item) })).filter(item => item.reasons.length > 0);
-  await RiskAlertModel.resolveInactive(candidates.map(item => item.item.id));
+  // 先按 UV 做成本低的样本量过滤；完整分层判断只能由统一诊断结果得出。
+  const candidates = metrics.filter(item => asNumber(item.score_24h) >= MIN_ALERT_UV);
   const analyzed = await runPromisePool(candidates, 3, async candidate => {
-    const report = await analyzePartner(candidate.item.id, { includeClients: false });
+    const report = await analyzePartner(candidate.id, { includeClients: false });
     if (!report || Number(report.partner.is_whitelisted) === 1) return { skipped: 'whitelisted' };
-    const fingerprint = JSON.stringify({ reasons: candidate.reasons.slice().sort(), monitor: report.riskReasons.slice().sort(),
+    if (!report.risk?.alertable) return { skipped: report.risk?.data_insufficient ? 'insufficient_data' : 'healthy' };
+    const fingerprint = JSON.stringify({ level: report.risk.level, reasons: report.riskReasons.slice().sort(),
       deadWater: Math.round(report.diagnostics.dead_water_interaction_rate * 1000),
       attributed: Math.round(report.diagnostics.attributed_interaction_rate * 1000),
       burst: Math.round(report.diagnostics.peak_hourly_ratio * 100),
       pvUv: Math.round(report.diagnostics.pv_uv_ratio), emptyReferer: Math.round(report.diagnostics.empty_referer_ratio * 100) });
-    return { report, reasons: candidate.reasons, fingerprint };
+    return { report, reasons: report.riskReasons, fingerprint };
   }, 15000);
 
   const reports = analyzed.filter(result => result.status === 'fulfilled' && result.value?.report).map(result => result.value);
+  await RiskAlertModel.resolveInactive(reports.map(item => item.report.partner.id));
   const baselineKey = 'risk_alert_webhook_baselined';
   if (String(await SystemModel.configValue(baselineKey)) !== '1') {
     // 初次部署仅登记当前已存在的风险状态；后续新增、恢复后再出现、风险升级才会告警。
@@ -178,4 +210,4 @@ async function scanAndNotify({ sendAdminAlert } = {}) {
   return { candidates: candidates.length, sent: results.filter(result => result.status === 'fulfilled' && result.value?.sent).length, results };
 }
 
-module.exports = { analyzePartner, dashboardRiskReasons, scanAndNotify };
+module.exports = { analyzePartner, dashboardRiskReasons, buildRiskAssessment, scanAndNotify };
