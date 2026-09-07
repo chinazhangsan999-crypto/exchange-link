@@ -39,7 +39,7 @@ const ADMIN_LINK_QUERY = `SELECT
   p.id, p.name, p.domain, p.url, p.category, p.description, p.contact, p.priority,
   p.is_approved, p.is_whitelisted, p.is_exempt, p.backlink_status, p.backlink_url, p.last_checked_at,
   p.failed_check_count, p.failed_check_count AS check_fail_count,
-  p.lost_count, p.ping_failed_count, p.ping_status,
+  p.lost_count, p.ping_exempt, p.ping_failed_count, p.ping_status,
   p.last_ping_at, p.created_at,
   COALESCE(recent.score_24h, 0) AS score_24h,
   COALESCE(inbound_total.total_score, 0) AS total_score,
@@ -60,19 +60,21 @@ async function listInflowCandidates({ includeUrl = false } = {}) {
 }
 
 async function listPingTargets() {
-  return all(`SELECT id, url, ping_status, ping_failed_count, last_ping_at
+  return all(`SELECT id, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
     FROM partners
     WHERE is_approved = 1
       AND COALESCE(is_internal, 0) = 0
+      AND COALESCE(ping_exempt, 0) = 0
       AND COALESCE(ping_failed_count, 0) <= 30
     ORDER BY id ASC`);
 }
 
 async function listDeepPingRevivalTargets() {
-  return all(`SELECT id, url, ping_status, ping_failed_count, last_ping_at
+  return all(`SELECT id, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
     FROM partners
     WHERE is_approved = 1
       AND COALESCE(is_internal, 0) = 0
+      AND COALESCE(ping_exempt, 0) = 0
       AND COALESCE(ping_failed_count, 0) > 30
     ORDER BY id ASC`);
 }
@@ -226,14 +228,15 @@ async function createPendingPartner({ name, domain, url, description, contact, c
     VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`, [name, domain, url, description, contact, category]);
 }
 
-async function createApprovedPartner({ name, domain, url, category, backlinkUrl, contact, description, isExempt = 0 }) {
+async function createApprovedPartner({ name, domain, url, category, backlinkUrl, contact, description, isExempt = 0, pingExempt = 0 }) {
   const exempt = Number(isExempt) === 1 ? 1 : 0;
-  return run(`INSERT INTO partners(name, domain, url, category, backlink_url, contact, description, is_approved, is_exempt, backlink_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`, [name, domain, url, category, backlinkUrl, contact, description, exempt, exempt ? 'valid' : 'pending']);
+  const connectionExempt = Number(pingExempt) === 1 ? 1 : 0;
+  return run(`INSERT INTO partners(name, domain, url, category, backlink_url, contact, description, is_approved, is_exempt, ping_exempt, backlink_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`, [name, domain, url, category, backlinkUrl, contact, description, exempt, connectionExempt, exempt ? 'valid' : 'pending']);
 }
 
 async function updatePartner(id, changes) {
-  const allowed = ['name', 'category', 'description', 'contact', 'url', 'domain', 'backlink_url', 'priority', 'is_exempt'];
+  const allowed = ['name', 'category', 'description', 'contact', 'url', 'domain', 'backlink_url', 'priority', 'is_exempt', 'ping_exempt'];
   const fields = [];
   const values = [];
   for (const key of allowed) {
@@ -243,6 +246,9 @@ async function updatePartner(id, changes) {
   }
   if (Number(changes.is_exempt) === 1) {
     fields.push("backlink_status = 'valid'", 'failed_check_count = 0');
+  }
+  if (Number(changes.ping_exempt) === 1) {
+    fields.push("ping_status = 'ok'", 'ping_failed_count = 0');
   }
   if (!fields.length) return { changes: 0, empty: true };
   values.push(id);
@@ -266,7 +272,7 @@ async function findBacklinkPartner(id) {
 }
 
 async function findPingPartner(id) {
-  return get(`SELECT id, name, url, ping_status, ping_failed_count, last_ping_at
+  return get(`SELECT id, name, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
     FROM partners WHERE id = ? AND is_approved = 1`, [id]);
 }
 

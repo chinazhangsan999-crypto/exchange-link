@@ -144,7 +144,7 @@ async function initializeDatabase() {
     is_internal INTEGER DEFAULT 0, is_whitelisted INTEGER DEFAULT 0, is_exempt INTEGER DEFAULT 0,
     is_approved INTEGER DEFAULT 0,
     backlink_status TEXT DEFAULT 'pending', backlink_url TEXT DEFAULT NULL, last_checked_at DATETIME DEFAULT NULL, failed_check_count INTEGER DEFAULT 0, lost_count INTEGER DEFAULT 0,
-    ping_failed_count INTEGER DEFAULT 0, ping_status TEXT DEFAULT 'ok', last_ping_at DATETIME DEFAULT NULL,
+    ping_exempt INTEGER DEFAULT 0, ping_failed_count INTEGER DEFAULT 0, ping_status TEXT DEFAULT 'ok', last_ping_at DATETIME DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
   await run(`CREATE TABLE IF NOT EXISTS inbound_logs (
@@ -231,6 +231,7 @@ async function initializeDatabase() {
     ['last_checked_at', 'ALTER TABLE partners ADD COLUMN last_checked_at DATETIME DEFAULT NULL'],
     ['failed_check_count', 'ALTER TABLE partners ADD COLUMN failed_check_count INTEGER DEFAULT 0'],
     ['lost_count', 'ALTER TABLE partners ADD COLUMN lost_count INTEGER DEFAULT 0'],
+    ['ping_exempt', 'ALTER TABLE partners ADD COLUMN ping_exempt INTEGER DEFAULT 0'],
     ['ping_failed_count', 'ALTER TABLE partners ADD COLUMN ping_failed_count INTEGER DEFAULT 0'],
     ['ping_status', "ALTER TABLE partners ADD COLUMN ping_status TEXT DEFAULT 'ok'"],
     ['last_ping_at', 'ALTER TABLE partners ADD COLUMN last_ping_at DATETIME DEFAULT NULL']
@@ -241,6 +242,7 @@ async function initializeDatabase() {
   await run('CREATE INDEX IF NOT EXISTS idx_partners_internal ON partners(is_internal)');
   await run('CREATE INDEX IF NOT EXISTS idx_partners_whitelisted ON partners(is_whitelisted)');
   await run('CREATE INDEX IF NOT EXISTS idx_partners_exempt ON partners(is_exempt, is_approved)');
+  await run('CREATE INDEX IF NOT EXISTS idx_partners_ping_exempt ON partners(ping_exempt, is_approved)');
   await run('UPDATE partners SET is_exempt = 1 WHERE is_internal = 1 AND COALESCE(is_exempt, 0) <> 1');
   await run("UPDATE partners SET backlink_status = 'pending' WHERE COALESCE(is_exempt, 0) = 0 AND (last_checked_at IS NULL OR last_checked_at = '') AND backlink_status = 'valid'");
   await run('DROP TRIGGER IF EXISTS trg_partners_unchecked_pending');

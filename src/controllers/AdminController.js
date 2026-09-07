@@ -374,7 +374,7 @@ async function getPartnerAnalytics(req, res) {
 
 async function createPartner(req, res) {
   try {
-    const { name, url, category, backlink_url, contact, description, is_exempt } = req.body || {};
+    const { name, url, category, backlink_url, contact, description, is_exempt, ping_exempt } = req.body || {};
     if (![name, url, category].every(value => String(value || '').trim())) return fail(res, '请完整填写网站名称、网站地址和分类');
     const cleanUrl = normalizeUrl(url);
     const cleanDomain = new URL(cleanUrl).hostname.toLowerCase().replace(/^www\./, '');
@@ -392,7 +392,8 @@ async function createPartner(req, res) {
       backlinkUrl: backlinkUrl ? normalizeUrl(backlinkUrl) : null,
       contact: cleanContact,
       description: cleanDescription,
-      isExempt: [true, 1, '1', 'true', 'on'].includes(is_exempt)
+      isExempt: [true, 1, '1', 'true', 'on'].includes(is_exempt),
+      pingExempt: [true, 1, '1', 'true', 'on'].includes(ping_exempt)
     });
     CacheService.clearPublicCache();
     return ok(res, { id: result.id }, '友链已新增');
@@ -446,6 +447,9 @@ async function updatePartner(req, res) {
     }
     if (body.is_exempt !== undefined) {
       changes.is_exempt = [true, 1, '1', 'true', 'on'].includes(body.is_exempt) ? 1 : 0;
+    }
+    if (body.ping_exempt !== undefined) {
+      changes.ping_exempt = [true, 1, '1', 'true', 'on'].includes(body.ping_exempt) ? 1 : 0;
     }
     if (!Object.keys(changes).length) return fail(res, '没有可修改的字段');
     const result = await PartnerModel.updatePartner(id, changes);

@@ -16,6 +16,13 @@ function notifyChanged(options) {
   if (typeof options?.onDataChanged === 'function') options.onDataChanged();
 }
 
+function throwIfAborted(signal) {
+  if (!signal?.aborted) return;
+  const error = signal.reason instanceof Error ? signal.reason : new Error('巡检任务已取消');
+  if (!error.code) error.code = 'TASK_ABORTED';
+  throw error;
+}
+
 /** 标记无需重试的地址安全错误，避免内网地址触发长时间退避。 */
 function blockedBacklinkUrlError(message) {
   const error = new Error(message);
@@ -76,9 +83,11 @@ function createPinnedAxiosConfig(safeTarget, headers = {}) {
  * 以浏览器请求头抓取页面；每次重定向均重新执行 SSRF 校验。
  * 网络异常不在当前任务中等待或重试，直接交由下一轮定时巡检处理。
  */
-async function fetchWithRetry(url) {
+async function fetchWithRetry(url, options = {}) {
+  const { signal } = options;
   let targetUrl = String(url);
   for (let redirectCount = 0; redirectCount <= 5; redirectCount += 1) {
+    throwIfAborted(signal);
     const safeTarget = await assertSafeBacklinkUrl(targetUrl);
     const pinned = createPinnedAxiosConfig(safeTarget, {
       'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36',
@@ -91,6 +100,7 @@ async function fetchWithRetry(url) {
       maxRedirects: 0,
       maxContentLength: 5 * 1024 * 1024,
       maxBodyLength: 5 * 1024 * 1024,
+      signal,
       validateStatus: () => true
     });
 
@@ -170,6 +180,7 @@ function isProtectedResponse(status, html = '') {
 }
 
 async function updateBacklinkStatus(link, status, checkedUrl, options = {}) {
+  throwIfAborted(options.signal);
   const { incrementLostCount = false, backlinkUrl = null } = options;
   if (status === 'lost' && incrementLostCount) {
     await PartnerModel.recordBacklinkLost(link.id);
@@ -197,18 +208,19 @@ async function updateBacklinkStatus(link, status, checkedUrl, options = {}) {
 }
 
 /** 对 iframe 内容做一次无重试穿透检查。 */
-async function hasIframeBacklink($, baseUrl, cleanDomain, myMainDomain) {
+async function hasIframeBacklink($, baseUrl, cleanDomain, myMainDomain, options = {}) {
   const iframes = $('iframe[src]').toArray().slice(0, 10);
   for (const iframe of iframes) {
     const iframeUrl = resolveUrl(baseUrl, $(iframe).attr('src'));
     if (!iframeUrl) continue;
     try {
-      const response = await fetchWithRetry(iframeUrl, 0);
+      const response = await fetchWithRetry(iframeUrl, { signal: options.signal });
       if (!isProtectedResponse(response.status, response.data)
         && (response.data.toLowerCase().includes(cleanDomain) || hasBacklink(cheerio.load(response.data), myMainDomain))) {
         return true;
       }
-    } catch {
+    } catch (error) {
+      throwIfAborted(options.signal);
       // 单个 iframe 失败不影响主页面检测结论。
     }
   }
@@ -217,6 +229,7 @@ async function hasIframeBacklink($, baseUrl, cleanDomain, myMainDomain) {
 
 /** 检查单个站点的反链，并持久化巡检结论。 */
 async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options = {}) {
+  throwIfAborted(options.signal);
   if (Number(link.is_exempt) === 1) {
     return {
       id: link.id,
@@ -233,7 +246,7 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
   const targetUrl = link.backlink_url || link.url;
 
   try {
-    const response = await fetchWithRetry(targetUrl);
+    const response = await fetchWithRetry(targetUrl, { signal: options.signal });
     const rawHtml = response.data;
     const checkedUrl = response.finalUrl || targetUrl;
     const $ = cheerio.load(rawHtml);
@@ -244,7 +257,7 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
     if (hasBacklink($, domain) || rawHtml.toLowerCase().includes(domain)) {
       return updateBacklinkStatus(link, 'valid', checkedUrl, options);
     }
-    if (await hasIframeBacklink($, checkedUrl, domain, domain)) {
+    if (await hasIframeBacklink($, checkedUrl, domain, domain, options)) {
       return updateBacklinkStatus(link, 'valid', checkedUrl, options);
     }
 
@@ -262,7 +275,7 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
       });
 
       if (detailPageUrl) {
-        const detailResponse = await fetchWithRetry(detailPageUrl);
+        const detailResponse = await fetchWithRetry(detailPageUrl, { signal: options.signal });
         const detailHtml = detailResponse.data;
         const $detail = cheerio.load(detailHtml);
         if (isProtectedResponse(detailResponse.status, detailHtml)) {
@@ -270,7 +283,7 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
         }
         if (hasBacklink($detail, domain)
           || detailHtml.toLowerCase().includes(domain)
-          || await hasIframeBacklink($detail, detailPageUrl, domain, domain)) {
+          || await hasIframeBacklink($detail, detailPageUrl, domain, domain, options)) {
           return updateBacklinkStatus(link, 'valid', detailPageUrl, { ...options, backlinkUrl: detailPageUrl });
         }
       }
@@ -278,6 +291,7 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
 
     return updateBacklinkStatus(link, 'lost', targetUrl, { ...options, incrementLostCount: true });
   } catch (error) {
+    throwIfAborted(options.signal);
     if (error.code === 'BACKLINK_URL_BLOCKED') {
       await PartnerModel.touchBacklinkCheck(link.id);
       notifyChanged(options);
@@ -308,6 +322,7 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
 }
 
 async function recordBacklinkCheckError(link, error, options = {}) {
+  throwIfAborted(options.signal);
   const failedCount = Number(link.failed_check_count || 0) + 1;
   const status = failedCount >= 3 ? 'dead' : 'unreachable';
   await PartnerModel.recordBacklinkFailure(link.id, status, failedCount);
@@ -326,8 +341,10 @@ async function recordBacklinkCheckError(link, error, options = {}) {
 async function checkAllLinksBatch(links, myMainDomain, mySiteName, concurrency = 3, options = {}) {
   const poolSize = Math.max(1, Number(concurrency) || 3);
   const taskTimeoutMs = Math.max(1, Number(options.taskTimeoutMs) || 15000);
-  const settled = await runPromisePool(links, poolSize, async link => {
+  const settled = await runPromisePool(links, poolSize, async (link, _index, signal) => {
+    const taskOptions = { ...options, signal };
     try {
+      throwIfAborted(signal);
       if (Number(link.is_exempt) === 1) {
         return {
           id: link.id,
@@ -338,8 +355,9 @@ async function checkAllLinksBatch(links, myMainDomain, mySiteName, concurrency =
         };
       }
       if (Number(link.traffic_24h) > 0) {
+        throwIfAborted(signal);
         await PartnerModel.markTrafficExempt(link.id);
-        notifyChanged(options);
+        notifyChanged(taskOptions);
         return {
           id: link.id,
           backlink_status: 'valid',
@@ -348,10 +366,11 @@ async function checkAllLinksBatch(links, myMainDomain, mySiteName, concurrency =
           checked_url: null
         };
       }
-      return await checkSingleBacklink(link, myMainDomain, mySiteName, options);
+      return await checkSingleBacklink(link, myMainDomain, mySiteName, taskOptions);
     } catch (error) {
+      throwIfAborted(signal);
       try {
-        return await recordBacklinkCheckError(link, error, options);
+        return await recordBacklinkCheckError(link, error, taskOptions);
       } catch (persistError) {
         return {
           id: link.id,

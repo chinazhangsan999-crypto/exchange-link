@@ -23,6 +23,7 @@
   /** 独立渲染 Ping 探活状态，便于识别待探活、预警及自动下架。 */
   function renderPingStatusBadge(item) {
     const failed = Number(item.ping_failed_count || 0), status = item.ping_status || 'ok';
+    if (Number(item.ping_exempt) === 1) return '<span class="status-pill protected" title="该站点不执行自动 HEAD/GET 连通性探活">🛡️ Ping 免检</span>';
     if (!item.last_ping_at) return '<span class="status-pill pending" title="尚未执行 Ping 探活">⚪ 待探活</span>';
     if (status === 'unreachable' || failed >= 3) return `<span class="status-pill danger" title="连续 ${failed} 次探活失败，前台已自动下架">🔴 失效(${failed}/3)</span>`;
     if (failed > 0) { const hint = failed === 1 ? '第 1 次探活超时/失败' : '已连续 2 次失败，即将标记失效'; return `<span class="status-pill warn" title="${hint}">🟡 失联 ${failed}/3</span>`; }
@@ -185,6 +186,15 @@
     label.innerHTML = '<input name="is_exempt" type="hidden" value="0"><input name="is_exempt" type="checkbox" value="1"><span>🛡️ 设为免检（不进行反链巡检）</span>';
     grid.append(label);
   }
+  function installCreatePingExemptionField() {
+    const form = document.querySelector('#add-form');
+    const grid = form?.querySelector('.form-grid');
+    if (!form || !grid || form.elements.ping_exempt) return;
+    const label = document.createElement('label');
+    label.className = 'full exemption-option';
+    label.innerHTML = '<input name="ping_exempt" type="hidden" value="0"><input name="ping_exempt" type="checkbox" value="1"><span>🛡️ 连通性免检（不进行 HEAD/GET 探活，适用于 OpenAI、GitHub 等）</span>';
+    grid.append(label);
+  }
   function installEditExemptionField() {
     document.addEventListener('click', event => {
       const button = event.target.closest('#partner-body .edit[data-id]');
@@ -202,12 +212,20 @@
           grid.append(label);
         }
         label.querySelector('input[type="checkbox"]').checked = Number(partner?.is_exempt) === 1;
+        let pingLabel = form.querySelector('.ping-exemption-option');
+        if (!pingLabel) {
+          pingLabel = document.createElement('label');
+          pingLabel.className = 'full exemption-option ping-exemption-option';
+          pingLabel.innerHTML = '<input name="ping_exempt" type="hidden" value="0"><input name="ping_exempt" type="checkbox" value="1"><span>🛡️ 连通性免检（不进行 HEAD/GET 探活）</span>';
+          grid.append(pingLabel);
+        }
+        pingLabel.querySelector('input[type="checkbox"]').checked = Number(partner?.ping_exempt) === 1;
       }, 0);
     }, true);
   }
   function ensureTableStructure() { const table = document.querySelector('#partners table'); if (!table) return; table.className = 'admin-table partner-table'; table.querySelector('colgroup')?.remove(); table.insertAdjacentHTML('afterbegin', '<colgroup><col class="partner-col-site"><col class="partner-col-category"><col class="partner-col-contact"><col class="partner-col-backlink"><col class="partner-col-ping"><col class="partner-col-traffic"><col class="partner-col-priority"><col class="partner-col-checked"><col class="partner-col-actions"></colgroup>'); table.querySelector('thead').innerHTML = '<tr><th>网站 / 域名</th><th>分类</th><th class="contact-header">站长联系方式</th><th>巡检状态</th><th class="ping-header">连通状态</th><th class="sort-header" data-sort="score_24h">带量 ↕</th><th class="sort-header" data-sort="priority">权重 ↕</th><th>最近巡检</th><th>操作</th></tr>'; }
   function loadStyles() { if (!document.querySelector('link[href^="/admin/tables.css"]')) { const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/admin/tables.css?v=20260831-1'; document.head.append(link); } if (!document.querySelector('link[href^="/admin/table-fixes.css"]')) { const fixes = document.createElement('link'); fixes.rel = 'stylesheet'; fixes.href = '/admin/table-fixes.css?v=20260831-1'; document.head.append(fixes); } if (!document.querySelector('link[href^="/admin/traffic-cell.css"]')) { const traffic = document.createElement('link'); traffic.rel = 'stylesheet'; traffic.href = '/admin/traffic-cell.css?v=20260902-1'; document.head.append(traffic); } }
-  loadStyles(); ensureTableStructure(); installSort(); installToolbar(); installCreateExemptionField(); installEditExemptionField(); window.loadPartners = loadPartners;
+  loadStyles(); ensureTableStructure(); installSort(); installToolbar(); installCreateExemptionField(); installCreatePingExemptionField(); installEditExemptionField(); window.loadPartners = loadPartners;
   document.querySelector('#partner-q')?.addEventListener('input', () => { clearTimeout(window.__partnerSearchTimer); window.__partnerSearchTimer = setTimeout(loadPartners, 180); });
   window.addEventListener('admin:authenticated', loadPartners); setTimeout(() => { if (token()) loadPartners(); }, 450);
 })();

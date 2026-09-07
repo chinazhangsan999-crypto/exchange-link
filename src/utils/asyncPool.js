@@ -5,7 +5,9 @@
  *
  * - 同时运行的任务不超过 concurrency。
  * - 任一任务完成后立即补入下一个任务，不等待固定批次。
- * - 每个任务都有独立超时，超时后按 rejected 处理并立即释放并发槽位。
+ * - 每个任务都有独立 AbortSignal；超时会先 abort 底层 I/O，再按 rejected 处理。
+ * - Worker 必须将 signal 传给支持取消的网络库（例如 Axios），并在写库前检查
+ *   signal.aborted，避免任务超时后继续落盘。
  * - 返回值与 Promise.allSettled 一致，并保持输入顺序。
  */
 async function runPromisePool(items, concurrency, worker, taskTimeoutMs = 15000) {
@@ -19,7 +21,8 @@ async function runPromisePool(items, concurrency, worker, taskTimeoutMs = 15000)
   function launch(index) {
     let timeoutId;
     let task;
-    const workerPromise = Promise.resolve().then(() => worker(list[index], index));
+    const controller = new AbortController();
+    const workerPromise = Promise.resolve().then(() => worker(list[index], index, controller.signal));
     const timeoutPromise = new Promise((_, reject) => {
       timeoutId = setTimeout(() => {
         const error = new Error(`异步任务执行超时（${timeoutMs}ms）`);
@@ -27,9 +30,14 @@ async function runPromisePool(items, concurrency, worker, taskTimeoutMs = 15000)
         error.code = 'TASK_TIMEOUT';
         error.taskIndex = index;
         error.timeoutMs = timeoutMs;
+        controller.abort(error);
         reject(error);
       }, timeoutMs);
     });
+
+    // Promise.race 先返回超时时，原 Worker 仍可能在响应 abort 的过程中完成；
+    // 始终订阅其拒绝，避免成为未处理 Promise 拒绝。
+    workerPromise.catch(() => {});
 
     task = Promise.race([workerPromise, timeoutPromise])
       .then(
