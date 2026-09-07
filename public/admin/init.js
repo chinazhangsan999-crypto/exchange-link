@@ -8,6 +8,24 @@
   const toast = message => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = message; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
   const normalizeTab = value => aliases[value] || value;
 
+  /** 登录后读取系统设置，统一更新后台页签与品牌标题。 */
+  window.loadAdminBrand = async function loadAdminBrand() {
+    const adminToken = token();
+    if (!adminToken) return;
+    try {
+      const response = await fetch('/api/admin/settings', { headers: { Authorization: `Bearer ${adminToken}` } });
+      const result = await response.json();
+      if (result.code !== 200) return;
+      const siteName = String(result.data?.site_name || '').trim();
+      const brand = siteName || '管理后台';
+      const title = document.querySelector('.identity b');
+      if (title) title.textContent = siteName ? `${siteName} · 管理中心` : '管理中心';
+      document.title = `管理后台 · ${brand}`;
+    } catch (error) {
+      console.warn('加载后台品牌失败：', error);
+    }
+  };
+
   /**
    * 审核与设置按钮由 review.js 动态挂载；在它们就绪后统一重排主导航，
    * 防止新增节点入口被追加到末尾而在窄屏中看似“丢失”。
@@ -95,6 +113,7 @@
     localStorage.setItem('webring_admin_token', newToken);
     document.querySelector('#login-modal')?.classList.remove('open');
     window.dispatchEvent(new Event('admin:authenticated'));
+    void window.loadAdminBrand();
     window.restoreAdminTab();
     toast('登录成功，已恢复上次访问页面');
   }
@@ -117,5 +136,5 @@
   document.querySelector('#review-tab')?.setAttribute('data-tab', 'review'); document.querySelector('#settings-tab')?.setAttribute('data-tab', 'settings'); bindTabs();
   normalizePrimaryNavigation();
   bindTabs();
-  if (token()) setTimeout(() => window.restoreAdminTab(), 0);
+  if (token()) setTimeout(() => { window.loadAdminBrand(); window.restoreAdminTab(); }, 0);
 })();
