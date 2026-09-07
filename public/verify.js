@@ -4,6 +4,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   let dragging = false, verified = false, startX = 0, startY = 0, startTime = 0, maxDistance = 0, tracks = [], token = '', tokenReceivedAt = 0, activePointerId = null;
   const point = event => event.touches?.[0] || event.changedTouches?.[0] || event;
   const setHint = (message, color = '') => { hint.textContent = message; hint.style.color = color; };
+  fetch('/api/config/public', { credentials: 'same-origin' }).then(response => response.json()).then(result => {
+    const raw = String(result.data?.site_logo_url || '').trim();
+    const logoUrl = /^https?:\/\//i.test(raw) || /^\/uploads\/logo\/[a-zA-Z0-9._-]+$/.test(raw) ? raw : '';
+    if (!logoUrl) return;
+    const mark = document.querySelector('.verify-mark');
+    if (!mark) return;
+    mark.replaceChildren();
+    const image = new Image(); image.style.cssText = 'width:100%;height:100%;display:block;object-fit:contain;border-radius:inherit'; image.src = logoUrl; image.alt = '网站 Logo';
+    image.onerror = () => { mark.replaceChildren(); mark.textContent = '✦'; };
+    mark.append(image);
+  }).catch(() => {});
   function updateMaxDistance() { maxDistance = Math.max(1, container.clientWidth - button.offsetWidth - 8); }
   async function getToken() { try { const response = await fetch('/api/verify/init', { credentials: 'same-origin', cache: 'no-store' }); const data = await response.json(); if (!data.success || !data.token) throw Error(data.msg); token = data.token; tokenReceivedAt = Date.now(); setHint('请向右拖动滑块完成验证'); return true; } catch { token = ''; tokenReceivedAt = 0; setHint('⚠️ 获取安全凭证失败，请刷新重试', '#dc2626'); return false; } }
   function paint(distance) { button.style.transform = `translateX(${distance}px)`; progress.style.width = `${Math.min(100, (distance + button.offsetWidth / 2) * 100 / container.clientWidth)}%`; }

@@ -65,11 +65,24 @@ function renderPublishBrand(siteNameValue) {
   document.querySelector('meta[name="description"]')?.setAttribute('content', `${siteName}永久发布页，提供主站与镜像节点实时测速。`);
 }
 
+function renderPublishLogo(logoValue) {
+  const raw = String(logoValue || '').trim();
+  const logoUrl = validUrl(raw) || (/^\/uploads\/logo\/[a-zA-Z0-9._-]+$/.test(raw) ? raw : '');
+  const mark = document.querySelector('.hero-mark');
+  if (!mark) return;
+  mark.replaceChildren();
+  if (!logoUrl) { mark.textContent = '✦'; return; }
+  const image = new Image(); image.style.cssText = 'width:100%;height:100%;display:block;object-fit:contain;border-radius:inherit'; image.src = logoUrl; image.alt = '网站 Logo';
+  image.onerror = () => { mark.replaceChildren(); mark.textContent = '✦'; };
+  mark.append(image);
+}
+
 async function loadMirrors() {
   try {
     const response = await fetch('/api/mirrors', { cache: 'no-store' });
     const result = await response.json(); if (result.code !== 200) throw new Error(result.msg || '镜像列表加载失败');
     renderPublishBrand(result.data?.site_name);
+    renderPublishLogo(result.data?.site_logo_url);
     renderLostPreventionEmail(result.data?.lost_prevention_email);
     const main = { ...(result.data?.mainSite || {}), url: validUrl(result.data?.mainSite?.url) };
     const mirrors = (result.data?.mirrors || []).map(item => ({ ...item, url: validUrl(item.url) })).filter(item => item.url && item.url !== main.url);

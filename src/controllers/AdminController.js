@@ -140,6 +140,13 @@ async function saveSettings(req, res) {
       if (key === 'site_url') value = normalizeUrl(value);
       if (key === 'publish_url' && value) value = normalizeUrl(value);
       if (key === 'webhook_url' && value) value = normalizeUrl(value);
+      if (key === 'site_logo_url' && value) {
+        if (value.startsWith('/uploads/logo/')) {
+          if (!/^\/uploads\/logo\/[a-zA-Z0-9._-]+$/.test(value)) return fail(res, 'Logo 本地地址无效');
+        } else {
+          value = normalizeUrl(value);
+        }
+      }
       if (['csv_url_partners', 'csv_url_ads', 'csv_url_mirrors'].includes(key) && value) {
         value = normalizeUrl(value);
         const parsed = new URL(value);
@@ -157,6 +164,20 @@ async function saveSettings(req, res) {
     return ok(res, null, '系统设置已保存');
   } catch (error) {
     console.error('保存系统设置失败：', error);
+    return fail(res, safeApiErrorMessage(error), 500);
+  }
+}
+
+async function uploadSiteLogo(req, res) {
+  try {
+    if (!req.file) return fail(res, '请选择 PNG、JPG 或 WebP 格式的 Logo（最大 2MB）');
+    const siteLogoUrl = `/uploads/logo/${req.file.filename}`;
+    await SystemModel.upsertConfig('site_logo_url', siteLogoUrl);
+    CacheService.clearPublicCache();
+    require('./PublicController').clearMirrorsCache();
+    return ok(res, { site_logo_url: siteLogoUrl }, 'Logo 上传成功');
+  } catch (error) {
+    console.error('上传站点 Logo 失败：', error);
     return fail(res, safeApiErrorMessage(error), 500);
   }
 }
@@ -1208,7 +1229,7 @@ function renderAdminHtml(res, fileName) {
     "script-src-attr 'none'",
     `style-src 'self' 'nonce-${nonce}'`,
     "style-src-attr 'none'",
-    "img-src 'self' data:",
+    "img-src 'self' data: https: http:",
     "font-src 'self' data:",
     "connect-src 'self'",
     "frame-src 'none'",
@@ -1237,6 +1258,7 @@ module.exports = {
   getSettings,
   getRiskControlSettings,
   saveSettings,
+  uploadSiteLogo,
   testWebhook,
   getReview,
   getOverview,

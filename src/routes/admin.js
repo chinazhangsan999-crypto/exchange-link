@@ -4,6 +4,7 @@ const express = require('express');
 const AdminController = require('../controllers/AdminController');
 const { requireAdmin } = require('../middlewares/auth');
 const { createRateLimiter } = require('../middlewares/rateLimit');
+const { siteLogoUpload } = require('../middlewares/siteLogoUpload');
 
 const router = express.Router();
 const loginRateLimiter = createRateLimiter('admin-login', 15 * 60 * 1000, 5);
@@ -18,6 +19,7 @@ router.post('/api/admin/analytics/config', AdminController.saveAnalyticsConfig);
 router.get(['/api/admin/config', '/api/admin/settings'], AdminController.getSettings);
 router.get('/api/admin/settings/risk-control', AdminController.getRiskControlSettings);
 router.post(['/api/admin/config', '/api/admin/settings'], AdminController.saveSettings);
+router.post('/api/admin/settings/logo', siteLogoUpload, AdminController.uploadSiteLogo);
 router.post('/api/admin/settings/test-webhook', AdminController.testWebhook);
 router.get('/api/admin/review', AdminController.getReview);
 router.get('/api/admin/overview', AdminController.getOverview);

@@ -27,6 +27,18 @@
     } catch (error) { nav.innerHTML = '<span class="nav-loading">分类加载失败</span>'; console.warn('加载详情页分类失败：', error.message); }
   }
 
+  function applySiteLogo(config) {
+    const raw = String(config?.site_logo_url || '').trim();
+    const logoUrl = validUrl(raw) || (/^\/uploads\/logo\/[a-zA-Z0-9._-]+$/.test(raw) ? raw : '');
+    document.querySelectorAll('.brand-mark').forEach(mark => {
+      mark.replaceChildren();
+      if (!logoUrl) { mark.textContent = '✦'; return; }
+      const image = new Image(); image.style.cssText = 'width:100%;height:100%;display:block;object-fit:contain;border-radius:inherit'; image.src = logoUrl; image.alt = '网站 Logo';
+      image.onerror = () => { mark.replaceChildren(); mark.textContent = '✦'; };
+      mark.append(image);
+    });
+  }
+
   function renderRecommendations(items) {
     $('#hotExploreGrid').innerHTML = items.length ? items.map((item, index) => {
       const official = Number(item.priority) === 999;
@@ -47,7 +59,7 @@
   }
   async function loadDetail() { const id = Number(new URLSearchParams(location.search).get('id')); if (!Number.isSafeInteger(id) || id <= 0) throw new Error('站点编号无效'); const response = await fetch(`/api/links/${id}`, { credentials: 'same-origin' }); const result = await response.json(); if (!response.ok || result.code !== 200) throw new Error(result.msg || '站点不存在或暂不可用'); renderSite(result.data.site, result.data.recommendations); }
   /** 顶部框架与首页复用同一套节点，只由详情脚本绑定其数据和事件。 */
-  async function loadPublicFrame() { const response = await fetch('/api/config/public', { credentials: 'same-origin' }); const result = await response.json(); if (result.code !== 200) return; publicConfig = result.data || {}; const siteName = String(publicConfig.site_name || '星环导航').trim() || '星环导航'; document.querySelectorAll('[data-site-name]').forEach(element => { element.textContent = siteName; }); document.querySelectorAll('[data-site-announcement]').forEach(element => { element.textContent = `✦ ${siteName}已收录审核通过的合作站点，排名随近 24 小时带量实时更新。`; }); document.title = currentSiteName ? `${currentSiteName} · 站点详情 · ${siteName}` : `站点详情 · ${siteName}`; const publishUrl = validUrl(publicConfig.publish_url); if (publishUrl) $('#topPublishBtn').href = publishUrl; }
+  async function loadPublicFrame() { const response = await fetch('/api/config/public', { credentials: 'same-origin' }); const result = await response.json(); if (result.code !== 200) return; publicConfig = result.data || {}; const siteName = String(publicConfig.site_name || '星环导航').trim() || '星环导航'; document.querySelectorAll('[data-site-name]').forEach(element => { element.textContent = siteName; }); applySiteLogo(publicConfig); document.querySelectorAll('[data-site-announcement]').forEach(element => { element.textContent = `✦ ${siteName}已收录审核通过的合作站点，排名随近 24 小时带量实时更新。`; }); document.title = currentSiteName ? `${currentSiteName} · 站点详情 · ${siteName}` : `站点详情 · ${siteName}`; const publishUrl = validUrl(publicConfig.publish_url); if (publishUrl) $('#topPublishBtn').href = publishUrl; }
   function searchHome() { const keyword = $('#site-search').value.trim(); location.href = `/${keyword ? `?q=${encodeURIComponent(keyword)}` : ''}`; }
   function initDrawer() { const sidebar = $('.sidebar'), overlay = $('#sidebarOverlay'), button = $('#mobileMenuBtn'); const close = () => { sidebar.classList.remove('open'); overlay.classList.remove('active'); button.setAttribute('aria-expanded', 'false'); }; button.onclick = () => { sidebar.classList.toggle('open'); overlay.classList.toggle('active'); button.setAttribute('aria-expanded', String(sidebar.classList.contains('open'))); }; overlay.onclick = close; $('#category-nav').onclick = close; document.addEventListener('keydown', (event) => { if (event.key === 'Escape') close(); }); }
   function initTheme() { const button = $('#themeToggle'); const apply = (theme) => { const dark = theme === 'dark'; document.documentElement.dataset.theme = dark ? 'dark' : 'light'; button.innerHTML = `${dark ? '🌙' : '☀️'} <span>${dark ? '夜间模式' : '日间模式'}</span>`; }; apply(localStorage.getItem('theme') || 'light'); button.onclick = () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('theme', next); apply(next); }; }

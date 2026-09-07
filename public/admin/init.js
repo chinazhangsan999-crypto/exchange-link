@@ -20,6 +20,20 @@
       const brand = siteName || '管理后台';
       const title = document.querySelector('.identity b');
       if (title) title.textContent = siteName ? `${siteName} · 管理中心` : '管理中心';
+      const rawLogoUrl = String(result.data?.site_logo_url || '').trim();
+      const logoUrl = /^https?:\/\//i.test(rawLogoUrl) || /^\/uploads\/logo\/[a-zA-Z0-9._-]+$/.test(rawLogoUrl) ? rawLogoUrl : '';
+      const logo = document.querySelector('.identity .logo');
+      if (logo) {
+        logo.replaceChildren();
+        if (!logoUrl) logo.textContent = '✦';
+        else {
+          const image = new Image();
+          image.style.cssText = 'width:100%;height:100%;display:block;object-fit:contain;border-radius:inherit';
+          image.src = logoUrl; image.alt = `${siteName || '网站'} Logo`;
+          image.onerror = () => { logo.replaceChildren(); logo.textContent = '✦'; };
+          logo.append(image);
+        }
+      }
       document.title = `管理后台 · ${brand}`;
     } catch (error) {
       console.warn('加载后台品牌失败：', error);

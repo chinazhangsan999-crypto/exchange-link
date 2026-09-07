@@ -36,6 +36,50 @@
     const actions = form.querySelector('.settings-actions');
     form.insertBefore(fieldset, actions || null);
   }
+  function setLogoPreview(value) {
+    const preview = document.querySelector('#site-logo-preview');
+    const raw = String(value || '').trim();
+    if (!preview) return;
+    if (!/^https?:\/\//i.test(raw) && !/^\/uploads\/logo\/[a-zA-Z0-9._-]+$/.test(raw)) { preview.hidden = true; preview.removeAttribute('src'); return; }
+    preview.hidden = false; preview.src = raw;
+  }
+  function installLogoSettings() {
+    const form = document.querySelector('#settings-form');
+    if (!form || form.querySelector('#site-logo-settings')) return;
+    const fieldset = document.createElement('fieldset');
+    fieldset.id = 'site-logo-settings';
+    fieldset.innerHTML = `<legend>全站 Logo</legend>
+      <label>Logo 地址（选填）<input name="site_logo_url" type="text" inputmode="url" placeholder="https://example.com/logo.png"><small>可粘贴 PNG、JPG 或 WebP 图片地址；保存系统设置后全站生效。</small></label>
+      <label>上传 Logo（PNG/JPG/WebP，最大 2MB）<input id="site-logo-file" type="file" accept="image/png,image/jpeg,image/webp"><small>上传成功后会自动写入上方 Logo 地址。</small></label>
+      <div class="logo-setting-actions"><button id="upload-site-logo" class="button ghost" type="button">上传并使用 Logo</button><button id="clear-site-logo" class="button ghost" type="button">恢复默认星标</button></div>
+      <img id="site-logo-preview" class="site-logo-preview" alt="Logo 预览" hidden>`;
+    const actions = form.querySelector('.settings-actions');
+    form.insertBefore(fieldset, actions || null);
+    const urlInput = form.elements.site_logo_url;
+    urlInput.addEventListener('input', () => setLogoPreview(urlInput.value));
+    document.querySelector('#clear-site-logo').onclick = async () => {
+      try {
+        const response = await fetch('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` }, body: JSON.stringify({ site_logo_url: '' }) });
+        const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '恢复默认 Logo 失败');
+        urlInput.value = ''; setLogoPreview(''); await window.loadAdminBrand?.(); toast('已恢复默认星标');
+      } catch (error) { toast(error.message || '恢复默认 Logo 失败'); }
+    };
+    document.querySelector('#upload-site-logo').onclick = async () => {
+      const file = document.querySelector('#site-logo-file').files?.[0];
+      if (!file) { toast('请先选择一个 Logo 图片'); return; }
+      const button = document.querySelector('#upload-site-logo');
+      const body = new FormData(); body.append('logo', file);
+      try {
+        button.disabled = true; button.textContent = '上传中…';
+        const response = await fetch('/api/admin/settings/logo', { method: 'POST', headers: { Authorization: `Bearer ${token()}` }, body });
+        const result = await response.json();
+        if (result.code !== 200) throw Error(result.msg || 'Logo 上传失败');
+        urlInput.value = result.data.site_logo_url; setLogoPreview(urlInput.value);
+        await window.loadAdminBrand?.(); toast('Logo 上传成功，已应用到全站');
+      } catch (error) { toast(error.message || 'Logo 上传失败'); }
+      finally { button.disabled = false; button.textContent = '上传并使用 Logo'; }
+    };
+  }
   function install() {
     if (document.querySelector('#review-tab')) return;
     const tabs = document.querySelector('.tabs');
@@ -45,7 +89,7 @@
     const settings = document.createElement('section'); settings.id = 'settings'; settings.className = 'panel'; settings.innerHTML = `<div class="box settings-box"><div class="box-head"><div><h2>系统设置</h2><p class="hint">配置站点资料、发布页信息、自动审核规则与管理员告警。</p></div></div><form id="settings-form" class="settings-form"><label>站点名称<input name="site_name" required placeholder="例如：星环导航"></label><label>永久发布页地址<input name="publish_url" type="url" placeholder="https://pub.example.com"></label><label>防失联官方邮箱<input name="contact_email" type="email" placeholder="contact@yourdomain.com"><small>域名或发布页失效时，访客可向此邮箱获取最新地址。</small></label><label>其他联系方式<input name="contact_info" placeholder="@Telegram / QQ群 / 客服"><small>用于前台联系站长与统一引导弹窗展示。</small></label><label>管理员告警 Webhook 地址<input name="webhook_url" type="url" placeholder="Telegram Bot API 或企业微信机器人 Webhook 地址"></label><label class="switch-setting"><span>每日首次引导弹窗</span><input name="publish_modal_enabled" type="checkbox" value="1"><small>开启后，访客每天首次访问会看到发布页与防失联指南。</small></label><label>自动通过阈值 N<input name="auto_approve_threshold" type="number" min="1" required><small>申请友链累计达到 N 个独立 IP 时自动转为审核通过。</small></label><label>本站专属友链地址<input name="site_url" type="url" required placeholder="https://your-site.example"></label><div class="settings-actions"><button class="button">保存系统设置</button><button id="test-webhook" class="button ghost" type="button">🔔 发送测试消息</button></div></form></div>`;
     const analytics = document.createElement('section'); analytics.id = 'analytics-settings'; analytics.className = 'analytics-settings-card'; analytics.innerHTML = `<div class="box analytics-box"><div class="box-head"><div><h2>第三方统计设置</h2><p class="hint">按需独立启用 Umami 与 Cloudflare Web Analytics；探针异步加载，不阻塞页面。</p></div></div><form id="analytics-settings-form" class="settings-form"><fieldset><legend>Umami</legend><label class="switch-setting"><span>启用 Umami 统计</span><input name="umami_enabled" type="checkbox" value="1"><small>启用后需填写 Website ID。</small></label><label>Umami Script URL<input name="umami_script_url" type="url" placeholder="https://cloud.umami.is/script.js"></label><label>Umami Website ID<input name="umami_website_id" placeholder="请输入 Umami Website ID"></label></fieldset><fieldset><legend>Cloudflare Web Analytics</legend><label class="switch-setting"><span>启用 Cloudflare Web Analytics</span><input name="cf_analytics_enabled" type="checkbox" value="1"><small>可与 Umami 同时启用。</small></label><label>Cloudflare Beacon Token<input name="cf_beacon_token" placeholder="请输入 Beacon Token"></label></fieldset><div class="settings-actions"><button class="button" type="submit">保存第三方统计设置</button></div></form></div>`;
     const matrix = document.createElement('section'); matrix.id = 'matrix-sync-settings'; matrix.className = 'analytics-settings-card matrix-sync-card'; matrix.innerHTML = `<div class="box"><div class="box-head"><div><h2>CSV 全站矩阵</h2><p class="hint">Google Sheets 发布为 CSV 后，在这里配置数据源并按需同步或下载备份。</p></div></div><form id="matrix-url-form" class="settings-form matrix-url-form"><label>友链管理表 CSV 直链<input name="csv_url_partners" type="url" placeholder="https://docs.google.com/spreadsheets/.../pub?output=csv"></label><label>广告矩阵表 CSV 直链<input name="csv_url_ads" type="url" placeholder="https://docs.google.com/spreadsheets/.../pub?output=csv"></label><label>备用节点表 CSV 直链<input name="csv_url_mirrors" type="url" placeholder="https://docs.google.com/spreadsheets/.../pub?output=csv"></label><div class="matrix-control-row"><button id="save-matrix-urls" class="button ghost" type="submit" data-matrix-action>保存配置</button><button id="sync-matrix-all" class="button" type="button" data-matrix-action>⚡ 一键同步全站矩阵</button><details class="matrix-menu"><summary class="button ghost">⚡ 一键同步</summary><div class="matrix-menu-pop"><button type="button" data-sync-type="partners" data-matrix-action>同步友链</button><button type="button" data-sync-type="ads" data-matrix-action>同步广告</button><button type="button" data-sync-type="mirrors" data-matrix-action>同步节点</button><button type="button" data-sync-type="all" data-matrix-action>同步全部</button></div></details><details class="matrix-menu"><summary class="button ghost">⬇️ 下载备份</summary><div class="matrix-menu-pop"><button type="button" data-export-type="partners" data-matrix-action>下载友链</button><button type="button" data-export-type="ads" data-matrix-action>下载广告</button><button type="button" data-export-type="mirrors" data-matrix-action>下载节点</button><button type="button" data-export-type="all" data-matrix-action>下载全部 ZIP</button></div></details></div><div id="matrix-sync-log" class="matrix-sync-log" role="status" aria-live="polite">等待操作</div></form></div>`;
-    settings.append(analytics, matrix); document.querySelector('.shell').append(review, settings); installRiskControlFields();
+    settings.append(analytics, matrix); document.querySelector('.shell').append(review, settings); installLogoSettings(); installRiskControlFields();
     reviewButton.onclick = () => { switchTo('review', reviewButton); loadReview(); }; settingsButton.onclick = () => { switchTo('settings', settingsButton); Promise.all([loadSettings(), loadAnalyticsConfig(), window.loadMatrixSettings?.()]); };
     document.querySelector('#refresh-review').onclick = loadReview; document.querySelector('#settings-form').onsubmit = saveSettings; document.querySelector('#analytics-settings-form').onsubmit = saveAnalyticsConfig; document.querySelector('#test-webhook').onclick = testWebhook;
   }
@@ -59,10 +103,10 @@
     } catch (error) { toast(error.message); }
   }
   async function reviewAction(id, status) { if (status === 2 && !confirm('确定拒绝该申请吗？')) return; try { await api('/api/admin/partners/' + id, { method: 'PATCH', body: JSON.stringify({ is_approved: status }) }); toast(status === 1 ? '已手动审核通过' : '已拒绝申请'); loadReview(); window.loadPartners?.(); } catch (error) { toast(error.message); } }
-  async function loadSettings() { try { const data = await api('/api/admin/settings'), form = document.querySelector('#settings-form'); Object.entries(data).forEach(([key, value]) => { if (!form.elements[key]) return; if (form.elements[key].type === 'checkbox') form.elements[key].checked = String(value) === '1'; else form.elements[key].value = value; }); } catch (error) { toast(error.message); } }
+  async function loadSettings() { try { const data = await api('/api/admin/settings'), form = document.querySelector('#settings-form'); Object.entries(data).forEach(([key, value]) => { if (!form.elements[key]) return; if (form.elements[key].type === 'checkbox') form.elements[key].checked = String(value) === '1'; else form.elements[key].value = value; }); setLogoPreview(form.elements.site_logo_url?.value); } catch (error) { toast(error.message); } }
   async function saveSettings(event) { event.preventDefault(); try { const form = event.currentTarget, payload = Object.fromEntries(new FormData(form)); payload.publish_modal_enabled = form.elements.publish_modal_enabled.checked ? '1' : '0'; await api('/api/admin/settings', { method: 'POST', body: JSON.stringify(payload) }); await window.loadAdminBrand?.(); toast('系统设置已保存'); } catch (error) { toast(error.message); } }
   async function loadAnalyticsConfig() { try { const data = await api('/api/admin/analytics/config'), form = document.querySelector('#analytics-settings-form'); Object.entries(data).forEach(([key, value]) => { if (!form.elements[key]) return; if (form.elements[key].type === 'checkbox') form.elements[key].checked = String(value) === '1'; else form.elements[key].value = value; }); } catch (error) { toast(error.message); } }
   async function saveAnalyticsConfig(event) { event.preventDefault(); try { const form = event.currentTarget, payload = Object.fromEntries(new FormData(form)); payload.umami_enabled = form.elements.umami_enabled.checked ? '1' : '0'; payload.cf_analytics_enabled = form.elements.cf_analytics_enabled.checked ? '1' : '0'; await api('/api/admin/analytics/config', { method: 'POST', body: JSON.stringify(payload) }); toast('第三方统计设置已保存，刷新公开页面后生效'); } catch (error) { toast(error.message); } }
   async function testWebhook() { const button = document.querySelector('#test-webhook'); try { button.disabled = true; button.textContent = '发送中…'; await api('/api/admin/settings/test-webhook', { method: 'POST' }); toast('测试消息已发送，请查收 Webhook 通道'); } catch (error) { toast(error.message); } finally { button.disabled = false; button.textContent = '🔔 发送测试消息'; } }
-  const style = document.createElement('link'); style.rel = 'stylesheet'; style.href = '/admin/review.css?v=20260831-1'; document.head.append(style); install(); window.fetchPendingCount = loadReview; window.loadAdminSettings = loadSettings; window.addEventListener('admin:authenticated', loadReview); setTimeout(() => { if (token()) loadReview(); }, 400);
+  const style = document.createElement('link'); style.rel = 'stylesheet'; style.href = '/admin/review.css?v=20260831-1'; document.head.append(style); const logoStyle = document.createElement('link'); logoStyle.rel = 'stylesheet'; logoStyle.href = '/admin/logo-settings.css?v=20260908-1'; document.head.append(logoStyle); install(); window.fetchPendingCount = loadReview; window.loadAdminSettings = loadSettings; window.addEventListener('admin:authenticated', loadReview); setTimeout(() => { if (token()) loadReview(); }, 400);
 })();

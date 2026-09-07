@@ -122,8 +122,12 @@ function isVerificationExempt(req) {
     || pathname === '/manifest.json'
     || pathname === '/sw.js'
     || pathname.startsWith('/icons/')
+    || pathname.startsWith('/uploads/logo/')
     || pathname.startsWith('/api/verify/')
     || pathname === '/api/health'
+    // 验证页也需要读取公开品牌配置，以展示管理员设置的统一 Logo。
+    || pathname === '/api/config/public'
+    || pathname === '/api/config'
     || pathname === '/api/analytics/config'
     || pathname.startsWith('/admin')
     || pathname.startsWith('/api/admin');

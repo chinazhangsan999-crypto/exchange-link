@@ -370,6 +370,7 @@ async function getPublicConfig(req, res) {
       msg: '操作成功',
       data: {
         site_name: await SystemModel.configValue('site_name'),
+        site_logo_url: await SystemModel.configValue('site_logo_url'),
         site_url: await SystemModel.configValue('site_url'),
         admin_contact: contactInfo || await SystemModel.configValue('admin_contact'),
         contact_info: contactInfo,
@@ -398,12 +399,13 @@ async function getMirrors(req, res) {
       return ok(res, mirrorsCache.data);
     }
 
-    const [rows, mainUrl, contactEmail, legacyEmail, siteName] = await Promise.all([
+    const [rows, mainUrl, contactEmail, legacyEmail, siteName, siteLogoUrl] = await Promise.all([
       MirrorModel.getEnabledMirrors(),
       SystemModel.configValue('site_url'),
       SystemModel.configValue('contact_email'),
       SystemModel.configValue('lost_prevention_email'),
-      SystemModel.configValue('site_name')
+      SystemModel.configValue('site_name'),
+      SystemModel.configValue('site_logo_url')
     ]);
     const nodes = rows
       .map(row => ({ id: String(row.url), name: String(row.speed_name || '').trim(), partner_name: String(row.partner_name || '').trim(), url: String(row.url || '').trim() }))
@@ -416,6 +418,7 @@ async function getMirrors(req, res) {
       // nodes 供首页节点切换器使用；mainSite/mirrors 保持永久发布页的既有接口兼容。
       nodes: [...(mainSite ? [mainSite] : []), ...nodes],
       site_name: siteName,
+      site_logo_url: siteLogoUrl,
       contact_email: contactEmail,
       lost_prevention_email: contactEmail || legacyEmail,
       mainSite,

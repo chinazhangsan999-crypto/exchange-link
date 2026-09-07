@@ -5,6 +5,7 @@ const { INITIAL_ADMIN_PASSWORD } = require('../config/env');
 
 const CONFIG_DEFAULTS = {
   site_name: '星环导航',
+  site_logo_url: '',
   site_url: 'http://localhost:3001',
   admin_contact: '请在后台系统设置中填写站长联系方式。',
   auto_approve_threshold: '10',
