@@ -6,8 +6,8 @@
  * - 同时运行的任务不超过 concurrency。
  * - 任一任务完成后立即补入下一个任务，不等待固定批次。
  * - 每个任务都有独立 AbortSignal；超时会先 abort 底层 I/O，再按 rejected 处理。
- * - Worker 必须将 signal 传给支持取消的网络库（例如 Axios），并在写库前检查
- *   signal.aborted，避免任务超时后继续落盘。
+ * - Worker 必须将 signal 传给支持取消的网络库（例如 Axios）。业务 Worker 应区分
+ *   TASK_TIMEOUT 与服务停机取消：前者应持久化失败状态，后者才跳过写库。
  * - 返回值与 Promise.allSettled 一致，并保持输入顺序。
  */
 async function runPromisePool(items, concurrency, worker, taskTimeoutMs = 15000) {

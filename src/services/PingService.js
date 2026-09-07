@@ -21,6 +21,15 @@ function throwIfAborted(signal) {
   throw error;
 }
 
+/** Axios 收到 asyncPool 的 controller.abort() 后会转成 ERR_CANCELED / CanceledError。 */
+function isTaskTimeoutAbort(error, signal) {
+  const reason = signal?.reason;
+  return error?.code === 'TASK_TIMEOUT'
+    || reason?.code === 'TASK_TIMEOUT'
+    || ((error?.name === 'AbortError' || error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED')
+      && reason?.code === 'TASK_TIMEOUT');
+}
+
 function pingTimestampIsFresh(value, now = Date.now()) {
   if (!value) return false;
   const normalized = String(value).includes('T') ? String(value) : String(value).replace(' ', 'T');
@@ -62,7 +71,9 @@ async function requestSafePing(url, method, options = {}) {
 }
 
 async function persistPingFailure(link, error, options = {}) {
-  throwIfAborted(options.signal);
+  const timedOut = isTaskTimeoutAbort(error, options.signal);
+  // 停机取消不落库；任务超时必须记录失败，以推进 1/3、2/3、3/3 状态机。
+  if (options.signal?.aborted && !timedOut) throwIfAborted(options.signal);
   const failedCount = Number(link.ping_failed_count || 0) + 1;
   const status = failedCount >= 3 ? 'unreachable' : (link.ping_status || 'ok');
   await PartnerModel.recordPingFailure(link.id, failedCount, status);
@@ -72,7 +83,7 @@ async function persistPingFailure(link, error, options = {}) {
     ping_status: status,
     ping_failed_count: failedCount,
     last_ping_at: new Date().toISOString(),
-    error: String(error?.message || '探活失败')
+    error: timedOut ? '连接超时（任务超过 15 秒）' : String(error?.message || '探活失败')
   };
 }
 
@@ -96,15 +107,17 @@ async function pingSingleLink(link, options = {}) {
     const head = await requestSafePing(link.url, 'HEAD', { signal: options.signal });
     success = head.status >= 200 && head.status < 400;
   } catch (error) {
-    throwIfAborted(options.signal);
+    const timedOut = isTaskTimeoutAbort(error, options.signal);
+    if (options.signal?.aborted && !timedOut) throwIfAborted(options.signal);
     lastError = error;
     const headStatus = Number(error.response?.status || 0);
-    if ([403, 405, 501].includes(headStatus)) {
+    if (!timedOut && [403, 405, 501].includes(headStatus)) {
       try {
         const getResponse = await requestSafePing(link.url, 'GET', { signal: options.signal });
         success = getResponse.status >= 200 && getResponse.status < 400;
       } catch (fallbackError) {
-        throwIfAborted(options.signal);
+        const fallbackTimedOut = isTaskTimeoutAbort(fallbackError, options.signal);
+        if (options.signal?.aborted && !fallbackTimedOut) throwIfAborted(options.signal);
         lastError = fallbackError;
       }
     }
@@ -157,7 +170,8 @@ async function inspectPingTargets(links, options = {}) {
     try {
       return await pingSingleLink(link, taskOptions);
     } catch (error) {
-      throwIfAborted(signal);
+      const timedOut = isTaskTimeoutAbort(error, signal);
+      if (signal?.aborted && !timedOut) throwIfAborted(signal);
       try {
         return await persistPingFailure(link, error, taskOptions);
       } catch (persistError) {

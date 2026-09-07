@@ -23,6 +23,18 @@ function throwIfAborted(signal) {
   throw error;
 }
 
+/**
+ * asyncPool 超时会以 TaskTimeoutError 作为 signal.reason；Axios 随后通常抛出
+ * AbortError / CanceledError（ERR_CANCELED）。这类超时必须计入巡检失败，不能按停机取消跳过写库。
+ */
+function isTaskTimeoutAbort(error, signal) {
+  const reason = signal?.reason;
+  return error?.code === 'TASK_TIMEOUT'
+    || reason?.code === 'TASK_TIMEOUT'
+    || ((error?.name === 'AbortError' || error?.name === 'CanceledError' || error?.code === 'ERR_CANCELED')
+      && reason?.code === 'TASK_TIMEOUT');
+}
+
 /** 标记无需重试的地址安全错误，避免内网地址触发长时间退避。 */
 function blockedBacklinkUrlError(message) {
   const error = new Error(message);
@@ -291,7 +303,9 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
 
     return updateBacklinkStatus(link, 'lost', targetUrl, { ...options, incrementLostCount: true });
   } catch (error) {
-    throwIfAborted(options.signal);
+    const timedOut = isTaskTimeoutAbort(error, options.signal);
+    // 只有服务停机等非超时取消才跳过写库；超时必须留下异常状态，避免状态假死。
+    if (options.signal?.aborted && !timedOut) throwIfAborted(options.signal);
     if (error.code === 'BACKLINK_URL_BLOCKED') {
       await PartnerModel.touchBacklinkCheck(link.id);
       notifyChanged(options);
@@ -303,7 +317,7 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
         reason: error.message
       };
     }
-    if (isProtectedResponse(error.response?.status, error.response?.data)) {
+    if (!timedOut && isProtectedResponse(error.response?.status, error.response?.data)) {
       return updateBacklinkStatus(link, 'protected', targetUrl, options);
     }
     const failedCount = Number(link.failed_check_count || 0) + 1;
@@ -316,13 +330,14 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
       failed_check_count: failedCount,
       lost_count: Number(link.lost_count || 0),
       checked_url: targetUrl,
-      error: error.message
+      error: timedOut ? '连接超时（任务超过 15 秒）' : error.message
     };
   }
 }
 
 async function recordBacklinkCheckError(link, error, options = {}) {
-  throwIfAborted(options.signal);
+  const timedOut = isTaskTimeoutAbort(error, options.signal);
+  if (options.signal?.aborted && !timedOut) throwIfAborted(options.signal);
   const failedCount = Number(link.failed_check_count || 0) + 1;
   const status = failedCount >= 3 ? 'dead' : 'unreachable';
   await PartnerModel.recordBacklinkFailure(link.id, status, failedCount);
@@ -333,7 +348,7 @@ async function recordBacklinkCheckError(link, error, options = {}) {
     failed_check_count: failedCount,
     lost_count: Number(link.lost_count || 0),
     checked_url: link.backlink_url || link.url,
-    error: String(error?.message || error)
+    error: timedOut ? '连接超时（任务超过 15 秒）' : String(error?.message || error)
   };
 }
 
@@ -368,7 +383,8 @@ async function checkAllLinksBatch(links, myMainDomain, mySiteName, concurrency =
       }
       return await checkSingleBacklink(link, myMainDomain, mySiteName, taskOptions);
     } catch (error) {
-      throwIfAborted(signal);
+      const timedOut = isTaskTimeoutAbort(error, signal);
+      if (signal?.aborted && !timedOut) throwIfAborted(signal);
       try {
         return await recordBacklinkCheckError(link, error, taskOptions);
       } catch (persistError) {
