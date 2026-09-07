@@ -3,6 +3,7 @@
 const app = require('./src/app');
 const { PORT } = require('./src/config/env');
 const { closeDatabase } = require('./src/config/database');
+const { dbWriteCoordinator } = require('./src/services/DbWriteCoordinator');
 const { initializeDatabase } = require('./src/models/SystemModel');
 const { initializeAdsTable } = require('./src/models/AdsModel');
 const { initializeMirrorsTable, syncMirrorsToPartners } = require('./src/models/MirrorModel');
@@ -65,6 +66,12 @@ async function shutdown(signal) {
     ]);
     if (!jobsResult.drained) {
       console.warn(`服务停机时仍有 ${jobsResult.pending} 个后台任务未在限时内完成。`);
+    }
+    // 所有 HTTP 连接已关闭、未来任务已取消调度后，才拒绝新的写入并排空当前事务。
+    dbWriteCoordinator.beginShutdown();
+    const writeQueueResult = await dbWriteCoordinator.drain({ timeoutMs: 15000 });
+    if (!writeQueueResult.drained) {
+      console.warn(`服务停机时仍有 ${writeQueueResult.pending} 个 SQLite 写入未在限时内完成。`);
     }
     await closeDatabase();
     process.exit(shutdownExitCode);

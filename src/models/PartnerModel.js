@@ -80,15 +80,15 @@ async function listDeepPingRevivalTargets() {
 }
 
 async function recordPingFailure(id, failedCount, status) {
-  return run("UPDATE partners SET ping_failed_count = ?, ping_status = ?, last_ping_at = datetime('now', 'localtime') WHERE id = ?", [failedCount, status, id]);
+  return run("UPDATE partners SET ping_failed_count = ?, ping_status = ?, last_ping_at = datetime('now', 'localtime') WHERE id = ?", [failedCount, status, id], { priority: 'background', label: 'record ping failure' });
 }
 
 async function recordPingSuccess(id) {
-  return run("UPDATE partners SET ping_failed_count = 0, ping_status = 'ok', last_ping_at = datetime('now', 'localtime') WHERE id = ?", [id]);
+  return run("UPDATE partners SET ping_failed_count = 0, ping_status = 'ok', last_ping_at = datetime('now', 'localtime') WHERE id = ?", [id], { priority: 'background', label: 'record ping success' });
 }
 
 async function touchPingTimestamp(id) {
-  return run("UPDATE partners SET last_ping_at = datetime('now', 'localtime') WHERE id = ?", [id]);
+  return run("UPDATE partners SET last_ping_at = datetime('now', 'localtime') WHERE id = ?", [id], { priority: 'background', label: 'touch ping timestamp' });
 }
 
 async function listBacklinkInspectionTargets() {
@@ -130,26 +130,26 @@ async function listDeepBacklinkRevivalTargets() {
 }
 
 async function recordBacklinkLost(id) {
-  return run("UPDATE partners SET backlink_status = 'lost', failed_check_count = 0, lost_count = lost_count + 1, last_checked_at = datetime('now') WHERE id = ?", [id]);
+  return run("UPDATE partners SET backlink_status = 'lost', failed_check_count = 0, lost_count = lost_count + 1, last_checked_at = datetime('now') WHERE id = ?", [id], { priority: 'background', label: 'record backlink lost' });
 }
 
 async function recordBacklinkStatus(id, status, backlinkUrl = null) {
   if (backlinkUrl) {
-    return run("UPDATE partners SET backlink_url = ?, backlink_status = ?, failed_check_count = 0, last_checked_at = datetime('now') WHERE id = ?", [backlinkUrl, status, id]);
+    return run("UPDATE partners SET backlink_url = ?, backlink_status = ?, failed_check_count = 0, last_checked_at = datetime('now') WHERE id = ?", [backlinkUrl, status, id], { priority: 'background', label: 'record backlink status' });
   }
-  return run("UPDATE partners SET backlink_status = ?, failed_check_count = 0, last_checked_at = datetime('now') WHERE id = ?", [status, id]);
+  return run("UPDATE partners SET backlink_status = ?, failed_check_count = 0, last_checked_at = datetime('now') WHERE id = ?", [status, id], { priority: 'background', label: 'record backlink status' });
 }
 
 async function touchBacklinkCheck(id) {
-  return run("UPDATE partners SET last_checked_at = datetime('now') WHERE id = ?", [id]);
+  return run("UPDATE partners SET last_checked_at = datetime('now') WHERE id = ?", [id], { priority: 'background', label: 'touch backlink check' });
 }
 
 async function recordBacklinkFailure(id, status, failedCount) {
-  return run("UPDATE partners SET backlink_status = ?, failed_check_count = ?, last_checked_at = datetime('now') WHERE id = ?", [status, failedCount, id]);
+  return run("UPDATE partners SET backlink_status = ?, failed_check_count = ?, last_checked_at = datetime('now') WHERE id = ?", [status, failedCount, id], { priority: 'background', label: 'record backlink failure' });
 }
 
 async function markTrafficExempt(id) {
-  return run("UPDATE partners SET backlink_status = 'valid', failed_check_count = 0, last_checked_at = datetime('now') WHERE id = ?", [id]);
+  return run("UPDATE partners SET backlink_status = 'valid', failed_check_count = 0, last_checked_at = datetime('now') WHERE id = ?", [id], { priority: 'background', label: 'mark traffic exempt' });
 }
 
 async function getPublicLists() {
@@ -333,7 +333,7 @@ async function syncPartnersFromCsv(items) {
       }
     }
     return { inserted, updated, total: items.length };
-  });
+  }, { priority: 'background', label: 'sync partners from csv', maxWaitMs: 120000 });
 }
 
 function listPartnersForExport() {

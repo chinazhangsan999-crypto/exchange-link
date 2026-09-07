@@ -120,7 +120,7 @@ async function replaceMirrorsFromCsv(rows) {
       );
     }
     return { inserted: mirrors.length, total: mirrors.length };
-  });
+  }, { priority: 'background', label: 'replace mirrors from csv', maxWaitMs: 120000 });
 }
 
 /** CSV 全量同步：当前 CSV 即节点事实源，未出现在 CSV 的旧节点会被移除。 */
@@ -151,7 +151,7 @@ async function syncMirrorsFromCsv(rows) {
       SELECT 1 FROM desired_mirror_urls desired WHERE desired.url = mirrors.url
     )`);
     return { inserted, updated, deleted: removed.changes };
-  });
+  }, { priority: 'background', label: 'sync mirrors from csv', maxWaitMs: 120000 });
 }
 
 /**
@@ -192,7 +192,7 @@ async function syncMirrorsToPartners() {
       SELECT 1 FROM desired_internal_partner_ids desired WHERE desired.id = partners.id
     )`);
     return { inserted, updated, deleted: deleted.changes };
-  });
+  }, { priority: 'background', label: 'sync mirrors to partners', maxWaitMs: 120000 });
 }
 
 module.exports = {

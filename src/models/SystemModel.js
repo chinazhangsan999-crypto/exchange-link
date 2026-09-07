@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const { run, get, all, withTransaction } = require('../config/database');
+const { run, get, all, withTransaction, writeGet } = require('../config/database');
 const { INITIAL_ADMIN_PASSWORD } = require('../config/env');
 
 const CONFIG_DEFAULTS = {
@@ -131,8 +131,8 @@ async function deleteCategory(id) {
 }
 
 async function runDatabaseMaintenance() {
-  const checkpoint = await get('PRAGMA wal_checkpoint(TRUNCATE)');
-  await run('PRAGMA optimize');
+  const checkpoint = await writeGet('PRAGMA wal_checkpoint(TRUNCATE)', [], { priority: 'maintenance', label: 'sqlite wal checkpoint' });
+  await run('PRAGMA optimize', [], { priority: 'maintenance', label: 'sqlite optimize' });
   return { checkpoint };
 }
 

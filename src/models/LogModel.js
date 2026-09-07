@@ -23,7 +23,7 @@ async function cleanupTableInBatches(target, cutoff) {
         SELECT id FROM ${target.table}
         WHERE ${target.timestampColumn} < ?
         LIMIT ${LOG_DELETE_BATCH_SIZE}
-      )`, [cutoff]);
+      )`, [cutoff], { priority: 'maintenance', label: `cleanup ${target.table}` });
 
     if (!result.changes) break;
     deleted += result.changes;
@@ -57,8 +57,10 @@ async function cleanupOldLogs() {
 }
 
 async function createClaimToken({ tokenHash, partnerId, ip, ttlSeconds, startedAtMs, referer }) {
-  await run("DELETE FROM inflow_claim_tokens WHERE expires_at < datetime('now')");
-  return run("INSERT INTO inflow_claim_tokens(token_hash, partner_id, ip, expires_at, started_at_ms, referer) VALUES (?, ?, ?, datetime('now', ?), ?, ?)", [tokenHash, partnerId, ip, `+${ttlSeconds} seconds`, startedAtMs, referer || '']);
+  return withTransaction(async transaction => {
+    await transaction.run("DELETE FROM inflow_claim_tokens WHERE expires_at < datetime('now')");
+    return transaction.run("INSERT INTO inflow_claim_tokens(token_hash, partner_id, ip, expires_at, started_at_ms, referer) VALUES (?, ?, ?, datetime('now', ?), ?, ?)", [tokenHash, partnerId, ip, `+${ttlSeconds} seconds`, startedAtMs, referer || '']);
+  }, { priority: 'traffic', label: 'create inflow claim' });
 }
 
 async function getValidClaimTokenHash(tokenHash) {
@@ -90,13 +92,13 @@ async function processTrackPing({ tokenHash, claim, clientIp, userAgent }) {
       }
     }
     return { alreadyUsed: false, newlyCounted: !duplicated, autoApproved };
-  });
+  }, { priority: 'traffic', label: 'record inbound ping' });
 }
 
 async function recordOutbound(linkId, clientIp) {
   return withTransaction(async transaction => {
     await transaction.run("INSERT INTO outbound_logs(link_id, client_ip, created_at) VALUES (?, ?, datetime('now'))", [linkId, clientIp]);
-  });
+  }, { priority: 'traffic', label: 'record outbound click' });
 }
 
 async function getOverviewTraffic() {
@@ -147,7 +149,7 @@ async function clearPartnerTraffic(partnerId) {
       outbound: outbound.changes,
       claims: claims.changes
     };
-  });
+  }, { priority: 'interactive', label: 'clear partner traffic' });
 }
 
 async function getPartnerAnalytics(partnerId) {

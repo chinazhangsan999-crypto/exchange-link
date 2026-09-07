@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const path = require('path');
+const { dbWriteCoordinator } = require('../services/DbWriteCoordinator');
 const jwt = require('jsonwebtoken');
 const svgCaptcha = require('svg-captcha');
 const { Mutex } = require('async-mutex');
@@ -168,7 +169,11 @@ async function trackInflow(req, res, next) {
 }
 
 function health(req, res) {
-  return res.status(200).json({ status: 'ok', timestamp: Date.now() });
+  return res.status(200).json({
+    status: 'ok',
+    timestamp: Date.now(),
+    dbWriteQueue: dbWriteCoordinator.getStats()
+  });
 }
 
 function headRoot(req, res) {
