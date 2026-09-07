@@ -36,7 +36,7 @@ const PUBLIC_LINK_QUERY = `SELECT
   ) recent ON recent.link_id = p.id`;
 
 const ADMIN_LINK_QUERY = `SELECT
-  p.id, p.name, p.domain, p.url, p.category, p.description, p.contact, p.priority,
+  p.id, p.name, p.domain, p.url, p.category, p.description, p.contact, p.source_marker, p.priority,
   p.is_approved, p.is_whitelisted, p.is_exempt, p.backlink_status, p.backlink_url, p.last_checked_at,
   p.failed_check_count, p.failed_check_count AS check_fail_count,
   p.lost_count, p.ping_exempt, p.ping_failed_count, p.ping_status,
@@ -55,8 +55,8 @@ const VISIBLE_FILTER = "p.is_approved = 1 AND COALESCE(p.backlink_status, 'valid
 
 async function listInflowCandidates({ includeUrl = false } = {}) {
   return all(includeUrl
-    ? 'SELECT id, name, domain, url FROM partners WHERE is_approved IN (0, 1)'
-    : 'SELECT id, domain FROM partners WHERE is_approved IN (0, 1)');
+    ? 'SELECT id, name, domain, url, source_marker FROM partners WHERE is_approved IN (0, 1)'
+    : 'SELECT id, domain, source_marker FROM partners WHERE is_approved IN (0, 1)');
 }
 
 async function listPingTargets() {
@@ -223,20 +223,20 @@ async function findAnalyticsPartner(id) {
     FROM partners p WHERE p.id = ?`, [id]);
 }
 
-async function createPendingPartner({ name, domain, url, description, contact, category }) {
-  return run(`INSERT INTO partners(name, domain, url, description, contact, category, is_approved, backlink_status)
-    VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`, [name, domain, url, description, contact, category]);
+async function createPendingPartner({ name, domain, url, description, contact, category, sourceMarker = '' }) {
+  return run(`INSERT INTO partners(name, domain, url, description, contact, category, source_marker, is_approved, backlink_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 0, 'pending')`, [name, domain, url, description, contact, category, sourceMarker]);
 }
 
-async function createApprovedPartner({ name, domain, url, category, backlinkUrl, contact, description, isExempt = 0, pingExempt = 0 }) {
+async function createApprovedPartner({ name, domain, url, category, backlinkUrl, contact, description, sourceMarker = '', isExempt = 0, pingExempt = 0 }) {
   const exempt = Number(isExempt) === 1 ? 1 : 0;
   const connectionExempt = Number(pingExempt) === 1 ? 1 : 0;
-  return run(`INSERT INTO partners(name, domain, url, category, backlink_url, contact, description, is_approved, is_exempt, ping_exempt, backlink_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`, [name, domain, url, category, backlinkUrl, contact, description, exempt, connectionExempt, exempt ? 'valid' : 'pending']);
+  return run(`INSERT INTO partners(name, domain, url, category, backlink_url, contact, description, source_marker, is_approved, is_exempt, ping_exempt, backlink_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`, [name, domain, url, category, backlinkUrl, contact, description, sourceMarker, exempt, connectionExempt, exempt ? 'valid' : 'pending']);
 }
 
 async function updatePartner(id, changes) {
-  const allowed = ['name', 'category', 'description', 'contact', 'url', 'domain', 'backlink_url', 'priority', 'is_exempt', 'ping_exempt'];
+  const allowed = ['name', 'category', 'description', 'contact', 'url', 'domain', 'backlink_url', 'source_marker', 'priority', 'is_exempt', 'ping_exempt'];
   const fields = [];
   const values = [];
   for (const key of allowed) {
@@ -291,29 +291,40 @@ async function resetCheckStatus(id) {
     WHERE id = ?`, [id]);
 }
 
-/** CSV 为增量控制源：按 URL 更新或新增，但绝不删除人工申请的数据。 */
+/** CSV 为增量控制源：按规范化主域名更新或新增，但绝不删除人工申请的数据。 */
 async function syncPartnersFromCsv(items) {
   return withTransaction(async ({ run: txRun, get: txGet }) => {
     let inserted = 0;
     let updated = 0;
     for (const item of items) {
-      const existing = await txGet('SELECT id FROM partners WHERE url = ? LIMIT 1', [item.url]);
+      // 兼容历史上保存过子域名的记录；更新时会将它们收敛为主域名。
+      const existing = await txGet(`SELECT id FROM partners
+        WHERE lower(domain) = lower(?) OR lower(domain) LIKE lower(?)
+        ORDER BY CASE WHEN lower(domain) = lower(?) THEN 0 ELSE 1 END, id ASC
+        LIMIT 1`, [item.domain, `%.${item.domain}`, item.domain]);
+      if (item.sourceMarker) {
+        const markerOwner = await txGet(
+          'SELECT id, domain FROM partners WHERE source_marker = ? AND id <> ? LIMIT 1',
+          [item.sourceMarker, existing?.id || -1]
+        );
+        if (markerOwner) throw new Error(`来路识别标记已被 ${markerOwner.domain} 使用：${item.sourceMarker}`);
+      }
       if (existing) {
         await txRun(`UPDATE partners
-          SET name = ?, domain = ?, category = ?, contact = ?, backlink_url = ?,
-              description = ?, priority = ?, is_approved = ?
+          SET name = ?, url = ?, domain = ?, category = ?, contact = ?, backlink_url = ?,
+              description = ?, source_marker = ?, priority = ?, is_approved = ?
           WHERE id = ?`, [
-          item.name, item.domain, item.category, item.contact, item.backlinkUrl,
-          item.description, item.priority, item.status, existing.id
+          item.name, item.url, item.domain, item.category, item.contact, item.backlinkUrl,
+          item.description, item.sourceMarker, item.priority, item.status, existing.id
         ]);
         updated += 1;
       } else {
         await txRun(`INSERT INTO partners(
             name, domain, url, category, contact, backlink_url, description,
-            priority, is_approved, backlink_status
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`, [
+            source_marker, priority, is_approved, backlink_status
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`, [
           item.name, item.domain, item.url, item.category, item.contact,
-          item.backlinkUrl, item.description, item.priority, item.status
+          item.backlinkUrl, item.description, item.sourceMarker, item.priority, item.status
         ]);
         inserted += 1;
       }
@@ -323,7 +334,7 @@ async function syncPartnersFromCsv(items) {
 }
 
 function listPartnersForExport() {
-  return all(`SELECT name, url, category, contact, backlink_url, description,
+  return all(`SELECT name, url, category, contact, backlink_url, description, source_marker,
       priority, is_approved
     FROM partners
     ORDER BY priority DESC, id ASC`);

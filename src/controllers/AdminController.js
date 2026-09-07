@@ -9,7 +9,7 @@ const UAParser = require('ua-parser-js');
 const { ZipArchive } = require('archiver');
 const { parse: parseCsv } = require('csv-parse/sync');
 const { ADMIN_JWT_SECRET } = require('../config/env');
-const { parseHostname, matchesPartnerDomain } = require('../utils/network');
+const { parseHostname, matchesPartnerDomain, normalizePartnerUrl, normalizeSourceMarker } = require('../utils/network');
 const { normalizeUrl, normalizeAnalyticsScriptUrl } = require('../utils/url');
 const { ok, fail, safeApiErrorMessage, isUniqueConstraintError } = require('../utils/http');
 const PartnerModel = require('../models/PartnerModel');
@@ -373,16 +373,16 @@ async function getPartnerAnalytics(req, res) {
 
 async function createPartner(req, res) {
   try {
-    const { name, url, category, backlink_url, contact, description, is_exempt, ping_exempt } = req.body || {};
+    const { name, url, category, backlink_url, contact, description, source_marker, is_exempt, ping_exempt } = req.body || {};
     if (![name, url, category].every(value => String(value || '').trim())) return fail(res, '请完整填写网站名称、网站地址和分类');
-    const cleanUrl = normalizeUrl(url);
-    const cleanDomain = new URL(cleanUrl).hostname.toLowerCase().replace(/^www\./, '');
-    if (!cleanDomain) return fail(res, '无法从网站地址识别域名');
+    const { url: cleanUrl, domain: cleanDomain } = normalizePartnerUrl(url);
     const backlinkUrl = String(backlink_url || '').trim();
     const cleanContact = String(contact || '').trim();
     const cleanDescription = String(description || '').trim();
+    const sourceMarker = normalizeSourceMarker(source_marker);
     if (cleanContact.length > 200) return fail(res, '站长联系方式长度不能超过 200 个字符');
     if (cleanDescription.length > 200) return fail(res, '简易描述长度不能超过 200 个字符');
+    if (sourceMarker && (sourceMarker.length < 4 || sourceMarker.length > 100)) return fail(res, '来路识别标记长度必须为 4 到 100 个字符');
     const result = await PartnerModel.createApprovedPartner({
       name: String(name).trim(),
       domain: cleanDomain,
@@ -391,6 +391,7 @@ async function createPartner(req, res) {
       backlinkUrl: backlinkUrl ? normalizeUrl(backlinkUrl) : null,
       contact: cleanContact,
       description: cleanDescription,
+      sourceMarker,
       isExempt: [true, 1, '1', 'true', 'on'].includes(is_exempt),
       pingExempt: [true, 1, '1', 'true', 'on'].includes(ping_exempt)
     });
@@ -398,6 +399,7 @@ async function createPartner(req, res) {
     return ok(res, { id: result.id }, '友链已新增');
   } catch (error) {
     console.error('新增友链失败：', error);
+    if (/source_marker/i.test(String(error?.message || ''))) return fail(res, '该来路识别标记已被其他友链使用', 409);
     if (isUniqueConstraintError(error)) return fail(res, '该来源域名已存在', 409);
     return fail(res, safeApiErrorMessage(error), 500);
   }
@@ -420,19 +422,20 @@ async function updatePartner(req, res) {
     textField('category', '所属分类', 50);
     textField('description', '简易描述', 200);
     textField('contact', '站长联系方式', 200);
+    if (body.source_marker !== undefined) {
+      const sourceMarker = normalizeSourceMarker(body.source_marker);
+      if (sourceMarker && (sourceMarker.length < 4 || sourceMarker.length > 100)) return fail(res, '来路识别标记长度必须为 4 到 100 个字符');
+      changes.source_marker = sourceMarker;
+    }
     if (body.contact === undefined && body.contact_info !== undefined) {
       textField('contact_info', '站长联系方式', 200, 'contact');
     }
     if (body.url !== undefined) {
-      const cleanUrl = normalizeUrl(body.url);
-      const cleanDomain = new URL(cleanUrl).hostname.toLowerCase().replace(/^www\./, '');
-      if (!cleanDomain) return fail(res, '无法从网站地址识别域名');
+      const { url: cleanUrl, domain: cleanDomain } = normalizePartnerUrl(body.url);
       changes.url = cleanUrl;
       changes.domain = cleanDomain;
     } else if (body.domain !== undefined) {
-      const domain = String(body.domain).trim().toLowerCase()
-        .replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
-      if (!domain) return fail(res, '来源域名不能为空');
+      const { domain } = normalizePartnerUrl(body.domain);
       changes.domain = domain;
     }
     if (body.backlink_url !== undefined) {
@@ -457,6 +460,7 @@ async function updatePartner(req, res) {
     return ok(res, null, '修改成功');
   } catch (error) {
     console.error('修改友链失败：', error);
+    if (/source_marker/i.test(String(error?.message || ''))) return fail(res, '该来路识别标记已被其他友链使用', 409);
     if (isUniqueConstraintError(error)) return fail(res, '该来源域名已存在', 409);
     return fail(res, safeApiErrorMessage(error), 500);
   }
@@ -951,7 +955,7 @@ async function syncMirrorsCsv(req, res) {
 }
 
 const MATRIX_HEADERS = {
-  partners: ['网站名称', '网站地址(URL)', '所属分类', '站长联系方式', '反链检测网址', '简易描述', '排序权重', '状态(1/0)', '是否同步(1/0)'],
+  partners: ['网站名称', '网站地址(URL)', '所属分类', '站长联系方式', '反链检测网址', '简易描述', '来路识别标记', '排序权重', '状态(1/0)', '是否同步(1/0)'],
   ads: ['广告类型', '广告位置', '广告标题', '广告介绍', '自定义代码', '图片链接', '跳转链接', '排序权重', '状态(1/0)', '是否同步(1/0)'],
   mirrors: ['测速名', '友链霸榜名', 'URL', '状态(1/0)', '是否同步(1/0)']
 };
@@ -1022,28 +1026,41 @@ function ensureUnique(items, selector, label) {
 async function syncPartnersMatrix(req, res) {
   try {
     const sourceRows = await fetchMatrixCsv('csv_url_partners', 'partners');
-    const items = sourceRows.map(row => {
-      const url = normalizeMatrixUrl(row['网站地址(URL)'], '网站地址', row.__line);
+    const rowsByDomain = new Map();
+    const duplicateDomains = new Set();
+    const markers = new Map();
+    for (const row of sourceRows) {
+      const normalized = normalizePartnerUrl(row['网站地址(URL)']);
       const name = row['网站名称'];
       const category = row['所属分类'];
       if (!name) throw new Error(`第 ${row.__line} 行：网站名称不能为空`);
       if (!category) throw new Error(`第 ${row.__line} 行：所属分类不能为空`);
-      return {
+      const sourceMarker = normalizeSourceMarker(row['来路识别标记']);
+      if (sourceMarker && (sourceMarker.length < 4 || sourceMarker.length > 100)) {
+        throw new Error(`第 ${row.__line} 行：来路识别标记长度必须为 4 到 100 个字符`);
+      }
+      if (sourceMarker && markers.has(sourceMarker) && markers.get(sourceMarker) !== normalized.domain) {
+        throw new Error(`第 ${row.__line} 行：来路识别标记重复：${sourceMarker}`);
+      }
+      if (sourceMarker) markers.set(sourceMarker, normalized.domain);
+      if (rowsByDomain.has(normalized.domain)) duplicateDomains.add(normalized.domain);
+      rowsByDomain.set(normalized.domain, {
         name,
-        url,
-        domain: parseHostname(url),
+        url: normalized.url,
+        domain: normalized.domain,
         category,
         contact: row['站长联系方式'],
         backlinkUrl: normalizeMatrixUrl(row['反链检测网址'], '反链检测网址', row.__line, false) || null,
         description: row['简易描述'],
+        sourceMarker,
         priority: normalizeMatrixInteger(row['排序权重'], '排序权重', row.__line),
         status: strictBinaryFlag(row['状态(1/0)'], '状态', row.__line)
-      };
-    });
-    ensureUnique(items, item => item.url, '网站地址');
+      });
+    }
+    const items = [...rowsByDomain.values()];
     const result = await PartnerModel.syncPartnersFromCsv(items);
     CacheService.clearPublicCache();
-    return ok(res, { type: 'partners', ...result }, `友链新增 ${result.inserted} 条，更新 ${result.updated} 条`);
+    return ok(res, { type: 'partners', ...result, duplicateDomains: [...duplicateDomains] }, `友链新增 ${result.inserted} 条，更新 ${result.updated} 条${duplicateDomains.size ? `；合并重复域名 ${duplicateDomains.size} 条` : ''}`);
   } catch (error) {
     console.error('CSV 矩阵同步友链失败：', error);
     return fail(res, safeApiErrorMessage(error, '友链同步失败'), 400);
@@ -1124,7 +1141,7 @@ async function buildMatrixExports() {
   const files = {
     partners: createCsv(MATRIX_HEADERS.partners, partners.map(item => [
       item.name, item.url, item.category, item.contact, item.backlink_url,
-      item.description, item.priority, item.is_approved, 1
+      item.description, item.source_marker, item.priority, item.is_approved, 1
     ])),
     ads: createCsv(MATRIX_HEADERS.ads, ads.map(item => [
       item.ad_type, item.ad_position, item.title, item.description, item.ad_code,

@@ -195,6 +195,17 @@
     label.innerHTML = '<input name="ping_exempt" type="hidden" value="0"><input name="ping_exempt" type="checkbox" value="1"><span>🛡️ 连通性免检（不进行 HEAD/GET 探活，适用于 OpenAI、GitHub 等）</span>';
     grid.append(label);
   }
+  function installCreateSourceMarkerField() {
+    const form = document.querySelector('#add-form');
+    const grid = form?.querySelector('.form-grid');
+    if (!form || !grid || form.elements.source_marker) return;
+    const label = document.createElement('label');
+    label.className = 'full source-marker-option';
+    label.innerHTML = '<span>来路识别标记（选填）</span><input name="source_marker" maxlength="100" placeholder="例如：woshini123，用于多个域名归属同一友链"><small class="hint">优先按主域名识别；未命中时才匹配完整 Referer 地址。标记区分大小写。</small>';
+    const priority = grid.querySelector('input[name="priority"]')?.closest('label');
+    if (priority) grid.insertBefore(label, priority);
+    else grid.append(label);
+  }
   function installEditExemptionField() {
     document.addEventListener('click', event => {
       const button = event.target.closest('#partner-body .edit[data-id]');
@@ -225,7 +236,7 @@
   }
   function ensureTableStructure() { const table = document.querySelector('#partners table'); if (!table) return; table.className = 'admin-table partner-table'; table.querySelector('colgroup')?.remove(); table.insertAdjacentHTML('afterbegin', '<colgroup><col class="partner-col-site"><col class="partner-col-category"><col class="partner-col-contact"><col class="partner-col-backlink"><col class="partner-col-ping"><col class="partner-col-traffic"><col class="partner-col-priority"><col class="partner-col-checked"><col class="partner-col-actions"></colgroup>'); table.querySelector('thead').innerHTML = '<tr><th>网站 / 域名</th><th>分类</th><th class="contact-header">站长联系方式</th><th>巡检状态</th><th class="ping-header">连通状态</th><th class="sort-header" data-sort="score_24h">带量 ↕</th><th class="sort-header" data-sort="priority">权重 ↕</th><th>最近巡检</th><th>操作</th></tr>'; }
   function loadStyles() { if (!document.querySelector('link[href^="/admin/tables.css"]')) { const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/admin/tables.css?v=20260831-1'; document.head.append(link); } if (!document.querySelector('link[href^="/admin/table-fixes.css"]')) { const fixes = document.createElement('link'); fixes.rel = 'stylesheet'; fixes.href = '/admin/table-fixes.css?v=20260831-1'; document.head.append(fixes); } if (!document.querySelector('link[href^="/admin/traffic-cell.css"]')) { const traffic = document.createElement('link'); traffic.rel = 'stylesheet'; traffic.href = '/admin/traffic-cell.css?v=20260902-1'; document.head.append(traffic); } }
-  loadStyles(); ensureTableStructure(); installSort(); installToolbar(); installCreateExemptionField(); installCreatePingExemptionField(); installEditExemptionField(); window.loadPartners = loadPartners;
+  loadStyles(); ensureTableStructure(); installSort(); installToolbar(); installCreateExemptionField(); installCreatePingExemptionField(); installCreateSourceMarkerField(); installEditExemptionField(); window.loadPartners = loadPartners;
   document.querySelector('#partner-q')?.addEventListener('input', () => { clearTimeout(window.__partnerSearchTimer); window.__partnerSearchTimer = setTimeout(loadPartners, 180); });
   window.addEventListener('admin:authenticated', loadPartners); setTimeout(() => { if (token()) loadPartners(); }, 450);
 })();

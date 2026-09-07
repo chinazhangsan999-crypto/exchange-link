@@ -1,4 +1,5 @@
 const net = require('net');
+const { getDomain } = require('tldts');
 
 /** 安全解析 URL / Referer 的主机名，非法值与空值均返回空字符串。 */
 function parseHostname(value) {
@@ -8,6 +9,42 @@ function parseHostname(value) {
   } catch {
     return '';
   }
+}
+
+/**
+ * 返回可注册主域名（例如 blog.example.co.uk -> example.co.uk）。
+ * IP、localhost 等不适用公共后缀规则时保留原主机名。
+ */
+function normalizeRegisteredDomain(hostname) {
+  const normalizedHost = String(hostname || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\.$/, '')
+    .replace(/^www\./, '');
+  if (!normalizedHost) return '';
+  return getDomain(normalizedHost, { allowPrivateDomains: true }) || normalizedHost;
+}
+
+/** 统一解析友链地址：补全协议、保留跳转 URL，并取得可注册主域名。 */
+function normalizePartnerUrl(value) {
+  let raw = String(value || '').trim();
+  if (!raw) throw new Error('网站地址不能为空');
+  if (!/^https?:\/\//i.test(raw)) raw = `https://${raw}`;
+
+  const parsed = new URL(raw);
+  if (!/^https?:$/.test(parsed.protocol)) throw new Error('网站地址仅支持 HTTP 或 HTTPS');
+  const hostname = parsed.hostname.toLowerCase().replace(/\.$/, '');
+  if (!hostname) throw new Error('无法从网站地址识别域名');
+
+  return {
+    url: parsed.toString().replace(/\/$/, ''),
+    domain: normalizeRegisteredDomain(hostname)
+  };
+}
+
+/** 来路标记只去除空白，保留大小写；URL 路径和查询参数可能区分大小写。 */
+function normalizeSourceMarker(value) {
+  return String(value || '').trim();
 }
 
 /** 已登记根域名匹配自身或任意子域名，避免 evil-example.com 等伪匹配。 */
@@ -90,6 +127,9 @@ function isSensitiveNetworkIp(value) {
 module.exports = {
   getClientIp,
   parseHostname,
+  normalizeRegisteredDomain,
+  normalizePartnerUrl,
+  normalizeSourceMarker,
   matchesPartnerDomain,
   isSensitiveNetworkIp
 };

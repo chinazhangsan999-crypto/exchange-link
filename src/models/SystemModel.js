@@ -142,7 +142,7 @@ async function initializeDatabase() {
   await run('PRAGMA synchronous = NORMAL');
   await run(`CREATE TABLE IF NOT EXISTS partners (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, domain TEXT NOT NULL UNIQUE,
-    url TEXT NOT NULL, category TEXT NOT NULL, description TEXT DEFAULT '', contact TEXT DEFAULT '', priority INTEGER DEFAULT 0,
+    url TEXT NOT NULL, category TEXT NOT NULL, description TEXT DEFAULT '', contact TEXT DEFAULT '', source_marker TEXT NOT NULL DEFAULT '', priority INTEGER DEFAULT 0,
     is_internal INTEGER DEFAULT 0, is_whitelisted INTEGER DEFAULT 0, is_exempt INTEGER DEFAULT 0,
     is_approved INTEGER DEFAULT 0,
     backlink_status TEXT DEFAULT 'pending', backlink_url TEXT DEFAULT NULL, last_checked_at DATETIME DEFAULT NULL, failed_check_count INTEGER DEFAULT 0, lost_count INTEGER DEFAULT 0,
@@ -228,6 +228,7 @@ async function initializeDatabase() {
     ['is_whitelisted', 'ALTER TABLE partners ADD COLUMN is_whitelisted INTEGER DEFAULT 0'],
     ['is_exempt', 'ALTER TABLE partners ADD COLUMN is_exempt INTEGER DEFAULT 0'],
     ['contact', "ALTER TABLE partners ADD COLUMN contact TEXT DEFAULT ''"],
+    ['source_marker', "ALTER TABLE partners ADD COLUMN source_marker TEXT NOT NULL DEFAULT ''"],
     ['backlink_status', "ALTER TABLE partners ADD COLUMN backlink_status TEXT DEFAULT 'pending'"],
     ['backlink_url', 'ALTER TABLE partners ADD COLUMN backlink_url TEXT DEFAULT NULL'],
     ['last_checked_at', 'ALTER TABLE partners ADD COLUMN last_checked_at DATETIME DEFAULT NULL'],
@@ -242,6 +243,7 @@ async function initializeDatabase() {
     if (!partnerColumns.some(item => item.name === column)) await run(sql);
   }
   await run('CREATE INDEX IF NOT EXISTS idx_partners_internal ON partners(is_internal)');
+  await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_partners_source_marker_unique ON partners(source_marker) WHERE source_marker <> ''");
   await run('CREATE INDEX IF NOT EXISTS idx_partners_whitelisted ON partners(is_whitelisted)');
   await run('CREATE INDEX IF NOT EXISTS idx_partners_exempt ON partners(is_exempt, is_approved)');
   await run('CREATE INDEX IF NOT EXISTS idx_partners_ping_exempt ON partners(ping_exempt, is_approved)');

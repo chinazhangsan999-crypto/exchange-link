@@ -10,7 +10,7 @@ const {
   GUEST_JWT_SECRET,
   TRAFFIC_DEBUG
 } = require('../config/env');
-const { getClientIp, parseHostname, matchesPartnerDomain } = require('../utils/network');
+const { getClientIp, parseHostname, matchesPartnerDomain, normalizePartnerUrl, normalizeRegisteredDomain, normalizeSourceMarker } = require('../utils/network');
 const { normalizeUrl } = require('../utils/url');
 const { ok, fail, safeApiErrorMessage, isUniqueConstraintError } = require('../utils/http');
 const {
@@ -125,21 +125,27 @@ async function trackInflow(req, res, next) {
       return next();
     }
 
-    const domain = parseHostname(effectiveReferer);
+    const refererUrl = new URL(effectiveReferer);
+    const domain = normalizeRegisteredDomain(refererUrl.hostname);
     const candidates = await PartnerModel.listInflowCandidates();
-    const partner = candidates.find(item => matchesPartnerDomain(domain, item.domain));
-    if (!partner) {
+    // 兼容历史上曾保存子域名的记录；新写入统一使用可注册主域名。
+    const partner = candidates.find(item => domain === normalizeRegisteredDomain(item.domain));
+    const markerPartner = partner || candidates.find(item => {
+      const marker = normalizeSourceMarker(item.source_marker);
+      return marker.length >= 4 && effectiveReferer.includes(marker);
+    });
+    if (!markerPartner) {
       return next();
     }
     const now = Date.now();
-    if (isPartnerVisitRateLimited(partner.id, ip)) {
+    if (isPartnerVisitRateLimited(markerPartner.id, ip)) {
       return next();
     }
 
     const token = crypto.randomBytes(24).toString('base64url');
     await LogModel.createClaimToken({
       tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
-      partnerId: partner.id,
+      partnerId: markerPartner.id,
       ip,
       ttlSeconds: CLAIM_TTL_SECONDS,
       startedAtMs: now,
@@ -412,9 +418,7 @@ async function applyLink(req, res) {
     if (!/^\d{4}$/.test(String(captcha).trim()) || String(captcha).trim() !== expectedCaptcha) {
       return fail(res, '验证码错误或已过期');
     }
-    const cleanUrl = normalizeUrl(url);
-    const domain = new URL(cleanUrl).hostname.toLowerCase().replace(/^www\./, '');
-    if (!domain) return fail(res, '无法从友链地址识别域名');
+    const { url: cleanUrl, domain } = normalizePartnerUrl(url);
     if (String(name).trim().length > 80 || String(description).trim().length > 200 || String(contact).trim().length > 200) {
       return fail(res, '填写内容过长，请精简后重试');
     }
