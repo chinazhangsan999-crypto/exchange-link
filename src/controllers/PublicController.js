@@ -32,7 +32,7 @@ const SystemModel = require('../models/SystemModel');
 const AdModel = require('../models/AdsModel');
 const MirrorModel = require('../models/MirrorModel');
 const CacheService = require('../services/CacheService');
-const { sendAdminAlert, sendSecurityAlertOnce } = require('../services/AlertService');
+const { sendAdminAlert } = require('../services/AlertService');
 
 const CLAIM_TTL_SECONDS = 15 * 60;
 const ANALYTICS_CONFIG_KEYS = [
@@ -122,7 +122,6 @@ async function trackInflow(req, res, next) {
 
     if (!ip || !(await isLegitUser(req, effectiveReferer))) {
       trafficDebug(`拦截原因: ${req.trafficBlockReason || '无法识别客户端 IP'}`);
-      sendSecurityAlertOnce(req.trafficBlockReason || '无法识别客户端 IP', ip);
       return next();
     }
 
@@ -130,12 +129,10 @@ async function trackInflow(req, res, next) {
     const candidates = await PartnerModel.listInflowCandidates();
     const partner = candidates.find(item => matchesPartnerDomain(domain, item.domain));
     if (!partner) {
-      sendSecurityAlertOnce('未登记或伪造 Referer', ip);
       return next();
     }
     const now = Date.now();
     if (isPartnerVisitRateLimited(partner.id, ip)) {
-      sendSecurityAlertOnce('同 IP 对同站点请求过于频繁', ip, partner.id);
       return next();
     }
 

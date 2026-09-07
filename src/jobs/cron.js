@@ -68,7 +68,7 @@ function startJobs() {
 
   deepRevivalTask = cron.schedule('0 4 * * *', () => {
     runTrackedJob('死站深度复活任务', async () => {
-      const sharedOptions = { onDataChanged: CacheService.clearPublicCache };
+      const sharedOptions = { onDataChanged: CacheService.clearPublicCache, sendAdminAlert };
       try {
         await PingService.runDeepPingRevival(sharedOptions);
       } catch (error) {
@@ -96,7 +96,8 @@ function startJobs() {
 
   const pingTimer = setInterval(() => {
     runTrackedJob('定时站点探活', () => PingService.runFullPingInspection({
-      onDataChanged: CacheService.clearPublicCache
+      onDataChanged: CacheService.clearPublicCache,
+      sendAdminAlert
     }));
   }, 2 * 60 * 60 * 1000);
   pingTimer.unref();

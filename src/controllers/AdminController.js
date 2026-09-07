@@ -557,7 +557,8 @@ async function checkLinkHealth(req, res) {
     const link = await PartnerModel.findPingPartner(id);
     if (!link) return fail(res, '友链不存在、未审核或已删除', 404);
     const result = await PingService.pingSingleLink(link, {
-      onDataChanged: CacheService.clearPublicCache
+      onDataChanged: CacheService.clearPublicCache,
+      sendAdminAlert
     });
     return ok(res, { ...result, healthy: !result.error }, result.error ? '站点连通异常' : '站点连通正常');
   } catch (error) {

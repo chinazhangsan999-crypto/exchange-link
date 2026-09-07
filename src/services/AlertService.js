@@ -2,7 +2,6 @@
 
 const axios = require('axios');
 const SystemModel = require('../models/SystemModel');
-const { shouldSendSecurityAlert } = require('../middlewares/rateLimit');
 
 /** 企业微信与 Telegram Webhook 统一告警入口；失败不会阻断主业务。 */
 async function sendAdminAlert(title, contentMarkdown) {
@@ -44,12 +43,4 @@ async function sendAdminAlert(title, contentMarkdown) {
   }
 }
 
-function sendSecurityAlertOnce(reason, ip, targetId = '—') {
-  if (!shouldSendSecurityAlert(reason, ip, targetId)) return;
-  void sendAdminAlert(
-    '⚠️ 流量风控拦截',
-    `> **拦截原因：** ${reason}\n> **来源 IP：** ${ip || '未知'}\n> **目标 ID：** ${targetId}\n> **拦截时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`
-  );
-}
-
-module.exports = { sendAdminAlert, sendSecurityAlertOnce };
+module.exports = { sendAdminAlert };

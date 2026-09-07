@@ -14,6 +14,16 @@ function notifyChanged(options) {
   if (typeof options?.onDataChanged === 'function') options.onDataChanged();
 }
 
+function notifyPingAlert(link, title, content, options) {
+  if (typeof options?.sendAdminAlert !== 'function') return;
+  // 告警通道不可影响探活状态机与数据库写入。
+  void options.sendAdminAlert(title, content);
+}
+
+function pingAlertContext(link, failedCount, error) {
+  return `> **站点名称：** ${link.name || `#${link.id}`}\n> **站点网址：** ${link.url}\n> **连续失败次数：** ${failedCount}/3\n> **失败原因：** ${String(error?.message || error || '未知网络异常')}\n> **检测时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+}
+
 function throwIfAborted(signal) {
   if (!signal?.aborted) return;
   const error = signal.reason instanceof Error ? signal.reason : new Error('探活任务已取消');
@@ -78,6 +88,16 @@ async function persistPingFailure(link, error, options = {}) {
   const status = failedCount >= 3 ? 'unreachable' : (link.ping_status || 'ok');
   await PartnerModel.recordPingFailure(link.id, failedCount, status);
   notifyChanged(options);
+  if (failedCount === 1) {
+    notifyPingAlert(link, '🟡 站点连通性预警', pingAlertContext(link, failedCount, error), options);
+  } else if (failedCount === 3) {
+    notifyPingAlert(
+      link,
+      '🔴 站点连通失效',
+      `${pingAlertContext(link, failedCount, error)}\n> **处理结果：** 前台已自动隐藏，等待后续探活自动恢复。`,
+      options
+    );
+  }
   return {
     id: link.id,
     ping_status: status,
@@ -149,8 +169,17 @@ async function pingSingleLink(link, options = {}) {
     }
 
     const revived = link.ping_status === 'unreachable';
+    const recovered = revived || Number(link.ping_failed_count || 0) > 0;
     await PartnerModel.recordPingSuccess(link.id);
     notifyChanged(options);
+    if (recovered) {
+      notifyPingAlert(
+        link,
+        '🟢 站点连通恢复',
+        `> **站点名称：** ${link.name || `#${link.id}`}\n> **站点网址：** ${link.url}\n> **恢复前失败次数：** ${Number(link.ping_failed_count || 0)}/3\n> **恢复时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n> **处理结果：** 连通状态已恢复正常。`,
+        options
+      );
+    }
     return {
       id: link.id,
       ping_status: 'ok',

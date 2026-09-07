@@ -60,7 +60,7 @@ async function listInflowCandidates({ includeUrl = false } = {}) {
 }
 
 async function listPingTargets() {
-  return all(`SELECT id, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
+  return all(`SELECT id, name, domain, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
     FROM partners
     WHERE is_approved = 1
       AND COALESCE(is_internal, 0) = 0
@@ -70,7 +70,7 @@ async function listPingTargets() {
 }
 
 async function listDeepPingRevivalTargets() {
-  return all(`SELECT id, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
+  return all(`SELECT id, name, domain, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
     FROM partners
     WHERE is_approved = 1
       AND COALESCE(is_internal, 0) = 0
