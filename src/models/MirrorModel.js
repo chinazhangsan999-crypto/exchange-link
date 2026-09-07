@@ -175,14 +175,14 @@ async function syncMirrorsToPartners() {
       if (existing) {
         partnerId = existing.id;
         await txRun(`UPDATE partners SET name = ?, domain = ?, url = ?, category = ?, priority = 999,
-          is_internal = 1, is_approved = 1, backlink_status = 'valid', failed_check_count = 0,
+          is_internal = 1, is_exempt = 1, is_approved = 1, backlink_status = 'valid', failed_check_count = 0,
           ping_status = 'ok', ping_failed_count = 0 WHERE id = ?`,
         [entry.partner_name, domain, url, firstCategory.name, partnerId]);
         updated += 1;
       } else {
-        const result = await txRun(`INSERT INTO partners(name, domain, url, category, priority, is_internal, is_approved,
+        const result = await txRun(`INSERT INTO partners(name, domain, url, category, priority, is_internal, is_exempt, is_approved,
           backlink_status, failed_check_count, ping_status, ping_failed_count)
-          VALUES (?, ?, ?, ?, 999, 1, 1, 'valid', 0, 'ok', 0)`, [entry.partner_name, domain, url, firstCategory.name]);
+          VALUES (?, ?, ?, ?, 999, 1, 1, 1, 'valid', 0, 'ok', 0)`, [entry.partner_name, domain, url, firstCategory.name]);
         partnerId = result.id;
         inserted += 1;
       }

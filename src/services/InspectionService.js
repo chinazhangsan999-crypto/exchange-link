@@ -217,6 +217,15 @@ async function hasIframeBacklink($, baseUrl, cleanDomain, myMainDomain) {
 
 /** 检查单个站点的反链，并持久化巡检结论。 */
 async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options = {}) {
+  if (Number(link.is_exempt) === 1) {
+    return {
+      id: link.id,
+      backlink_status: link.backlink_status || 'valid',
+      failed_check_count: 0,
+      exempted: true,
+      checked_url: null
+    };
+  }
   const domain = String(myMainDomain || '')
     .replace(/^(https?:\/\/)?(www\.)?/i, '')
     .replace(/\/.*$/, '')
@@ -319,6 +328,15 @@ async function checkAllLinksBatch(links, myMainDomain, mySiteName, concurrency =
   const taskTimeoutMs = Math.max(1, Number(options.taskTimeoutMs) || 15000);
   const settled = await runPromisePool(links, poolSize, async link => {
     try {
+      if (Number(link.is_exempt) === 1) {
+        return {
+          id: link.id,
+          backlink_status: link.backlink_status || 'valid',
+          failed_check_count: 0,
+          exempted: true,
+          checked_url: null
+        };
+      }
       if (Number(link.traffic_24h) > 0) {
         await PartnerModel.markTrafficExempt(link.id);
         notifyChanged(options);

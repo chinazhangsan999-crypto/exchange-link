@@ -374,7 +374,7 @@ async function getPartnerAnalytics(req, res) {
 
 async function createPartner(req, res) {
   try {
-    const { name, url, category, backlink_url, contact, description } = req.body || {};
+    const { name, url, category, backlink_url, contact, description, is_exempt } = req.body || {};
     if (![name, url, category].every(value => String(value || '').trim())) return fail(res, '请完整填写网站名称、网站地址和分类');
     const cleanUrl = normalizeUrl(url);
     const cleanDomain = new URL(cleanUrl).hostname.toLowerCase().replace(/^www\./, '');
@@ -391,7 +391,8 @@ async function createPartner(req, res) {
       category: String(category).trim(),
       backlinkUrl: backlinkUrl ? normalizeUrl(backlinkUrl) : null,
       contact: cleanContact,
-      description: cleanDescription
+      description: cleanDescription,
+      isExempt: [true, 1, '1', 'true', 'on'].includes(is_exempt)
     });
     CacheService.clearPublicCache();
     return ok(res, { id: result.id }, '友链已新增');
@@ -442,6 +443,9 @@ async function updatePartner(req, res) {
       const priority = Number(body.priority);
       if (!Number.isInteger(priority) || priority < 0 || priority > 999999) return fail(res, '置顶权重必须是 0 到 999999 的整数');
       changes.priority = priority;
+    }
+    if (body.is_exempt !== undefined) {
+      changes.is_exempt = [true, 1, '1', 'true', 'on'].includes(body.is_exempt) ? 1 : 0;
     }
     if (!Object.keys(changes).length) return fail(res, '没有可修改的字段');
     const result = await PartnerModel.updatePartner(id, changes);
@@ -565,6 +569,31 @@ async function resetLostCount(req, res) {
     return ok(res, null, '掉链统计已重置');
   } catch {
     return fail(res, '重置掉链统计失败', 500);
+  }
+}
+
+async function resetCheckStatus(req, res) {
+  try {
+    const id = Number.parseInt(String(req.params.id || ''), 10);
+    if (!Number.isSafeInteger(id) || id <= 0) return fail(res, '友链编号不合法');
+    const result = await PartnerModel.resetCheckStatus(id);
+    if (!result.changes) return fail(res, '友链不存在', 404);
+    CacheService.clearPublicCache();
+    return ok(res, {
+      id,
+      backlink_status: 'pending',
+      check_status_text: '待检测',
+      failed_check_count: 0,
+      check_fail_count: 0,
+      ping_status: 'ok',
+      ping_status_text: '待探活',
+      ping_failed_count: 0,
+      last_checked_at: null,
+      last_ping_at: null
+    }, '巡检状态已重置');
+  } catch (error) {
+    console.error('重置巡检状态失败：', error);
+    return fail(res, safeApiErrorMessage(error, '重置巡检状态失败'), 500);
   }
 }
 
@@ -1197,6 +1226,7 @@ module.exports = {
   checkLink,
   checkLinkHealth,
   resetLostCount,
+  resetCheckStatus,
   getLogs,
   getCategories,
   createCategory,

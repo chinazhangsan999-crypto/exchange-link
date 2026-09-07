@@ -34,6 +34,7 @@ router.post('/api/admin/links/check-all', AdminController.checkAllLinks);
 router.post('/api/admin/links/:id/check', AdminController.checkLink);
 router.post('/api/admin/links/:id/ping', AdminController.checkLinkHealth);
 router.post('/api/admin/links/:id/reset-lost-count', AdminController.resetLostCount);
+router.post('/api/admin/partners/:id/reset-check', AdminController.resetCheckStatus);
 router.get('/api/admin/logs', AdminController.getLogs);
 router.get('/api/admin/categories', AdminController.getCategories);
 router.post('/api/admin/categories', AdminController.createCategory);

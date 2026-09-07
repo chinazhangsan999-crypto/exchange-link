@@ -141,7 +141,7 @@ async function initializeDatabase() {
   await run(`CREATE TABLE IF NOT EXISTS partners (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, domain TEXT NOT NULL UNIQUE,
     url TEXT NOT NULL, category TEXT NOT NULL, description TEXT DEFAULT '', contact TEXT DEFAULT '', priority INTEGER DEFAULT 0,
-    is_internal INTEGER DEFAULT 0, is_whitelisted INTEGER DEFAULT 0,
+    is_internal INTEGER DEFAULT 0, is_whitelisted INTEGER DEFAULT 0, is_exempt INTEGER DEFAULT 0,
     is_approved INTEGER DEFAULT 0,
     backlink_status TEXT DEFAULT 'pending', backlink_url TEXT DEFAULT NULL, last_checked_at DATETIME DEFAULT NULL, failed_check_count INTEGER DEFAULT 0, lost_count INTEGER DEFAULT 0,
     ping_failed_count INTEGER DEFAULT 0, ping_status TEXT DEFAULT 'ok', last_ping_at DATETIME DEFAULT NULL,
@@ -224,6 +224,7 @@ async function initializeDatabase() {
     ['priority', 'ALTER TABLE partners ADD COLUMN priority INTEGER DEFAULT 0'],
     ['is_internal', 'ALTER TABLE partners ADD COLUMN is_internal INTEGER DEFAULT 0'],
     ['is_whitelisted', 'ALTER TABLE partners ADD COLUMN is_whitelisted INTEGER DEFAULT 0'],
+    ['is_exempt', 'ALTER TABLE partners ADD COLUMN is_exempt INTEGER DEFAULT 0'],
     ['contact', "ALTER TABLE partners ADD COLUMN contact TEXT DEFAULT ''"],
     ['backlink_status', "ALTER TABLE partners ADD COLUMN backlink_status TEXT DEFAULT 'pending'"],
     ['backlink_url', 'ALTER TABLE partners ADD COLUMN backlink_url TEXT DEFAULT NULL'],
@@ -239,10 +240,15 @@ async function initializeDatabase() {
   }
   await run('CREATE INDEX IF NOT EXISTS idx_partners_internal ON partners(is_internal)');
   await run('CREATE INDEX IF NOT EXISTS idx_partners_whitelisted ON partners(is_whitelisted)');
-  await run("UPDATE partners SET backlink_status = 'pending' WHERE (last_checked_at IS NULL OR last_checked_at = '') AND backlink_status = 'valid'");
-  await run(`CREATE TRIGGER IF NOT EXISTS trg_partners_unchecked_pending
+  await run('CREATE INDEX IF NOT EXISTS idx_partners_exempt ON partners(is_exempt, is_approved)');
+  await run('UPDATE partners SET is_exempt = 1 WHERE is_internal = 1 AND COALESCE(is_exempt, 0) <> 1');
+  await run("UPDATE partners SET backlink_status = 'pending' WHERE COALESCE(is_exempt, 0) = 0 AND (last_checked_at IS NULL OR last_checked_at = '') AND backlink_status = 'valid'");
+  await run('DROP TRIGGER IF EXISTS trg_partners_unchecked_pending');
+  await run(`CREATE TRIGGER trg_partners_unchecked_pending
     AFTER INSERT ON partners
-    WHEN NEW.last_checked_at IS NULL AND (NEW.backlink_status IS NULL OR NEW.backlink_status = 'valid')
+    WHEN COALESCE(NEW.is_exempt, 0) = 0
+      AND NEW.last_checked_at IS NULL
+      AND (NEW.backlink_status IS NULL OR NEW.backlink_status = 'valid')
     BEGIN
       UPDATE partners SET backlink_status = 'pending' WHERE id = NEW.id;
     END`);

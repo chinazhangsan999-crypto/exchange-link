@@ -37,8 +37,9 @@ const PUBLIC_LINK_QUERY = `SELECT
 
 const ADMIN_LINK_QUERY = `SELECT
   p.id, p.name, p.domain, p.url, p.category, p.description, p.contact, p.priority,
-  p.is_approved, p.is_whitelisted, p.backlink_status, p.backlink_url, p.last_checked_at,
-  p.failed_check_count, p.lost_count, p.ping_failed_count, p.ping_status,
+  p.is_approved, p.is_whitelisted, p.is_exempt, p.backlink_status, p.backlink_url, p.last_checked_at,
+  p.failed_check_count, p.failed_check_count AS check_fail_count,
+  p.lost_count, p.ping_failed_count, p.ping_status,
   p.last_ping_at, p.created_at,
   COALESCE(recent.score_24h, 0) AS score_24h,
   COALESCE(inbound_total.total_score, 0) AS total_score,
@@ -89,7 +90,7 @@ async function touchPingTimestamp(id) {
 }
 
 async function listBacklinkInspectionTargets() {
-  return all(`SELECT p.id, p.name, p.url, p.backlink_url, p.backlink_status,
+  return all(`SELECT p.id, p.name, p.url, p.backlink_url, p.backlink_status, p.is_exempt,
     p.failed_check_count, p.lost_count, COALESCE(recent.rolling_ips, 0) AS traffic_24h
     FROM partners p
     LEFT JOIN (
@@ -100,6 +101,7 @@ async function listBacklinkInspectionTargets() {
     ) recent ON recent.link_id = p.id
     WHERE p.is_approved = 1
       AND COALESCE(p.is_internal, 0) = 0
+      AND COALESCE(p.is_exempt, 0) = 0
       AND NOT (
         COALESCE(p.failed_check_count, 0) > 15
         AND COALESCE(p.backlink_status, '') = 'dead'
@@ -108,7 +110,7 @@ async function listBacklinkInspectionTargets() {
 }
 
 async function listDeepBacklinkRevivalTargets() {
-  return all(`SELECT p.id, p.name, p.url, p.backlink_url, p.backlink_status,
+  return all(`SELECT p.id, p.name, p.url, p.backlink_url, p.backlink_status, p.is_exempt,
     p.failed_check_count, p.lost_count, COALESCE(recent.rolling_ips, 0) AS traffic_24h
     FROM partners p
     LEFT JOIN (
@@ -119,6 +121,7 @@ async function listDeepBacklinkRevivalTargets() {
     ) recent ON recent.link_id = p.id
     WHERE p.is_approved = 1
       AND COALESCE(p.is_internal, 0) = 0
+      AND COALESCE(p.is_exempt, 0) = 0
       AND COALESCE(p.failed_check_count, 0) > 15
       AND COALESCE(p.backlink_status, '') = 'dead'
     ORDER BY p.id ASC`);
@@ -223,19 +226,23 @@ async function createPendingPartner({ name, domain, url, description, contact, c
     VALUES (?, ?, ?, ?, ?, ?, 0, 'pending')`, [name, domain, url, description, contact, category]);
 }
 
-async function createApprovedPartner({ name, domain, url, category, backlinkUrl, contact, description }) {
-  return run(`INSERT INTO partners(name, domain, url, category, backlink_url, contact, description, is_approved, backlink_status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'pending')`, [name, domain, url, category, backlinkUrl, contact, description]);
+async function createApprovedPartner({ name, domain, url, category, backlinkUrl, contact, description, isExempt = 0 }) {
+  const exempt = Number(isExempt) === 1 ? 1 : 0;
+  return run(`INSERT INTO partners(name, domain, url, category, backlink_url, contact, description, is_approved, is_exempt, backlink_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`, [name, domain, url, category, backlinkUrl, contact, description, exempt, exempt ? 'valid' : 'pending']);
 }
 
 async function updatePartner(id, changes) {
-  const allowed = ['name', 'category', 'description', 'contact', 'url', 'domain', 'backlink_url', 'priority'];
+  const allowed = ['name', 'category', 'description', 'contact', 'url', 'domain', 'backlink_url', 'priority', 'is_exempt'];
   const fields = [];
   const values = [];
   for (const key of allowed) {
     if (!Object.prototype.hasOwnProperty.call(changes, key)) continue;
     fields.push(`${key} = ?`);
     values.push(changes[key]);
+  }
+  if (Number(changes.is_exempt) === 1) {
+    fields.push("backlink_status = 'valid'", 'failed_check_count = 0');
   }
   if (!fields.length) return { changes: 0, empty: true };
   values.push(id);
@@ -255,7 +262,7 @@ async function deletePartner(id) {
 }
 
 async function findBacklinkPartner(id) {
-  return get('SELECT id, name, url, backlink_status, backlink_url, failed_check_count, lost_count FROM partners WHERE id = ?', [id]);
+  return get('SELECT id, name, url, backlink_status, backlink_url, is_exempt, failed_check_count, lost_count FROM partners WHERE id = ?', [id]);
 }
 
 async function findPingPartner(id) {
@@ -265,6 +272,17 @@ async function findPingPartner(id) {
 
 async function resetLostCount(id) {
   return run('UPDATE partners SET lost_count = 0 WHERE id = ?', [id]);
+}
+
+async function resetCheckStatus(id) {
+  return run(`UPDATE partners
+    SET failed_check_count = 0,
+        backlink_status = 'pending',
+        last_checked_at = NULL,
+        ping_failed_count = 0,
+        ping_status = 'ok',
+        last_ping_at = NULL
+    WHERE id = ?`, [id]);
 }
 
 /** CSV 为增量控制源：按 URL 更新或新增，但绝不删除人工申请的数据。 */
@@ -337,6 +355,7 @@ module.exports = {
   findBacklinkPartner,
   findPingPartner,
   resetLostCount,
+  resetCheckStatus,
   syncPartnersFromCsv,
   listPartnersForExport
 };

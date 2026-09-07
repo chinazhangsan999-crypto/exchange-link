@@ -9,6 +9,7 @@
 
   /** 渲染反链巡检状态；Ping 连通状态在独立列展示。 */
   function inspectionStatus(item) {
+    if (Number(item.is_exempt) === 1) return '<span class="status-pill protected" title="该站点已设置为反链免检">🛡️ 免检/受保护</span>';
     const backlink = item.backlink_status || 'pending';
     const failed = Number(item.failed_check_count || 0), lost = Number(item.lost_count || 0);
     if (backlink === 'lost') return `<span class="status-pill danger" title="未在对方页面找到本站反链">🔴 掉链${lost ? `（${lost}次）` : ''}</span>`;
@@ -48,7 +49,10 @@
       if (typeof window.openPartnerMonitor === 'function') return window.openPartnerMonitor(button.dataset.id);
       toast('风控组件加载失败，请刷新页面后重试');
     });
-    body.querySelectorAll('.reset-lost').forEach(button => button.onclick = () => resetLostCount(button));
+    body.querySelectorAll('.reset-lost').forEach(button => {
+      button.title = '重置反链巡检与连通状态';
+      button.onclick = () => resetCheckStatus(button);
+    });
     body.querySelectorAll('.state').forEach(button => button.onclick = () => changeState(button));
     body.querySelectorAll('.delete').forEach(button => button.onclick = () => removeLink(button));
     body.querySelectorAll('.copy-contact').forEach(button => button.onclick = () => copyContact(button));
@@ -58,14 +62,22 @@
 
   async function loadPartners() { if (!token()) return; try { const query = document.querySelector('#partner-q')?.value || ''; rows = await request('/api/admin/partners?q=' + encodeURIComponent(query)); renderRows(); } catch (error) { toast(error.message); } }
   async function checkOne(button) { try { button.disabled = true; button.textContent = '巡检中'; await request(`/api/admin/links/${button.dataset.id}/check`, { method: 'POST' }); toast('反链巡检完成'); await loadPartners(); } catch (error) { toast(error.message); } finally { button.disabled = false; button.textContent = '查反链'; } }
-  async function resetLostCount(button) {
+  async function resetCheckStatus(button) {
+    if (!confirm('确定要重置该网站的巡检状态吗？')) return;
     const originalText = button.textContent;
     try {
       button.disabled = true;
       button.textContent = '重置中...';
-      await request(`/api/admin/links/${button.dataset.id}/reset-lost-count`, { method: 'POST' });
-      toast('累计掉链次数已重置');
-      await loadPartners();
+      const updated = await request(`/api/admin/partners/${button.dataset.id}/reset-check`, { method: 'POST' });
+      const item = rows.find(row => Number(row.id) === Number(button.dataset.id));
+      if (item) Object.assign(item, updated);
+      const tableRow = button.closest('tr');
+      if (tableRow) {
+        tableRow.children[3].innerHTML = inspectionStatus(item || updated);
+        tableRow.children[4].innerHTML = renderPingStatusBadge(item || updated);
+        tableRow.children[7].innerHTML = '<span class="compact-time" title="尚未执行反链巡检">—</span>';
+      }
+      toast('巡检状态已重置');
     } catch (error) {
       toast(error.message || '重置失败，请稍后重试');
     } finally {
@@ -164,9 +176,38 @@
       ['正常', '异常']
     );
   }
+  function installCreateExemptionField() {
+    const form = document.querySelector('#add-form');
+    const grid = form?.querySelector('.form-grid');
+    if (!form || !grid || form.elements.is_exempt) return;
+    const label = document.createElement('label');
+    label.className = 'full exemption-option';
+    label.innerHTML = '<input name="is_exempt" type="hidden" value="0"><input name="is_exempt" type="checkbox" value="1"><span>🛡️ 设为免检（不进行反链巡检）</span>';
+    grid.append(label);
+  }
+  function installEditExemptionField() {
+    document.addEventListener('click', event => {
+      const button = event.target.closest('#partner-body .edit[data-id]');
+      if (!button) return;
+      const partner = rows.find(row => Number(row.id) === Number(button.dataset.id));
+      setTimeout(() => {
+        const form = document.querySelector('#edit-partner-form');
+        const grid = form?.querySelector('.form-grid');
+        if (!form || !grid) return;
+        let label = form.querySelector('.exemption-option');
+        if (!label) {
+          label = document.createElement('label');
+          label.className = 'full exemption-option';
+          label.innerHTML = '<input name="is_exempt" type="hidden" value="0"><input name="is_exempt" type="checkbox" value="1"><span>🛡️ 设为免检（不进行反链巡检）</span>';
+          grid.append(label);
+        }
+        label.querySelector('input[type="checkbox"]').checked = Number(partner?.is_exempt) === 1;
+      }, 0);
+    }, true);
+  }
   function ensureTableStructure() { const table = document.querySelector('#partners table'); if (!table) return; table.className = 'admin-table partner-table'; table.querySelector('colgroup')?.remove(); table.insertAdjacentHTML('afterbegin', '<colgroup><col class="partner-col-site"><col class="partner-col-category"><col class="partner-col-contact"><col class="partner-col-backlink"><col class="partner-col-ping"><col class="partner-col-traffic"><col class="partner-col-priority"><col class="partner-col-checked"><col class="partner-col-actions"></colgroup>'); table.querySelector('thead').innerHTML = '<tr><th>网站 / 域名</th><th>分类</th><th class="contact-header">站长联系方式</th><th>巡检状态</th><th class="ping-header">连通状态</th><th class="sort-header" data-sort="score_24h">带量 ↕</th><th class="sort-header" data-sort="priority">权重 ↕</th><th>最近巡检</th><th>操作</th></tr>'; }
   function loadStyles() { if (!document.querySelector('link[href^="/admin/tables.css"]')) { const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/admin/tables.css?v=20260831-1'; document.head.append(link); } if (!document.querySelector('link[href^="/admin/table-fixes.css"]')) { const fixes = document.createElement('link'); fixes.rel = 'stylesheet'; fixes.href = '/admin/table-fixes.css?v=20260831-1'; document.head.append(fixes); } if (!document.querySelector('link[href^="/admin/traffic-cell.css"]')) { const traffic = document.createElement('link'); traffic.rel = 'stylesheet'; traffic.href = '/admin/traffic-cell.css?v=20260902-1'; document.head.append(traffic); } }
-  loadStyles(); ensureTableStructure(); installSort(); installToolbar(); window.loadPartners = loadPartners;
+  loadStyles(); ensureTableStructure(); installSort(); installToolbar(); installCreateExemptionField(); installEditExemptionField(); window.loadPartners = loadPartners;
   document.querySelector('#partner-q')?.addEventListener('input', () => { clearTimeout(window.__partnerSearchTimer); window.__partnerSearchTimer = setTimeout(loadPartners, 180); });
   window.addEventListener('admin:authenticated', loadPartners); setTimeout(() => { if (token()) loadPartners(); }, 450);
 })();
