@@ -151,7 +151,7 @@ async function initializeDatabase() {
   )`);
   await run(`CREATE TABLE IF NOT EXISTS inbound_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, link_id INTEGER NOT NULL, client_ip TEXT NOT NULL,
-    user_agent TEXT DEFAULT '', referer TEXT DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    user_agent TEXT DEFAULT '', referer TEXT DEFAULT NULL, visit_id TEXT DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(link_id) REFERENCES partners(id) ON DELETE CASCADE
   )`);
   await run('CREATE INDEX IF NOT EXISTS idx_inbound_time_link ON inbound_logs(created_at, link_id, client_ip)');
@@ -164,6 +164,10 @@ async function initializeDatabase() {
   if (!inboundColumns.some(column => column.name === 'referer')) {
     await run('ALTER TABLE inbound_logs ADD COLUMN referer TEXT DEFAULT NULL');
   }
+  if (!inboundColumns.some(column => column.name === 'visit_id')) {
+    await run('ALTER TABLE inbound_logs ADD COLUMN visit_id TEXT DEFAULT NULL');
+  }
+  await run('CREATE INDEX IF NOT EXISTS idx_inbound_visit_time ON inbound_logs(visit_id, created_at)');
   await run(`CREATE TABLE IF NOT EXISTS inflow_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, partner_id INTEGER NOT NULL, ip TEXT NOT NULL,
     user_agent TEXT DEFAULT '', fingerprint TEXT DEFAULT '', is_compliant INTEGER DEFAULT 0,
@@ -173,11 +177,20 @@ async function initializeDatabase() {
   await run('CREATE INDEX IF NOT EXISTS idx_inflow_events_timestamp ON inflow_events(timestamp)');
   await run(`CREATE TABLE IF NOT EXISTS outbound_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, link_id INTEGER NOT NULL, client_ip TEXT NOT NULL,
+    source_partner_id INTEGER DEFAULT NULL, visit_id TEXT DEFAULT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(link_id) REFERENCES partners(id) ON DELETE CASCADE
   )`);
   await run('CREATE INDEX IF NOT EXISTS idx_outbound_time_link ON outbound_logs(created_at, link_id)');
   await run('CREATE INDEX IF NOT EXISTS idx_outbound_link_ip_time ON outbound_logs(link_id, client_ip, created_at)');
   await run('CREATE INDEX IF NOT EXISTS idx_outbound_ip_time ON outbound_logs(client_ip, created_at)');
+  const outboundColumns = await all('PRAGMA table_info(outbound_logs)');
+  if (!outboundColumns.some(column => column.name === 'source_partner_id')) {
+    await run('ALTER TABLE outbound_logs ADD COLUMN source_partner_id INTEGER DEFAULT NULL');
+  }
+  if (!outboundColumns.some(column => column.name === 'visit_id')) {
+    await run('ALTER TABLE outbound_logs ADD COLUMN visit_id TEXT DEFAULT NULL');
+  }
+  await run('CREATE INDEX IF NOT EXISTS idx_outbound_source_visit_time ON outbound_logs(source_partner_id, visit_id, created_at)');
 
   // 一次性兼容迁移：旧版本存在双写表时，只补齐主事实表中缺失的历史记录。
   // 新安装不再创建 inflow_logs/outflow_logs，迁移后所有业务只读写 inbound_logs/outbound_logs。

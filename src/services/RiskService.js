@@ -74,17 +74,25 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
 
   const topIps = (clientRows || []).slice().sort((a, b) => b.requests - a.requests || String(b.timestamp).localeCompare(String(a.timestamp))).slice(0, 10);
   const interactedUv = asNumber(interaction?.interacted_uv);
+  const attributedVisits = asNumber(interaction?.attributed_inbound_visits);
   const peakHourlyUv = asNumber(hourlyPeak?.peak_hourly_uv);
-  const refererObserved = asNumber(summary.referer_observed);
   const emptyRefererCount = asNumber(summary.empty_referer_count);
   const pvUvRatio = ratio(pv, uv, 2);
+  // 仅统计同一签名访问会话在 30 分钟内的后续出站，不再用“同 IP 任意点击”冒充转化。
+  const attributedInteractionRate = ratio(interactedUv, attributedVisits);
+  const emptyRefererRatio = ratio(emptyRefererCount, pv);
   const diagnostics = {
-    zero_conversion: uv > 100 && ratio(interactedUv, uv) < thresholds.min_interaction_rate,
-    interaction_rate: ratio(interactedUv, uv), interacted_uv: interactedUv,
+    // 风控只生成审核信号；历史记录没有 visit_id 时不进行“低互动”判定。
+    zero_conversion: uv > 100 && attributedVisits > 0 && attributedInteractionRate < thresholds.min_interaction_rate,
+    interaction_rate: attributedInteractionRate,
+    interacted_uv: interactedUv,
+    attributed_inbound_visits: attributedVisits,
+    attribution_available: attributedVisits > 0,
     time_burst: uv > 50 && ratio(peakHourlyUv, uv) > thresholds.max_hourly_burst_ratio,
     peak_hourly_ratio: ratio(peakHourlyUv, uv), peak_hourly_uv: peakHourlyUv,
-    empty_referer: refererObserved > 0 && ratio(emptyRefererCount, refererObserved) > thresholds.empty_referer_threshold,
-    empty_referer_ratio: ratio(emptyRefererCount, refererObserved), referer_observed: refererObserved,
+    empty_referer: pv > 0 && emptyRefererRatio > thresholds.empty_referer_threshold,
+    empty_referer_ratio: emptyRefererRatio,
+    empty_referer_count: emptyRefererCount,
     pv_uv_anomaly: pvUvRatio > thresholds.pv_uv_ratio_threshold, pv_uv_ratio: pvUvRatio, thresholds
   };
   const riskReasons = [];
@@ -114,7 +122,7 @@ function formatRiskAlert(report, dashboardReasons) {
   return [
     `站点：${report.partner.name}`, `域名：${report.partner.domain}`, `站点 ID：${report.partner.id}`,
     `24h UV / PV：${report.uv24h} / ${report.pv24h}`, `风险原因：${reasons.join('、') || '风控指标异常'}`, '',
-    `出站交互率：${formatPercent(d.interaction_rate)}（阈值 ${formatPercent(d.thresholds.min_interaction_rate)}）`,
+    `可归因站内互动率：${formatPercent(d.interaction_rate)}（${d.interacted_uv}/${d.attributed_inbound_visits} 会话，阈值 ${formatPercent(d.thresholds.min_interaction_rate)}）`,
     `1 小时峰值 UV 占比：${formatPercent(d.peak_hourly_ratio)}（阈值 ${formatPercent(d.thresholds.max_hourly_burst_ratio)}）`,
     `PV/UV 比值：${d.pv_uv_ratio}（阈值 ${d.thresholds.pv_uv_ratio_threshold}）`, `ROI：${report.roi}`,
     `该站累计出站点击：${report.outflowClicks}`,

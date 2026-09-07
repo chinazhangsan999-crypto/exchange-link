@@ -147,8 +147,10 @@
         <h4>核心 KPI 与智能诊断</h4>
         <div class="diagnostic-grid">
           <article class="diagnostic-card">
-            <p>流量真实度</p><strong>出站交互率：${interaction}</strong>
-            ${statusTag(diagnostics.zero_conversion, `🔴 极度异常: 极低交互率 ${interaction} (疑似混合暗刷)`, `交互率健康：${interaction}`)}
+            <p>流量真实度</p><strong>可归因站内互动率：${interaction}</strong>
+            ${diagnostics.attribution_available
+              ? statusTag(diagnostics.zero_conversion, `🔴 需人工复核: 低互动率 ${interaction}`, `互动率健康：${interaction}`)
+              : '<span class="tag">等待新的可归因会话数据</span>'}
           </article>
           <article class="diagnostic-card">
             <p>行为时间特征</p><strong>1小时峰值UV占比：${hourly}</strong>
@@ -166,7 +168,7 @@
           </article>
           <article class="diagnostic-card">
             <p>来源合法性</p><strong>空 Referer 占比：${emptyReferer}</strong>
-            ${statusTag(diagnostics.empty_referer, `🟡 空 Referer 过高: ${emptyReferer} (直接伪造)`, `来源结构健康：${emptyReferer}`, true)}
+            ${statusTag(diagnostics.empty_referer, `🟡 空 Referer 偏高: ${emptyReferer}（仅供人工审核）`, `来源结构健康：${emptyReferer}`, true)}
           </article>
         </div>
       </section>

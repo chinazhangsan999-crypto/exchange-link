@@ -36,6 +36,8 @@ const CacheService = require('../services/CacheService');
 const { sendAdminAlert } = require('../services/AlertService');
 
 const CLAIM_TTL_SECONDS = 15 * 60;
+const ATTRIBUTION_COOKIE = 'inflow_visit';
+const ATTRIBUTION_TTL_SECONDS = 30 * 60;
 const ANALYTICS_CONFIG_KEYS = [
   'umami_enabled',
   'umami_script_url',
@@ -53,6 +55,20 @@ function clearMirrorsCache() {
 
 function trafficDebug(message) {
   if (TRAFFIC_DEBUG) console.log(`[流量排查] ${message}`);
+}
+
+function readAttributionVisit(req) {
+  const token = decodeURIComponent(getCookie(req, ATTRIBUTION_COOKIE) || '');
+  if (!token) return null;
+  try {
+    const payload = jwt.verify(token, GUEST_JWT_SECRET);
+    if (payload?.type !== 'inflow-attribution'
+      || typeof payload.visitId !== 'string'
+      || !Number.isSafeInteger(Number(payload.sourcePartnerId))) return null;
+    return { visitId: payload.visitId, sourcePartnerId: Number(payload.sourcePartnerId) };
+  } catch {
+    return null;
+  }
 }
 
 async function isLegitUser(req, refererOverride = '') {
@@ -300,11 +316,13 @@ async function trackPing(req, res) {
     const fingerprint = body.fingerprint && typeof body.fingerprint === 'object' ? body.fingerprint : {};
     const compliant = fingerprint.webdriver !== true && fingerprint.abnormalScreen !== true && fingerprint.missingLanguage !== true;
     if (!compliant) return fail(res, '访问环境校验未通过', 403);
+    const visitId = crypto.randomUUID();
     const transactionResult = await dbMutex.runExclusive(() => LogModel.processTrackPing({
       tokenHash,
       claim,
       clientIp,
-      userAgent: ua
+      userAgent: ua,
+      visitId
     }));
     if (transactionResult.alreadyUsed) return fail(res, '追踪会话已使用', 409);
     const { newlyCounted, autoApproved } = transactionResult;
@@ -312,6 +330,19 @@ async function trackPing(req, res) {
     const expiredCookie = { maxAge: 0, httpOnly: true, sameSite: 'lax', secure: IS_PRODUCTION, path: '/' };
     res.cookie('track_session', '', expiredCookie);
     res.cookie('inflow_claim', '', expiredCookie);
+    // 只保存签名的随机会话标识与来源友链 ID，不含 IP/UA；30 分钟后自动失效。
+    const attributionToken = jwt.sign(
+      { type: 'inflow-attribution', visitId, sourcePartnerId: claim.partner_id },
+      GUEST_JWT_SECRET,
+      { expiresIn: ATTRIBUTION_TTL_SECONDS }
+    );
+    res.cookie(ATTRIBUTION_COOKIE, attributionToken, {
+      maxAge: ATTRIBUTION_TTL_SECONDS * 1000,
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: IS_PRODUCTION,
+      path: '/'
+    });
     return ok(
       res,
       { newlyCounted, autoApproved },
@@ -565,8 +596,9 @@ async function go(req, res) {
     const link = await PartnerModel.getApprovedOutboundTarget(linkId);
     if (!link) return fail(res, '友链不存在或尚未审核通过', 404);
     const clientIp = getClientIp(req) || '127.0.0.1';
+    const attribution = readAttributionVisit(req);
     try {
-      await dbMutex.runExclusive(() => LogModel.recordOutbound(link.id, clientIp));
+      await dbMutex.runExclusive(() => LogModel.recordOutbound(link.id, clientIp, attribution || {}));
     } catch (error) {
       console.error('[Outbound Track Error]:', error.message);
     }

@@ -71,14 +71,14 @@ async function getActiveClaim(tokenHash) {
   return get("SELECT * FROM inflow_claim_tokens WHERE token_hash = ? AND claimed_at IS NULL AND expires_at >= datetime('now')", [tokenHash]);
 }
 
-async function processTrackPing({ tokenHash, claim, clientIp, userAgent }) {
+async function processTrackPing({ tokenHash, claim, clientIp, userAgent, visitId }) {
   return withTransaction(async transaction => {
     const consume = await transaction.run("UPDATE inflow_claim_tokens SET claimed_at = CURRENT_TIMESTAMP WHERE token_hash = ? AND claimed_at IS NULL", [tokenHash]);
     if (!consume.changes) return { alreadyUsed: true, newlyCounted: false, autoApproved: false };
 
     const duplicated = await transaction.get("SELECT id FROM inbound_logs WHERE link_id = ? AND client_ip = ? AND created_at >= datetime('now', '-24 hours') LIMIT 1", [claim.partner_id, clientIp]);
     // 每次通过验证的真实心跳都是一条 PV 事实；计分和自动审核仍使用 DISTINCT IP 去重。
-    await transaction.run("INSERT INTO inbound_logs(link_id, client_ip, user_agent, referer, created_at) VALUES (?, ?, ?, ?, datetime('now'))", [claim.partner_id, clientIp, userAgent, claim.referer || '']);
+    await transaction.run("INSERT INTO inbound_logs(link_id, client_ip, user_agent, referer, visit_id, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))", [claim.partner_id, clientIp, userAgent, claim.referer || '', visitId]);
 
     let autoApproved = false;
     const pending = await transaction.get('SELECT is_approved FROM partners WHERE id = ?', [claim.partner_id]);
@@ -95,9 +95,11 @@ async function processTrackPing({ tokenHash, claim, clientIp, userAgent }) {
   }, { priority: 'traffic', label: 'record inbound ping' });
 }
 
-async function recordOutbound(linkId, clientIp) {
+async function recordOutbound(linkId, clientIp, attribution = {}) {
+  const sourcePartnerId = Number.isSafeInteger(Number(attribution.sourcePartnerId)) ? Number(attribution.sourcePartnerId) : null;
+  const visitId = typeof attribution.visitId === 'string' && attribution.visitId.length <= 128 ? attribution.visitId : null;
   return withTransaction(async transaction => {
-    await transaction.run("INSERT INTO outbound_logs(link_id, client_ip, created_at) VALUES (?, ?, datetime('now'))", [linkId, clientIp]);
+    await transaction.run("INSERT INTO outbound_logs(link_id, client_ip, source_partner_id, visit_id, created_at) VALUES (?, ?, ?, ?, datetime('now'))", [linkId, clientIp, sourcePartnerId, visitId]);
   }, { priority: 'traffic', label: 'record outbound click' });
 }
 
@@ -143,10 +145,11 @@ async function clearPartnerTraffic(partnerId) {
   return withTransaction(async transaction => {
     const inbound = await transaction.run('DELETE FROM inbound_logs WHERE link_id = ?', [partnerId]);
     const outbound = await transaction.run('DELETE FROM outbound_logs WHERE link_id = ?', [partnerId]);
+    const attributedOutbound = await transaction.run('DELETE FROM outbound_logs WHERE source_partner_id = ?', [partnerId]);
     const claims = await transaction.run('DELETE FROM inflow_claim_tokens WHERE partner_id = ?', [partnerId]);
     return {
       inbound: inbound.changes,
-      outbound: outbound.changes,
+      outbound: outbound.changes + attributedOutbound.changes,
       claims: claims.changes
     };
   }, { priority: 'interactive', label: 'clear partner traffic' });
@@ -157,8 +160,7 @@ async function getPartnerAnalytics(partnerId) {
     get(`SELECT COUNT(*) AS pv,
       COUNT(DISTINCT client_ip) AS uv,
       CASE WHEN COUNT(*) > 0 THEN 100 ELSE 0 END AS compliance_rate,
-      SUM(CASE WHEN referer IS NOT NULL THEN 1 ELSE 0 END) AS referer_observed,
-      SUM(CASE WHEN referer IS NOT NULL AND TRIM(referer) = '' THEN 1 ELSE 0 END) AS empty_referer_count
+      SUM(CASE WHEN referer IS NULL OR TRIM(referer) = '' THEN 1 ELSE 0 END) AS empty_referer_count
       FROM inbound_logs
       WHERE link_id = ? AND created_at >= datetime('now', '-24 hours')`, [partnerId]),
     all(`SELECT ip, user_agent, referer, timestamp FROM (
@@ -168,19 +170,21 @@ async function getPartnerAnalytics(partnerId) {
       WHERE link_id = ? AND created_at >= datetime('now', '-24 hours')
     ) WHERE row_number = 1 ORDER BY timestamp DESC LIMIT 100`, [partnerId]),
     all("SELECT client_ip AS ip, COUNT(*) AS requests, MAX(created_at) AS last_seen FROM inbound_logs WHERE link_id = ? AND created_at >= datetime('now', '-24 hours') GROUP BY client_ip", [partnerId]),
-    get(`WITH inbound_ips AS (
-      SELECT client_ip, MIN(created_at) AS first_seen
+    get(`WITH inbound_visits AS (
+      SELECT visit_id, MIN(created_at) AS first_seen
       FROM inbound_logs
-      WHERE link_id = ? AND created_at >= datetime('now', '-24 hours')
-      GROUP BY client_ip
+      WHERE link_id = ? AND visit_id IS NOT NULL AND created_at >= datetime('now', '-24 hours')
+      GROUP BY visit_id
     )
-    SELECT COUNT(*) AS inbound_uv,
+    SELECT COUNT(*) AS attributed_inbound_visits,
       COALESCE(SUM(CASE WHEN EXISTS (
         SELECT 1 FROM outbound_logs outbound
-        WHERE outbound.client_ip = inbound_ips.client_ip
-          AND outbound.created_at >= inbound_ips.first_seen
+        WHERE outbound.source_partner_id = ?
+          AND outbound.visit_id = inbound_visits.visit_id
+          AND outbound.created_at >= inbound_visits.first_seen
+          AND outbound.created_at < datetime(inbound_visits.first_seen, '+30 minutes')
       ) THEN 1 ELSE 0 END), 0) AS interacted_uv
-    FROM inbound_ips`, [partnerId]),
+    FROM inbound_visits`, [partnerId, partnerId]),
     get(`SELECT COALESCE(MAX(hourly_uv), 0) AS peak_hourly_uv
       FROM (
         SELECT COUNT(DISTINCT client_ip) AS hourly_uv
