@@ -7,13 +7,21 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
   throw new Error('PORT 必须是 1 到 65535 之间的有效端口号。');
 }
 
-// 生产环境绝不允许随机密钥，防止服务重启后管理员令牌和 Session 全部失效。
-if (IS_PRODUCTION && (!process.env.JWT_SECRET || !process.env.SESSION_SECRET)) {
-  throw new Error('生产环境启动失败：必须同时配置 JWT_SECRET 与 SESSION_SECRET 环境变量。');
+// 生产环境绝不允许实际使用的密钥回退为进程级随机值；否则重启会使
+// 管理员令牌、访客验证令牌和 Session 全部失效。
+const REQUIRED_PRODUCTION_SECRETS = [
+  'SESSION_SECRET',
+  'ADMIN_JWT_SECRET',
+  'GUEST_JWT_SECRET'
+];
+const missingProductionSecrets = REQUIRED_PRODUCTION_SECRETS.filter(key => !process.env[key]);
+
+if (IS_PRODUCTION && missingProductionSecrets.length) {
+  throw new Error(`生产环境启动失败：缺少 ${missingProductionSecrets.join(', ')} 环境变量。`);
 }
 
-if (!IS_PRODUCTION && (!process.env.JWT_SECRET || !process.env.SESSION_SECRET)) {
-  console.warn('安全提示：当前为开发环境，正在使用临时 JWT / Session 密钥；生产部署前必须配置 JWT_SECRET 与 SESSION_SECRET。');
+if (!IS_PRODUCTION && missingProductionSecrets.length) {
+  console.warn('安全提示：当前为开发环境，正在使用临时 Session / Admin JWT / Guest JWT 密钥；生产部署前必须配置它们。');
 }
 
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
