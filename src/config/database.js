@@ -7,8 +7,8 @@ const DB_PATH = path.resolve(process.env.DB_PATH || path.join(__dirname, '..', '
 const DATABASE_PATH = DB_PATH;
 const db = new sqlite3.Database(DB_PATH);
 
-// 共享连接遇到写锁时等待最多 5 秒，避免高并发日志写入直接失败。
-db.run('PRAGMA busy_timeout = 5000');
+// 在任何查询发出前配置共享连接：遇到写锁最多等待 5 秒，避免高并发日志直接 SQLITE_BUSY。
+db.configure('busyTimeout', 5000);
 
 /** 将 sqlite 回调 API 封装为 Promise。 */
 const run = (sql, params = []) => new Promise((resolve, reject) => {
@@ -29,6 +29,7 @@ const all = (sql, params = []) => new Promise((resolve, reject) => {
 /** 在独立连接中执行原子事务，避免共享连接的并发 BEGIN 冲突。 */
 async function withTransaction(work) {
   const transactionDb = new sqlite3.Database(DATABASE_PATH);
+  transactionDb.configure('busyTimeout', 5000);
   const txRun = (sql, params = []) => new Promise((resolve, reject) => {
     transactionDb.run(sql, params, function onRun(error) {
       if (error) reject(error);
@@ -47,9 +48,9 @@ async function withTransaction(work) {
   let transactionStarted = false;
 
   try {
-    await txRun('PRAGMA busy_timeout = 5000');
     await txRun('PRAGMA foreign_keys = ON');
-    await txRun('BEGIN TRANSACTION');
+    // 事务开始即申请写锁，避免先读后写时才突然出现 SQLITE_BUSY。
+    await txRun('BEGIN IMMEDIATE TRANSACTION');
     transactionStarted = true;
     const result = await work({ run: txRun, get: txGet, all: txAll });
     await txRun('COMMIT');
