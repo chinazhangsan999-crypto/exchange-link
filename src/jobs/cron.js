@@ -8,6 +8,7 @@ const PingService = require('../services/PingService');
 const RiskService = require('../services/RiskService');
 const CacheService = require('../services/CacheService');
 const { sendAdminAlert } = require('../services/AlertService');
+const { abortActivePoolTasks, drainActivePoolTasks } = require('../utils/asyncPool');
 
 let started = false;
 let backlinkTask = null;
@@ -129,6 +130,8 @@ async function stopCronTask(task) {
  */
 async function stopJobs({ drainTimeoutMs = 15000 } = {}) {
   stopping = true;
+  // 先向每个网络任务发出统一取消信号；超时 race 已返回但底层仍未结束的 Worker 也在此集合内。
+  const abortedTaskCount = abortActivePoolTasks();
 
   const cronTasks = [backlinkTask, databaseMaintenanceTask, deepRevivalTask, riskAlertTask].filter(Boolean);
   backlinkTask = null;
@@ -148,23 +151,29 @@ async function stopJobs({ drainTimeoutMs = 15000 } = {}) {
   started = false;
 
   const pendingJobs = Array.from(runningJobs);
-  if (pendingJobs.length === 0) return { drained: true, pending: 0 };
+  if (pendingJobs.length === 0) {
+    const poolResult = await drainActivePoolTasks({ timeoutMs: drainTimeoutMs });
+    return { drained: poolResult.drained, pending: poolResult.pending, abortedTaskCount };
+  }
 
   const timeoutMs = Math.max(1, Number(drainTimeoutMs) || 15000);
   let timeoutId;
   const drainResult = await Promise.race([
-    Promise.allSettled(pendingJobs).then(() => ({ drained: true })),
+    Promise.allSettled(pendingJobs).then(async () => {
+      const poolResult = await drainActivePoolTasks({ timeoutMs });
+      return { drained: poolResult.drained, poolPending: poolResult.pending };
+    }),
     new Promise(resolve => {
       timeoutId = setTimeout(() => resolve({ drained: false }), timeoutMs);
     })
   ]);
   clearTimeout(timeoutId);
 
-  const pending = runningJobs.size;
+  const pending = runningJobs.size + Number(drainResult.poolPending || 0);
   if (!drainResult.drained) {
     console.warn(`后台任务排空等待超过 ${timeoutMs}ms，仍有 ${pending} 个任务未结束。`);
   }
-  return { drained: drainResult.drained, pending };
+  return { drained: drainResult.drained, pending, abortedTaskCount };
 }
 
 module.exports = { startJobs, stopJobs, runTrackedJob };

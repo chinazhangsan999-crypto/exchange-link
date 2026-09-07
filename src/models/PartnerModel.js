@@ -1,5 +1,12 @@
 const { run, get, all, withTransaction } = require('../config/database');
 
+function assertTaskWriteAllowed(options = {}) {
+  if (!options.signal?.aborted || options.allowAbortedWrite === true) return;
+  const error = options.signal.reason instanceof Error ? options.signal.reason : new Error('后台任务已取消');
+  if (!error.code) error.code = 'TASK_ABORTED';
+  throw error;
+}
+
 const TRAFFIC_JOINS = `LEFT JOIN (
     SELECT link_id, COUNT(DISTINCT client_ip) AS score_24h
     FROM inbound_logs
@@ -79,15 +86,18 @@ async function listDeepPingRevivalTargets() {
     ORDER BY id ASC`);
 }
 
-async function recordPingFailure(id, failedCount, status) {
+async function recordPingFailure(id, failedCount, status, options = {}) {
+  assertTaskWriteAllowed(options);
   return run("UPDATE partners SET ping_failed_count = ?, ping_status = ?, last_ping_at = datetime('now', 'localtime') WHERE id = ?", [failedCount, status, id], { priority: 'background', label: 'record ping failure' });
 }
 
-async function recordPingSuccess(id) {
+async function recordPingSuccess(id, options = {}) {
+  assertTaskWriteAllowed(options);
   return run("UPDATE partners SET ping_failed_count = 0, ping_status = 'ok', last_ping_at = datetime('now', 'localtime') WHERE id = ?", [id], { priority: 'background', label: 'record ping success' });
 }
 
-async function touchPingTimestamp(id) {
+async function touchPingTimestamp(id, options = {}) {
+  assertTaskWriteAllowed(options);
   return run("UPDATE partners SET last_ping_at = datetime('now', 'localtime') WHERE id = ?", [id], { priority: 'background', label: 'touch ping timestamp' });
 }
 
@@ -129,26 +139,31 @@ async function listDeepBacklinkRevivalTargets() {
     ORDER BY p.id ASC`);
 }
 
-async function recordBacklinkLost(id) {
+async function recordBacklinkLost(id, options = {}) {
+  assertTaskWriteAllowed(options);
   return run("UPDATE partners SET backlink_status = 'lost', failed_check_count = 0, lost_count = lost_count + 1, last_checked_at = datetime('now') WHERE id = ?", [id], { priority: 'background', label: 'record backlink lost' });
 }
 
-async function recordBacklinkStatus(id, status, backlinkUrl = null) {
+async function recordBacklinkStatus(id, status, backlinkUrl = null, options = {}) {
+  assertTaskWriteAllowed(options);
   if (backlinkUrl) {
     return run("UPDATE partners SET backlink_url = ?, backlink_status = ?, failed_check_count = 0, last_checked_at = datetime('now') WHERE id = ?", [backlinkUrl, status, id], { priority: 'background', label: 'record backlink status' });
   }
   return run("UPDATE partners SET backlink_status = ?, failed_check_count = 0, last_checked_at = datetime('now') WHERE id = ?", [status, id], { priority: 'background', label: 'record backlink status' });
 }
 
-async function touchBacklinkCheck(id) {
+async function touchBacklinkCheck(id, options = {}) {
+  assertTaskWriteAllowed(options);
   return run("UPDATE partners SET last_checked_at = datetime('now') WHERE id = ?", [id], { priority: 'background', label: 'touch backlink check' });
 }
 
-async function recordBacklinkFailure(id, status, failedCount) {
+async function recordBacklinkFailure(id, status, failedCount, options = {}) {
+  assertTaskWriteAllowed(options);
   return run("UPDATE partners SET backlink_status = ?, failed_check_count = ?, last_checked_at = datetime('now') WHERE id = ?", [status, failedCount, id], { priority: 'background', label: 'record backlink failure' });
 }
 
-async function markTrafficExempt(id) {
+async function markTrafficExempt(id, options = {}) {
+  assertTaskWriteAllowed(options);
   return run("UPDATE partners SET backlink_status = 'valid', failed_check_count = 0, last_checked_at = datetime('now') WHERE id = ?", [id], { priority: 'background', label: 'mark traffic exempt' });
 }
 

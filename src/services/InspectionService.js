@@ -195,7 +195,7 @@ async function updateBacklinkStatus(link, status, checkedUrl, options = {}) {
   throwIfAborted(options.signal);
   const { incrementLostCount = false, backlinkUrl = null } = options;
   if (status === 'lost' && incrementLostCount) {
-    await PartnerModel.recordBacklinkLost(link.id);
+    await PartnerModel.recordBacklinkLost(link.id, { signal: options.signal });
     notifyChanged(options);
     const lostCount = Number(link.lost_count || 0) + 1;
     if (link.backlink_status !== 'lost' && typeof options.sendAdminAlert === 'function') {
@@ -207,7 +207,7 @@ async function updateBacklinkStatus(link, status, checkedUrl, options = {}) {
     return { id: link.id, backlink_status: 'lost', failed_check_count: 0, lost_count: lostCount, checked_url: checkedUrl };
   }
 
-  await PartnerModel.recordBacklinkStatus(link.id, status, backlinkUrl);
+  await PartnerModel.recordBacklinkStatus(link.id, status, backlinkUrl, { signal: options.signal });
   notifyChanged(options);
   return {
     id: link.id,
@@ -307,7 +307,7 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
     // 只有服务停机等非超时取消才跳过写库；超时必须留下异常状态，避免状态假死。
     if (options.signal?.aborted && !timedOut) throwIfAborted(options.signal);
     if (error.code === 'BACKLINK_URL_BLOCKED') {
-      await PartnerModel.touchBacklinkCheck(link.id);
+      await PartnerModel.touchBacklinkCheck(link.id, { signal: options.signal });
       notifyChanged(options);
       return {
         id: link.id,
@@ -322,7 +322,10 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
     }
     const failedCount = Number(link.failed_check_count || 0) + 1;
     const status = failedCount >= 3 ? 'dead' : 'unreachable';
-    await PartnerModel.recordBacklinkFailure(link.id, status, failedCount);
+    await PartnerModel.recordBacklinkFailure(link.id, status, failedCount, {
+      signal: options.signal,
+      allowAbortedWrite: timedOut
+    });
     notifyChanged(options);
     return {
       id: link.id,
@@ -340,7 +343,10 @@ async function recordBacklinkCheckError(link, error, options = {}) {
   if (options.signal?.aborted && !timedOut) throwIfAborted(options.signal);
   const failedCount = Number(link.failed_check_count || 0) + 1;
   const status = failedCount >= 3 ? 'dead' : 'unreachable';
-  await PartnerModel.recordBacklinkFailure(link.id, status, failedCount);
+  await PartnerModel.recordBacklinkFailure(link.id, status, failedCount, {
+    signal: options.signal,
+    allowAbortedWrite: timedOut
+  });
   notifyChanged(options);
   return {
     id: link.id,
@@ -371,7 +377,7 @@ async function checkAllLinksBatch(links, myMainDomain, mySiteName, concurrency =
       }
       if (Number(link.traffic_24h) > 0) {
         throwIfAborted(signal);
-        await PartnerModel.markTrafficExempt(link.id);
+        await PartnerModel.markTrafficExempt(link.id, { signal });
         notifyChanged(taskOptions);
         return {
           id: link.id,

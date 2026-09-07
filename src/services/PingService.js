@@ -86,7 +86,11 @@ async function persistPingFailure(link, error, options = {}) {
   if (options.signal?.aborted && !timedOut) throwIfAborted(options.signal);
   const failedCount = Number(link.ping_failed_count || 0) + 1;
   const status = failedCount >= 3 ? 'unreachable' : (link.ping_status || 'ok');
-  await PartnerModel.recordPingFailure(link.id, failedCount, status);
+  await PartnerModel.recordPingFailure(link.id, failedCount, status, {
+    signal: options.signal,
+    // 超时是本轮巡检的最终业务结论，必须允许写入；停机取消会在上方直接抛出。
+    allowAbortedWrite: timedOut
+  });
   notifyChanged(options);
   if (failedCount === 1) {
     notifyPingAlert(link, '🟡 站点连通性预警', pingAlertContext(link, failedCount, error), options);
@@ -147,7 +151,7 @@ async function pingSingleLink(link, options = {}) {
     throwIfAborted(options.signal);
     if (link.ping_status === 'ok' && Number(link.ping_failed_count) === 0) {
       if (!pingTimestampIsFresh(link.last_ping_at)) {
-        await PartnerModel.touchPingTimestamp(link.id);
+        await PartnerModel.touchPingTimestamp(link.id, { signal: options.signal });
         notifyChanged(options);
         return {
           id: link.id,
@@ -170,7 +174,7 @@ async function pingSingleLink(link, options = {}) {
 
     const revived = link.ping_status === 'unreachable';
     const recovered = revived || Number(link.ping_failed_count || 0) > 0;
-    await PartnerModel.recordPingSuccess(link.id);
+    await PartnerModel.recordPingSuccess(link.id, { signal: options.signal });
     notifyChanged(options);
     if (recovered) {
       notifyPingAlert(
