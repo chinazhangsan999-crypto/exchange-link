@@ -20,6 +20,7 @@ const CONFIG_DEFAULTS = {
   cf_analytics_enabled: '0',
   cf_beacon_token: '',
   min_interaction_rate: '0.02',
+  min_attributed_interaction_rate: '0.005',
   max_hourly_burst_ratio: '0.6',
   empty_referer_threshold: '0.5',
   pv_uv_ratio_threshold: '100.0',
@@ -32,6 +33,7 @@ const CONFIG_DEFAULTS = {
 
 const RISK_CONTROL_CONFIG_KEYS = [
   'min_interaction_rate',
+  'min_attributed_interaction_rate',
   'max_hourly_burst_ratio',
   'empty_referer_threshold',
   'pv_uv_ratio_threshold'

@@ -44,7 +44,7 @@ function makeStats(map, total, names = [], limit = 10) {
 async function analyzePartner(partnerId, { includeClients = true } = {}) {
   const partner = await PartnerModel.findAnalyticsPartner(Number(partnerId));
   if (!partner) return null;
-  const [{ summary, inflowLogs, requestRows, interaction, hourlyPeak }, thresholds] = await Promise.all([
+  const [{ summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak }, thresholds] = await Promise.all([
     LogModel.getPartnerAnalytics(partner.id),
     SystemModel.getRiskControlConfig()
   ]);
@@ -73,19 +73,26 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
   }
 
   const topIps = (clientRows || []).slice().sort((a, b) => b.requests - a.requests || String(b.timestamp).localeCompare(String(a.timestamp))).slice(0, 10);
-  const interactedUv = asNumber(interaction?.interacted_uv);
-  const attributedVisits = asNumber(interaction?.attributed_inbound_visits);
+  const deadWaterInteractedUv = asNumber(deadWaterInteraction?.interacted_uv);
+  const deadWaterInboundUv = asNumber(deadWaterInteraction?.inbound_uv || uv);
+  const attributedInteractedVisits = asNumber(attributedInteraction?.interacted_visits);
+  const attributedVisits = asNumber(attributedInteraction?.attributed_inbound_visits);
   const peakHourlyUv = asNumber(hourlyPeak?.peak_hourly_uv);
   const emptyRefererCount = asNumber(summary.empty_referer_count);
   const pvUvRatio = ratio(pv, uv, 2);
+  const deadWaterInteractionRate = ratio(deadWaterInteractedUv, deadWaterInboundUv);
   // 仅统计同一签名访问会话在 30 分钟内的后续出站，不再用“同 IP 任意点击”冒充转化。
-  const attributedInteractionRate = ratio(interactedUv, attributedVisits);
+  const attributedInteractionRate = ratio(attributedInteractedVisits, attributedVisits);
   const emptyRefererRatio = ratio(emptyRefererCount, pv);
   const diagnostics = {
-    // 风控只生成审核信号；历史记录没有 visit_id 时不进行“低互动”判定。
-    zero_conversion: uv > 100 && attributedVisits > 0 && attributedInteractionRate < thresholds.min_interaction_rate,
-    interaction_rate: attributedInteractionRate,
-    interacted_uv: interactedUv,
+    // 两种互动率均只生成审核信号，绝不自动封禁；历史记录没有 visit_id 时不判定可归因互动率。
+    dead_water_low: uv > 100 && deadWaterInboundUv > 0 && deadWaterInteractionRate < thresholds.min_interaction_rate,
+    dead_water_interaction_rate: deadWaterInteractionRate,
+    dead_water_interacted_uv: deadWaterInteractedUv,
+    dead_water_inbound_uv: deadWaterInboundUv,
+    attributed_interaction_low: uv > 100 && attributedVisits > 0 && attributedInteractionRate < thresholds.min_attributed_interaction_rate,
+    attributed_interaction_rate: attributedInteractionRate,
+    attributed_interacted_visits: attributedInteractedVisits,
     attributed_inbound_visits: attributedVisits,
     attribution_available: attributedVisits > 0,
     time_burst: uv > 50 && ratio(peakHourlyUv, uv) > thresholds.max_hourly_burst_ratio,
@@ -96,7 +103,8 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
     pv_uv_anomaly: pvUvRatio > thresholds.pv_uv_ratio_threshold, pv_uv_ratio: pvUvRatio, thresholds
   };
   const riskReasons = [];
-  if (diagnostics.zero_conversion) riskReasons.push('极低出站交互率');
+  if (diagnostics.dead_water_low) riskReasons.push('近24h 死水交互率偏低');
+  if (diagnostics.attributed_interaction_low) riskReasons.push('30分钟可归因站内互动率偏低');
   if (diagnostics.time_burst) riskReasons.push('1 小时流量集中爆发');
   if (diagnostics.pv_uv_anomaly) riskReasons.push('PV/UV 异常偏高');
   if (diagnostics.empty_referer) riskReasons.push('空 Referer 占比异常');
@@ -109,7 +117,8 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
     device_type_stats: deviceStats, os_stats: osStats, operatingSystems: osStats, browsers: makeStats(browserCounts, inflowLogs.length),
     inflow_ips: clientRows || [], all_inflow_ips: clientRows || [], topIps, diagnostics, riskReasons,
     warnings: { pvUvHigh: diagnostics.pv_uv_anomaly, singleIpHigh: (topIps[0]?.ratio || 0) > 30,
-      zeroConversion: diagnostics.zero_conversion, timeBurst: diagnostics.time_burst, emptyReferer: diagnostics.empty_referer }
+      deadWaterLow: diagnostics.dead_water_low, attributedInteractionLow: diagnostics.attributed_interaction_low,
+      timeBurst: diagnostics.time_burst, emptyReferer: diagnostics.empty_referer }
   };
 }
 
@@ -122,10 +131,10 @@ function formatRiskAlert(report, dashboardReasons) {
   return [
     `站点：${report.partner.name}`, `域名：${report.partner.domain}`, `站点 ID：${report.partner.id}`,
     `24h UV / PV：${report.uv24h} / ${report.pv24h}`, `风险原因：${reasons.join('、') || '风控指标异常'}`, '',
-    `可归因站内互动率：${formatPercent(d.interaction_rate)}（${d.interacted_uv}/${d.attributed_inbound_visits} 会话，阈值 ${formatPercent(d.thresholds.min_interaction_rate)}）`,
+    `死水交互率（近24h）：${formatPercent(d.dead_water_interaction_rate)}（${d.dead_water_interacted_uv}/${d.dead_water_inbound_uv} 入站 IP，阈值 ${formatPercent(d.thresholds.min_interaction_rate)}；仅供人工审核）`,
+    `可归因站内互动率（30min）：${formatPercent(d.attributed_interaction_rate)}（${d.attributed_interacted_visits}/${d.attributed_inbound_visits} 会话，阈值 ${formatPercent(d.thresholds.min_attributed_interaction_rate)}）`,
     `1 小时峰值 UV 占比：${formatPercent(d.peak_hourly_ratio)}（阈值 ${formatPercent(d.thresholds.max_hourly_burst_ratio)}）`,
-    `PV/UV 比值：${d.pv_uv_ratio}（阈值 ${d.thresholds.pv_uv_ratio_threshold}）`, `ROI：${report.roi}`,
-    `该站累计出站点击：${report.outflowClicks}`,
+    `PV/UV 比值：${d.pv_uv_ratio}（阈值 ${d.thresholds.pv_uv_ratio_threshold}）`,
     `空 Referer 占比：${formatPercent(d.empty_referer_ratio)}（阈值 ${formatPercent(d.thresholds.empty_referer_threshold)}）`, '',
     `设备类型：${formatDistribution(report.device_type_stats)}`, `操作系统 Top 10：${formatDistribution(report.os_stats)}`,
     `浏览器 Top 10：${formatDistribution(report.browsers)}`,
@@ -143,7 +152,9 @@ async function scanAndNotify({ sendAdminAlert } = {}) {
     const report = await analyzePartner(candidate.item.id, { includeClients: false });
     if (!report || Number(report.partner.is_whitelisted) === 1) return { skipped: 'whitelisted' };
     const fingerprint = JSON.stringify({ reasons: candidate.reasons.slice().sort(), monitor: report.riskReasons.slice().sort(),
-      interaction: Math.round(report.diagnostics.interaction_rate * 1000), burst: Math.round(report.diagnostics.peak_hourly_ratio * 100),
+      deadWater: Math.round(report.diagnostics.dead_water_interaction_rate * 1000),
+      attributed: Math.round(report.diagnostics.attributed_interaction_rate * 1000),
+      burst: Math.round(report.diagnostics.peak_hourly_ratio * 100),
       pvUv: Math.round(report.diagnostics.pv_uv_ratio), emptyReferer: Math.round(report.diagnostics.empty_referer_ratio * 100) });
     return { report, reasons: candidate.reasons, fingerprint };
   }, 15000);

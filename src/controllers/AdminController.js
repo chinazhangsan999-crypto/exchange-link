@@ -107,7 +107,7 @@ async function getSettings(req, res) {
 
 async function getRiskControlSettings(req, res) {
   try { return ok(res, await SystemModel.getRiskControlConfig()); }
-  catch { return fail(res, '获取高级防刷参数失败', 500); }
+  catch { return fail(res, '获取站点风控监控参数失败', 500); }
 }
 
 async function saveSettings(req, res) {
@@ -122,7 +122,7 @@ async function saveSettings(req, res) {
         if (!Number.isInteger(number) || number < 1 || number > 100000) return fail(res, '自动审核阈值必须是 1 到 100000 的整数');
         value = String(number);
       }
-      if (['min_interaction_rate', 'max_hourly_burst_ratio', 'empty_referer_threshold'].includes(key)) {
+      if (['min_interaction_rate', 'min_attributed_interaction_rate', 'max_hourly_burst_ratio', 'empty_referer_threshold'].includes(key)) {
         const number = Number(value);
         if (!Number.isFinite(number) || number < 0 || number > 1) {
           return fail(res, `${key} 必须是 0 到 1 之间的数值`);

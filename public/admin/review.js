@@ -12,22 +12,26 @@
     if (!form || form.querySelector('#risk-control-settings')) return;
     const fieldset = document.createElement('fieldset');
     fieldset.id = 'risk-control-settings';
-    fieldset.innerHTML = `<legend>高级防刷参数</legend>
-      <label>死水交互率阈值
+    fieldset.innerHTML = `<legend>站点风控监控参数</legend>
+      <label>死水交互率阈值（近24h数据）
         <input name="min_interaction_rate" type="number" min="0" max="1" step="0.001" required value="0.02">
-        <small>输入 0～1 的小数；默认 0.02 表示低于 2% 时触发风险判断。</small>
+        <small>按近 24h 入站 IP 的后续出站行为观察；仅用于人工审核，不自动处置。</small>
       </label>
       <label>1h 时间并发峰值占比
         <input name="max_hourly_burst_ratio" type="number" min="0" max="1" step="0.01" required value="0.6">
-        <small>输入 0～1 的小数；默认 0.6 表示单小时占比超过 60% 时预警。</small>
+        <small>输入 0～1 的小数；单小时占比超过该值时提示集中访问。</small>
       </label>
       <label>空 Referer 预警阈值
         <input name="empty_referer_threshold" type="number" min="0" max="1" step="0.01" required value="0.5">
-        <small>输入 0～1 的小数；默认 0.5 表示空来源访问占比超过 50% 时预警。</small>
+        <small>空值、NULL 与纯空白 Referer 都会纳入统计。</small>
+      </label>
+      <label>可归因站内互动率阈值（30min）
+        <input name="min_attributed_interaction_rate" type="number" min="0" max="1" step="0.001" required value="0.005">
+        <small>仅统计同一已验证访问会话在 30 分钟内的后续出站，缺少会话数据时不判定。</small>
       </label>
       <label>PV/UV 异常比值阈值
         <input name="pv_uv_ratio_threshold" type="number" min="0.1" max="100000" step="0.1" required value="100.0">
-        <small>默认 100.0；达到该比值时可由风控接口判定为异常访问。</small>
+        <small>超过该比值时提示异常刷新行为，仍需人工复核。</small>
       </label>`;
     const actions = form.querySelector('.settings-actions');
     form.insertBefore(fieldset, actions || null);

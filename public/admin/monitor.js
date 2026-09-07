@@ -135,7 +135,8 @@
 
   function renderAnalytics(data) {
     const diagnostics = data.diagnostics || {};
-    const interaction = percent(diagnostics.interaction_rate);
+    const deadWaterInteraction = percent(diagnostics.dead_water_interaction_rate);
+    const attributedInteraction = percent(diagnostics.attributed_interaction_rate);
     const hourly = percent(diagnostics.peak_hourly_ratio);
     const emptyReferer = percent(diagnostics.empty_referer_ratio);
     const pvUv = numberText(diagnostics.pv_uv_ratio ?? data.pvUvRatio);
@@ -147,10 +148,8 @@
         <h4>核心 KPI 与智能诊断</h4>
         <div class="diagnostic-grid">
           <article class="diagnostic-card">
-            <p>流量真实度</p><strong>可归因站内互动率：${interaction}</strong>
-            ${diagnostics.attribution_available
-              ? statusTag(diagnostics.zero_conversion, `🔴 需人工复核: 低互动率 ${interaction}`, `互动率健康：${interaction}`)
-              : '<span class="tag">等待新的可归因会话数据</span>'}
+            <p>近 24h 入站概况</p><strong>UV：${Number(data.uv24h || 0)} · PV：${Number(data.pv24h || 0)}</strong>
+            <span class="tag healthy">🟢 近 24 小时数据概览</span>
           </article>
           <article class="diagnostic-card">
             <p>行为时间特征</p><strong>1小时峰值UV占比：${hourly}</strong>
@@ -160,11 +159,15 @@
             <p>基础刷新率</p><strong>PV/UV 比值：${pvUv}</strong>
             ${statusTag(diagnostics.pv_uv_anomaly, `🔴 PV/UV严重异常 (比值: ${pvUv})`, `刷新率健康：${pvUv}`)}
           </article>
-          <article class="diagnostic-card metric-only">
-            <p>出入站闭环比 (ROI)</p><strong>${numberText(data.roi)}</strong><span class="metric-note">出站行为 / 入站 UV</span>
+          <article class="diagnostic-card">
+            <p>死水交互率（近24h数据）</p><strong>${deadWaterInteraction}</strong>
+            ${statusTag(diagnostics.dead_water_low, `🟡 低于阈值: ${deadWaterInteraction}（仅供人工审核）`, `近24h 后续行为率：${deadWaterInteraction}`, true)}
           </article>
-          <article class="diagnostic-card metric-only">
-            <p>全站出站点击量</p><strong>${Number(data.outflowClicks || 0)}</strong><span class="metric-note">所有用户流向该网站的累计点击</span>
+          <article class="diagnostic-card">
+            <p>可归因站内互动率（30min）</p><strong>${attributedInteraction}</strong>
+            ${diagnostics.attribution_available
+              ? statusTag(diagnostics.attributed_interaction_low, `🟡 低于阈值: ${attributedInteraction}（仅供人工审核）`, `30min 会话互动率：${attributedInteraction}`, true)
+              : '<span class="tag">等待新的可归因会话数据</span>'}
           </article>
           <article class="diagnostic-card">
             <p>来源合法性</p><strong>空 Referer 占比：${emptyReferer}</strong>

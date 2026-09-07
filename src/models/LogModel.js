@@ -156,7 +156,7 @@ async function clearPartnerTraffic(partnerId) {
 }
 
 async function getPartnerAnalytics(partnerId) {
-  const [summary, inflowLogs, requestRows, interaction, hourlyPeak] = await Promise.all([
+  const [summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak] = await Promise.all([
     get(`SELECT COUNT(*) AS pv,
       COUNT(DISTINCT client_ip) AS uv,
       CASE WHEN COUNT(*) > 0 THEN 100 ELSE 0 END AS compliance_rate,
@@ -170,6 +170,22 @@ async function getPartnerAnalytics(partnerId) {
       WHERE link_id = ? AND created_at >= datetime('now', '-24 hours')
     ) WHERE row_number = 1 ORDER BY timestamp DESC LIMIT 100`, [partnerId]),
     all("SELECT client_ip AS ip, COUNT(*) AS requests, MAX(created_at) AS last_seen FROM inbound_logs WHERE link_id = ? AND created_at >= datetime('now', '-24 hours') GROUP BY client_ip", [partnerId]),
+    // 近 24 小时的死水观察指标：同一入站 IP 后续是否有任何出站行为。
+    // 它仅用于人工审核信号，不能证明点击一定来自该友链。
+    get(`WITH inbound_ips AS (
+      SELECT client_ip, MIN(created_at) AS first_seen
+      FROM inbound_logs
+      WHERE link_id = ? AND created_at >= datetime('now', '-24 hours')
+      GROUP BY client_ip
+    )
+    SELECT COUNT(*) AS inbound_uv,
+      COALESCE(SUM(CASE WHEN EXISTS (
+        SELECT 1 FROM outbound_logs outbound
+        WHERE outbound.client_ip = inbound_ips.client_ip
+          AND outbound.created_at >= inbound_ips.first_seen
+      ) THEN 1 ELSE 0 END), 0) AS interacted_uv
+    FROM inbound_ips`, [partnerId]),
+    // 可归因指标：同一已验证 visit_id 的 30 分钟内后续出站。
     get(`WITH inbound_visits AS (
       SELECT visit_id, MIN(created_at) AS first_seen
       FROM inbound_logs
@@ -183,7 +199,7 @@ async function getPartnerAnalytics(partnerId) {
           AND outbound.visit_id = inbound_visits.visit_id
           AND outbound.created_at >= inbound_visits.first_seen
           AND outbound.created_at < datetime(inbound_visits.first_seen, '+30 minutes')
-      ) THEN 1 ELSE 0 END), 0) AS interacted_uv
+      ) THEN 1 ELSE 0 END), 0) AS interacted_visits
     FROM inbound_visits`, [partnerId, partnerId]),
     get(`SELECT COALESCE(MAX(hourly_uv), 0) AS peak_hourly_uv
       FROM (
@@ -193,7 +209,7 @@ async function getPartnerAnalytics(partnerId) {
         GROUP BY strftime('%Y-%m-%d %H', created_at)
       )`, [partnerId])
   ]);
-  return { summary, inflowLogs, requestRows, interaction, hourlyPeak };
+  return { summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak };
 }
 
 async function searchInboundLogs(query = '') {
