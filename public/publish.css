@@ -1,0 +1,7 @@
+/* 发布页测速状态阶梯与离线节点样式。 */
+.badge-green{background:rgba(16,185,129,.15)!important;color:#10b981!important;border:1px solid rgba(16,185,129,.3)}
+.badge-yellow{background:rgba(245,158,11,.15)!important;color:#f59e0b!important;border:1px solid rgba(245,158,11,.3)}
+.badge-orange{background:rgba(249,115,22,.15)!important;color:#f97316!important;border:1px solid rgba(249,115,22,.3)}
+.badge-offline{background:rgba(239,68,68,.15)!important;color:#ef4444!important;border:1px solid rgba(239,68,68,.3)}
+.node.node-offline{opacity:.6;border-color:rgba(239,68,68,.28);filter:grayscale(.75)}
+.go.btn-disabled{border:0;background:#334155!important;color:#94a3b8!important;cursor:not-allowed!important;box-shadow:none!important}

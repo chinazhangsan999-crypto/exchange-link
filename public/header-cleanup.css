@@ -1,0 +1,2 @@
+/* 顶部右侧文字导航已移除，公告栏保持左对齐。 */
+.topbar{justify-content:flex-start}

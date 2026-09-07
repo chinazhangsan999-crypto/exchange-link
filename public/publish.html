@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0f172a">
+  <meta name="description" content="星环导航永久发布页，提供主站与镜像节点实时测速。">
+  <title>星环导航 · 永久发布页</title>
+  <link rel="stylesheet" href="/publish.css?v=20260831-1">
+  <script src="/analytics.js" defer></script>
+  <style>
+    :root{color-scheme:dark;font-family:Inter,"Microsoft YaHei",sans-serif;background:#0f172a;color:#e5eefc}*{box-sizing:border-box}body{min-height:100vh;margin:0;background:radial-gradient(circle at 14% 10%,#1d4ed855,transparent 28%),radial-gradient(circle at 88% 22%,#7c3aed42,transparent 30%),#0f172a}.page{width:min(760px,92vw);margin:0 auto;padding:72px 0}.hero{text-align:center}.hero-mark{display:inline-grid;place-items:center;width:58px;height:58px;border-radius:19px;background:linear-gradient(135deg,#3b82f6,#6366f1);box-shadow:0 14px 38px #2563eb55;font-size:30px}.hero h1{margin:19px 0 9px;font-size:clamp(28px,6vw,42px);letter-spacing:.02em}.hero p{margin:0;color:#a8b8d5;line-height:1.75}.notice{margin:34px 0 16px;border:1px solid #334155;border-radius:18px;background:#172033bb;padding:15px 18px;color:#c8d5ed;font-size:14px;line-height:1.7}.nodes{display:grid;gap:12px}.node{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;border:1px solid #2b3a52;border-radius:18px;background:#182235e6;padding:17px 18px;box-shadow:0 10px 24px #0206173d;transition:transform .2s,border-color .2s,background .2s}.node.recommended{border-color:#22c55e;background:linear-gradient(135deg,#172b2be6,#182235e6);box-shadow:0 14px 32px #22c55e20}.node.offline{filter:grayscale(.8);opacity:.58}.node-name{display:flex;align-items:center;gap:8px;font-size:16px;font-weight:800}.node-url{margin-top:7px;overflow:hidden;color:#9eb1d2;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.node-state{margin-top:10px;display:flex;gap:8px;align-items:center;color:#91a4c4;font-size:12px}.badge{display:inline-flex;align-items:center;border-radius:999px;padding:3px 8px;font-size:11px;font-weight:800}.badge.testing{background:#27364d;color:#c8d5ed}.badge.fast{background:#14532d;color:#bbf7d0}.badge.off{background:#4a1d27;color:#fecdd3}.go{display:inline-flex;align-items:center;justify-content:center;border-radius:999px;background:linear-gradient(135deg,#3b82f6,#6366f1);padding:10px 14px;color:#fff;text-decoration:none;font-size:13px;font-weight:800;white-space:nowrap}.go:hover{filter:brightness(1.1)}.empty{padding:42px 20px;border:1px dashed #40516d;border-radius:18px;text-align:center;color:#9eb1d2}.tip{margin:29px 0 0;text-align:center;color:#8192b2;font-size:13px}.tip kbd{border:1px solid #475569;border-bottom-width:2px;border-radius:6px;padding:2px 5px;color:#e5eefc;font-family:inherit}.toast{position:fixed;left:50%;bottom:26px;transform:translate(-50%,20px);opacity:0;pointer-events:none;border:1px solid #475569;border-radius:999px;background:#1e293b;padding:10px 16px;color:#fff;font-size:13px;transition:.2s}.toast.show{transform:translate(-50%,0);opacity:1}@media(max-width:560px){.page{padding:43px 0}.node{grid-template-columns:1fr;padding:15px}.go{width:100%}.notice{margin-top:27px}}
+    /* 固定主站与备用线路的层级区分。 */
+    .official-entry,.mirror-section{margin-top:18px}.section-heading{display:flex;align-items:center;justify-content:space-between;margin:0 4px 10px;color:#dbeafe;font-size:14px;font-weight:800}.official-label{border-radius:999px;background:linear-gradient(135deg,#2563eb,#7c3aed);padding:4px 9px;color:#fff;font-size:11px}.section-tip{color:#8192b2;font-size:12px;font-weight:500}.node.official{border-color:#4f8cff;background:linear-gradient(135deg,#172b49e6,#20264de6);box-shadow:0 14px 34px #3b82f635}.badge.official{background:#1d4ed8;color:#dbeafe}.go.disabled{background:#334155;color:#94a3b8;cursor:not-allowed;pointer-events:none}
+    .lost-prevention-publish{margin-top:22px;border:1px solid #854d0e;border-radius:18px;background:linear-gradient(135deg,#422006dd,#2b1b13dd);padding:19px;box-shadow:0 12px 28px #0000002b}.lost-prevention-publish h2{margin:0;color:#fde68a;font-size:17px}.lost-prevention-publish p{margin:10px 0 15px;color:#fed7aa;font-size:14px;line-height:1.75}.lost-prevention-publish code{border-radius:6px;background:#0000002b;padding:2px 5px;color:#fff7ed;font-weight:800}.lost-prevention-publish-actions{display:flex;gap:9px;flex-wrap:wrap}.lost-prevention-publish-actions button,.lost-prevention-publish-actions a{display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:999px;padding:9px 13px;background:#f97316;color:#fff;text-decoration:none;font:800 13px Inter,"Microsoft YaHei",sans-serif;cursor:pointer}.lost-prevention-publish-actions a{background:#334155}@media(max-width:560px){.lost-prevention-publish-actions>*{flex:1}}
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero"><div class="hero-mark">✦</div><h1>星环导航 · 永久发布页</h1><p>实时探测可用镜像节点，为你推荐当前最快访问入口。</p></header>
+    <p class="notice">🔗 请收藏本页。若主站访问异常，请从下方节点直达；测速结果由你的当前网络实时计算。</p>
+    <section class="official-entry" aria-label="主站官方入口">
+      <div class="section-heading"><span>主站官方入口</span><span class="official-label">官方推荐</span></div>
+      <div id="main-site-card" class="nodes" aria-live="polite"><p class="empty">正在测速主站官方入口…</p></div>
+    </section>
+    <section class="mirror-section" aria-label="备用线路">
+      <div class="section-heading"><span>备用线路</span><span class="section-tip">按当前网络延迟排序</span></div>
+      <div id="mirror-list" class="nodes" aria-live="polite"><p class="empty">正在获取备用线路并测速…</p></div>
+    </section>
+    <section id="lost-prevention-publish" class="lost-prevention-publish" hidden>
+      <h2>📬 终极防失联保障</h2>
+      <p>若本发布页及所有备用节点均无法访问，请发送任意邮件至 <code id="publish-lost-email"></code>，系统将即刻自动回复最新可用访问入口。</p>
+      <div class="lost-prevention-publish-actions"><button id="publish-copy-lost-email" type="button">📋 一键复制邮箱</button><a id="publish-mailto-lost-email" href="#">✉️ 发送邮件</a></div>
+    </section>
+    <p class="tip">按 <kbd>Ctrl</kbd> + <kbd>D</kbd> 可快速收藏本页，避免失联。</p>
+  </main>
+  <div id="toast" class="toast" role="status"></div>
+  <script src="/common.js" defer></script>
+  <script src="/publish.js" defer></script>
+</body>
+</html>

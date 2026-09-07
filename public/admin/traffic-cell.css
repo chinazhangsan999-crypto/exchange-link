@@ -1,0 +1,56 @@
+/* 友链管理表格：带量列的两行紧凑排版。 */
+.col-traffic {
+  vertical-align: middle !important;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.traffic-row-primary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.traffic-row-primary .item-24h,
+.traffic-row-primary .val-blue {
+  color: #2563eb;
+}
+
+.traffic-row-primary .val-blue { font-weight: 700; }
+.traffic-divider { color: #cbd5e1; font-size: 11px; }
+.traffic-row-primary .item-out { color: #64748b; font-size: 12px; }
+
+.traffic-row-primary .val-dark,
+.traffic-row-secondary .val-dark {
+  color: #1e293b;
+  font-weight: 700;
+}
+
+.traffic-row-secondary {
+  margin-top: 2px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+html[data-theme='dark'] .traffic-row-primary .val-dark,
+html[data-theme='dark'] .traffic-row-secondary .val-dark { color: #e2e8f0; }
+
+/* 纯数字置顶权重徽章。 */
+.col-weight { text-align: left; white-space: nowrap; }
+.badge-weight-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-width: 28px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 12px;
+  background: #fff7ed;
+  color: #ea580c;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+}

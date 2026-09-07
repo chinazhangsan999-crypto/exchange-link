@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#4f6cf7">
+  <title>站点详情预览 · 星环导航</title>
+  <link rel="stylesheet" href="/site-detail-preview.css">
+</head>
+<body>
+  <aside class="detail-sidebar" aria-label="快捷导航">
+    <a class="brand-mark" href="/" title="返回导航首页">✦</a>
+    <nav>
+      <a class="side-link active" href="/" title="返回首页">⌂</a>
+      <a class="side-link" href="/publish.html" title="永久发布页">⌁</a>
+      <button class="side-link" type="button" data-toast="分类导航将在正式接入后开放" title="分类导航">☷</button>
+      <button class="side-link" type="button" data-toast="站点搜索将在正式接入后开放" title="站内搜索">⌕</button>
+    </nav>
+    <span class="preview-dot" title="独立预览页">●</span>
+  </aside>
+
+  <main class="detail-main">
+    <header class="detail-topbar">
+      <a class="back-link" href="/">← 返回导航首页</a>
+      <span class="preview-label">预览模式 · 示例数据</span>
+    </header>
+
+    <section class="hero-card" aria-labelledby="siteName">
+      <div class="hero-accent"></div>
+      <div class="site-category">常用推荐</div>
+      <div class="hero-content">
+        <div class="site-monogram" aria-hidden="true">GH</div>
+        <div class="site-intro">
+          <h1 id="siteName">GitHub</h1>
+          <p class="site-url" id="siteUrl">https://github.com</p>
+          <div class="site-actions">
+            <a id="visitSiteBtn" class="primary-action" href="https://github.com" target="_blank" rel="noopener">访问网站 <span>↗</span></a>
+            <button id="copySiteBtn" class="secondary-action" type="button">复制链接</button>
+            <span class="safe-badge">✓ 已收录站点</span>
+          </div>
+        </div>
+        <div class="rank-card" aria-label="近 24 小时带量">
+          <span>近 24h 带量</span>
+          <strong id="siteTraffic">24</strong>
+          <small>独立 IP</small>
+        </div>
+      </div>
+    </section>
+
+    <section class="description-card" aria-labelledby="descriptionTitle">
+      <div class="section-heading">
+        <span class="heading-icon">✦</span>
+        <div>
+          <p>WEBSITE PROFILE</p>
+          <h2 id="descriptionTitle">网站简介</h2>
+        </div>
+      </div>
+      <p id="siteDescription">GitHub 是面向开发者的全球代码托管与协作平台，提供 Git 版本管理、开源项目协作、自动化工作流与丰富的开发者社区资源。</p>
+    </section>
+
+    <section class="recommend-section" aria-labelledby="recommendTitle">
+      <div class="recommend-heading">
+        <div>
+          <p>MORE TO EXPLORE</p>
+          <h2 id="recommendTitle">热门网站推荐</h2>
+        </div>
+        <span class="recommend-note">发现更多优质站点</span>
+      </div>
+      <div id="recommendGrid" class="recommend-grid" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <div id="previewToast" class="preview-toast" role="status" aria-live="polite"></div>
+  <script src="/site-detail-preview.js"></script>
+</body>
+</html>

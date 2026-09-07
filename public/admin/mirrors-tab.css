@@ -1,0 +1,113 @@
+#mirrors .mirror-admin-box {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+#mirrors .box-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+#mirrors .box-head h2 {
+  margin-bottom: 4px;
+}
+
+#mirrors .table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  margin-top: 16px;
+}
+
+#mirrors .mirror-admin-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+#mirrors .mirror-admin-table th,
+#mirrors .mirror-admin-table td {
+  padding: 13px 10px;
+  text-align: left;
+  vertical-align: middle;
+  border-bottom: 1px solid #eef2f7;
+}
+
+#mirrors .mirror-admin-table th {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#mirrors .mirror-admin-table th:nth-child(1) { width: 20%; }
+#mirrors .mirror-admin-table th:nth-child(2) { width: 22%; }
+#mirrors .mirror-admin-table th:nth-child(3) { width: 34%; }
+#mirrors .mirror-admin-table th:nth-child(4) { width: 24%; }
+
+#mirrors .mirror-state {
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+#mirrors .mirror-state.on {
+  background: #ecfdf5;
+  color: #059669;
+}
+
+#mirrors .mirror-state.off {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
+#mirrors .mirror-url {
+  display: block;
+  overflow: hidden;
+  color: #2563eb;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#mirrors .actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+#mirrors .mirror-csv-tools {
+  margin-top: 18px;
+  padding-top: 15px;
+  border-top: 1px solid #eef2f7;
+}
+
+#mirrors .mirror-csv-tools summary {
+  color: #475569;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+#mirrors .mirror-csv-tools textarea {
+  width: 100%;
+  min-height: 110px;
+  box-sizing: border-box;
+  margin-top: 9px;
+  padding: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  resize: vertical;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+#mirror-modal { z-index: 1300; }
+
+@media (max-width: 760px) {
+  #mirrors .box-head { align-items: flex-start; }
+  #mirrors .mirror-admin-table { min-width: 720px; }
+}

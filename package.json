@@ -1,0 +1,26 @@
+{
+  "name": "webring-traffic-exchange",
+  "version": "1.0.0",
+  "description": "中文互助友链与流量交换系统",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "archiver": "^8.0.0",
+    "async-mutex": "^0.5.0",
+    "axios": "^1.20.0",
+    "bcryptjs": "^2.4.3",
+    "cheerio": "^1.2.0",
+    "csv-parse": "^7.0.2",
+    "express": "^5.1.0",
+    "express-session": "^1.18.1",
+    "jsonwebtoken": "^9.0.2",
+    "lru-cache": "^11.2.2",
+    "node-cron": "^4.6.0",
+    "sqlite3": "^5.1.7",
+    "svg-captcha": "^1.4.0",
+    "ua-parser-js": "^1.0.39"
+  }
+}

@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#3b82f6">
+  <meta name="description" content="星环导航收录站点详情">
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem('theme')||'light'}catch(e){}</script>
+  <title>站点详情 · 星环导航</title>
+  <!-- 与首页完全共用的基础框架与增强样式。 -->
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/tooltip.css">
+  <link rel="stylesheet" href="/apply.css">
+  <link rel="stylesheet" href="/apply-category.css">
+  <link rel="stylesheet" href="/no-icons.css">
+  <link rel="stylesheet" href="/header-cleanup.css">
+  <link rel="stylesheet" href="/mobile-nav.css">
+  <link rel="stylesheet" href="/enhance.css">
+  <link rel="stylesheet" href="/pwa.css">
+  <!-- 仅保留详情信息区的专属组件样式。 -->
+  <link rel="stylesheet" href="/site-detail.css">
+  <link rel="stylesheet" href="/showcase.css">
+  <script src="/analytics.js" defer></script>
+</head>
+<body class="site-detail-page">
+  <!-- 与首页 1:1 复用：移动端分类抽屉遮罩。 -->
+  <div id="sidebarOverlay" class="sidebar-overlay"></div>
+
+  <!-- 与首页 1:1 复用：Logo、分类列表、主题切换与排名说明。 -->
+  <aside class="sidebar" aria-label="站点分类导航">
+    <a class="brand" href="/" aria-label="返回首页"><span class="brand-mark">✦</span><span>星环导航</span></a>
+    <nav id="category-nav" class="category-nav"><span class="nav-loading">正在加载分类…</span></nav>
+    <div class="sidebar-footer"><button id="themeToggle" class="theme-toggle" type="button" aria-label="切换日夜模式">☀️ <span>日间模式</span></button><div>互助友链导航<br><small>24 小时动态排名</small></div></div>
+  </aside>
+
+  <!-- 与首页 1:1 复用：右侧内容版心、顶部胶囊栏、公告与搜索框。 -->
+  <main id="top" class="content main-content detail-main-content">
+    <header class="topbar top-header-bar">
+      <div class="top-header-left">
+        <div class="mobile-top-nav-row mobile-top-action-row">
+          <div class="top-header-actions header-actions">
+            <button id="mobileMenuBtn" class="mobile-menu-btn menu-btn" aria-label="打开分类导航" aria-expanded="false"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"></line><line x1="3" y1="6" x2="21" y2="6"></line><line x1="3" y1="18" x2="21" y2="18"></line></svg></button>
+            <button id="contactAdminBtn" type="button" class="top-pill-btn top-btn-contact">✦ 联系站长</button>
+            <button id="applyLinkBtn" type="button" class="top-pill-btn top-btn-apply">+ 申请友链</button>
+            <button id="pwa-install-btn" type="button" class="top-pill-btn top-btn-install" style="display: none;">⇩ 添加到桌面</button>
+            <a id="topPublishBtn" href="/publish.html" target="_blank" rel="noopener" class="top-pill-btn top-btn-release">🚀 永久发布页</a>
+          </div>
+        </div>
+        <span class="weather top-greeting-text">🌞 今日晴朗 · 欢迎探索优质网站</span>
+      </div>
+    </header>
+
+    <section class="search-area search-container" aria-label="站内搜索">
+      <div class="notice announcement-bar notice-box">✦ 星环导航已收录审核通过的合作站点，排名随近 24 小时带量实时更新。</div>
+      <div class="search-box search-input-group"><input id="site-search" class="search-input" type="search" autocomplete="off" placeholder="搜索网站名称、域名或分类" aria-label="搜索网站"><button id="search-button" class="search-btn" type="button" aria-label="执行搜索">⌕</button></div>
+    </section>
+
+    <!-- 详情页仅在首页搜索框下方挂载三个专属内容模块。 -->
+    <div id="detailLoading" class="detail-state">正在加载站点资料…</div>
+    <section id="detailContent" class="site-detail-content" hidden>
+      <article class="detail-card site-header-card" aria-labelledby="detailTitle">
+        <div class="site-card-left"><span id="detailCategory" class="category-pill">精选推荐</span><div class="site-main-info"><div id="detailAvatar" class="site-avatar">站</div><div class="site-texts"><h1 id="detailTitle" class="site-name">站点详情</h1><p id="detailUrl" class="site-domain"></p><div class="site-actions"><a id="btnVisit" class="btn-primary-visit" target="_blank" rel="noopener">访问网站 ↗</a><button id="copyCurrentSiteUrl" class="btn-secondary-copy" type="button">复制链接</button><span class="status-verified-badge">✓ 已收录站点</span></div></div></div></div>
+      </article>
+
+      <article class="detail-card intro-card"><div class="intro-header"><span class="sparkle-icon">✦</span><div><div class="sub-label">WEBSITE PROFILE</div><h2 class="main-label">网站简介</h2></div></div><div class="intro-body"><p id="detailDescription">该站点暂未填写简介。</p></div></article>
+
+      <section class="detail-card explore-section"><div class="explore-header"><div><div class="sub-label">MORE TO EXPLORE</div><h2 class="main-label">热门网站推荐</h2></div><a href="/" class="explore-more-link">发现更多优质站点</a></div><div id="hotExploreGrid" class="explore-grid" aria-live="polite"></div></section>
+    </section>
+  </main>
+
+  <!-- 详情页联系弹层；申请按钮回到首页处理，避免复制第二套申请表单。 -->
+  <div id="detailContactModal" class="detail-modal" role="dialog" aria-modal="true" aria-labelledby="detailContactTitle" hidden><section class="detail-modal-card"><button class="detail-modal-close" type="button" aria-label="关闭">✕</button><p class="modal-kicker">CONTACT ADMIN</p><h2 id="detailContactTitle">联系站长</h2><div id="detailContactContent" class="contact-content">正在加载联系方式…</div></section></div>
+  <div id="detailToast" class="detail-toast" role="status" aria-live="polite"></div>
+  <script src="/common.js" defer></script>
+  <script src="/site-detail.js" defer></script>
+  <script src="/showcase.js" defer></script>
+</body>
+</html>

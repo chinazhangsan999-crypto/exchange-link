@@ -1,0 +1,29 @@
+.admin-ad-table { min-width: 820px; }
+.ad-title-cell { max-width: 220px; }
+.ad-title-cell b,.ad-target-cell { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ad-title-cell small { display: block; margin-top: 3px; color: #94a3b8; }
+.ad-type-pill { display: inline-flex; padding: 5px 9px; border-radius: 999px; background: #eef2ff; color: #4f46e5; font-size: 12px; font-weight: 700; }
+.ad-type-pill.icon { background: #ecfdf5; color: #059669; }
+.ad-platform-pill { display: inline-flex; padding: 5px 9px; border-radius: 999px; background: #f1f5f9; color: #475569; font-size: 12px; font-weight: 700; white-space: nowrap; }
+.ad-platform-pill.ios { background: #eff6ff; color: #2563eb; }
+.ad-platform-pill.non_ios { background: #f5f3ff; color: #7c3aed; }
+.ad-platform-pill.android { background: #ecfdf5; color: #059669; }
+.ad-platform-pill.harmony { background: #fff7ed; color: #c2410c; }
+.ad-platform-pill.pc { background: #eef2ff; color: #4338ca; }
+.ad-status-on { background: #ecfdf5; color: #059669; }
+.ad-status-off { background: #f1f5f9; color: #64748b; }
+.admin-logout { border: 0; border-radius: 999px; padding: 11px 16px; background: #fff0f0; color: #c2414a; font: inherit; font-weight: 700; cursor: pointer; white-space: nowrap; }
+.admin-logout:hover { background: #fee2e2; }
+.ad-target-cell { max-width: 260px; color: #64748b; font-size: 12px; }
+#ad-modal { z-index: 1300; }
+#ad-form .form-grid { align-items: end; }
+#ad-form .code-editor { min-height: 180px; font: 12px/1.55 ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; }
+#ad-form .code-field.is-required > span { color: #dc2626; }
+#ad-form .field-hidden { display: none !important; }
+#ad-form .field-disabled { opacity: .55; }
+#ad-form .field-disabled select { cursor: not-allowed; background: #f8fafc; }
+#ad-form .platform-note { display: block; margin-top: 2px; }
+.showcase-csv-tools { margin-top: 16px; padding-top: 14px; border-top: 1px solid #eef2f7; }
+.showcase-csv-tools summary { color: #475569; font-weight: 700; cursor: pointer; }
+.showcase-csv-tools textarea { width: 100%; min-height: 110px; margin-top: 8px; padding: 10px; border: 1px solid #e2e8f0; border-radius: 10px; resize: vertical; font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
+@media(max-width:760px){.admin-ad-table{min-width:760px}}

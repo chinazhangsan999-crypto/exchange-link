@@ -1,0 +1,2 @@
+/* 纯展示型友链卡片：不渲染图标，也不提供外链点击行为。 */
+.link-card{gap:0;cursor:default}.link-card .name{width:100%}.link-card .score{margin-left:auto}

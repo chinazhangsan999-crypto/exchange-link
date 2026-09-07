@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#2563eb">
+  <title>安全验证 · 星环导航</title>
+  <link rel="stylesheet" href="/verify.css">
+  <script src="/analytics.js" defer></script>
+</head>
+<body>
+  <main class="verify-page">
+    <section class="verify-card" aria-labelledby="verify-title">
+      <div class="verify-mark">✦</div>
+      <p class="eyebrow">SECURITY CHECK</p>
+      <h1 id="verify-title">轻触滑动，完成安全验证</h1>
+      <p class="description">为保护真实访客与合作站点流量，请完成一次轻量验证。验证通过后 12 小时内无需重复操作。</p>
+      <div id="sliderContainer" class="slider" role="group" aria-label="滑块安全验证">
+        <div id="sliderProgress" class="slider-progress"></div>
+        <span id="sliderTip" class="slider-tip">向右拖动滑块完成验证</span>
+        <button id="sliderBtn" class="slider-btn" type="button" aria-label="拖动滑块进行验证">›</button>
+      </div>
+      <p id="verifyHint" class="verify-hint" aria-live="polite">正在获取安全凭证…</p>
+      <p class="privacy-tip">不会收集个人信息，仅校验本次滑动行为与浏览器安全环境。</p>
+    </section>
+  </main>
+  <script src="/verify.js" defer></script>
+</body>
+</html>

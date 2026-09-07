@@ -1,0 +1,19 @@
+/* PWA 安装按钮沿用顶部药丸风格，并在暗色模式保持清晰对比。 */
+.top-btn-install{background:linear-gradient(135deg,#0ea5e9,#2563eb);color:#fff;box-shadow:0 2px 6px rgba(37,99,235,.25)}
+.top-btn-install:hover{background:linear-gradient(135deg,#0284c7,#1d4ed8);box-shadow:0 4px 10px rgba(37,99,235,.35)}
+.top-btn-release{background:linear-gradient(135deg,#7c3aed,#4f46e5);color:#fff;box-shadow:0 2px 6px rgba(79,70,229,.28)}
+.top-btn-release:hover{background:linear-gradient(135deg,#6d28d9,#4338ca);box-shadow:0 4px 10px rgba(79,70,229,.38)}
+.mirror-cluster-select{max-width:260px;height:32px;padding:0 30px 0 11px;border:1px solid #c7d2fe;border-radius:9999px;background:#fff;color:#4338ca;font:600 12px/1.2 Inter,"Microsoft YaHei",sans-serif;cursor:pointer;outline:none;box-shadow:0 2px 6px rgba(79,70,229,.12);transition:border-color .2s,box-shadow .2s}
+.mirror-cluster-select:hover,.mirror-cluster-select:focus{border-color:#818cf8;box-shadow:0 0 0 3px rgba(99,102,241,.12)}
+.mirror-cluster-select:disabled{color:#64748b;cursor:wait;opacity:.85}
+html[data-theme='dark'] .mirror-cluster-select{background:#1e293b;border-color:#475569;color:#e2e8f0}
+.official-badge{display:inline-flex;align-items:center;padding:1px 5px;border:1px solid #bfdbfe;border-radius:999px;background:#eff6ff;color:#2563eb;font-size:9px;font-weight:700;white-space:nowrap}
+@media(max-width:768px){
+  /* 关闭横向滚动：所有顶部操作在可视区内自适应换行。 */
+  .mobile-top-nav-row.mobile-top-action-row{display:block!important;width:100%!important;overflow:visible!important;white-space:normal!important;padding-bottom:0!important}
+  .header-actions{display:flex!important;align-items:center!important;justify-content:space-between!important;flex-wrap:wrap!important;gap:6px!important;width:100%!important;min-width:0!important;overflow:visible!important}
+  .header-actions .top-pill-btn{flex:1 1 auto!important;min-width:0!important;padding:6px 8px!important;font-size:12px!important;line-height:1.2!important;text-align:center!important;white-space:nowrap!important}
+  .header-actions .menu-btn{flex:0 0 auto!important;padding:6px 10px!important}
+  .header-actions .mirror-cluster-select{flex:1 1 180px!important;min-width:0!important;max-width:100%!important;height:32px!important;font-size:12px!important}
+  .mobile-menu-btn{width:38px!important;height:34px!important;position:static!important}
+}
