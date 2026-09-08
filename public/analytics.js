@@ -23,14 +23,36 @@
     document.head.appendChild(script);
   }
 
-  function safeDataAttributes(value) {
-    try {
-      const parsed = JSON.parse(String(value || '').trim() || '{}');
-      if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') return {};
-      return Object.fromEntries(Object.entries(parsed)
-        .filter(([key]) => /^data-[a-z0-9][a-z0-9_-]*$/i.test(key))
-        .map(([key, item]) => [key, String(item ?? '').slice(0, 500)]));
-    } catch { return {}; }
+  function appendCustomAnalyticsScripts(code) {
+    const template = document.createElement('template');
+    template.innerHTML = String(code || '');
+    const sourceScripts = [...template.content.querySelectorAll('script')];
+
+    sourceScripts.forEach((source, index) => {
+      const id = `custom-analytics-script-${index}`;
+      if (inserted.has(id) || document.getElementById(id)) return;
+      const script = document.createElement('script');
+      script.id = id;
+      [...source.attributes].forEach(attribute => {
+        if (!['id', 'src'].includes(attribute.name.toLowerCase()) && !/^on/i.test(attribute.name)) {
+          script.setAttribute(attribute.name, attribute.value);
+        }
+      });
+      const sourceUrl = source.getAttribute('src');
+      if (sourceUrl) {
+        const safeUrl = validHttpsUrl(sourceUrl);
+        if (!safeUrl) return;
+        script.src = safeUrl;
+        script.async = source.async;
+        script.defer = source.defer;
+        script.referrerPolicy = 'strict-origin-when-cross-origin';
+        script.onerror = () => console.warn('[Analytics] 自定义统计外部脚本加载失败，不影响站点正常使用。');
+      } else {
+        script.textContent = source.textContent || '';
+      }
+      inserted.add(id);
+      document.head.appendChild(script);
+    });
   }
 
   async function loadAnalytics() {
@@ -57,8 +79,7 @@
       }
 
       if (String(config.generic_analytics_enabled) === '1') {
-        const genericSrc = validHttpsUrl(config.generic_analytics_script_url);
-        if (genericSrc) appendScript('generic-analytics-script', genericSrc, safeDataAttributes(config.generic_analytics_data_attributes));
+        appendCustomAnalyticsScripts(config.generic_analytics_code);
       }
     } catch (error) {
       console.warn('[Analytics] 读取统计配置失败，不影响站点正常使用。', error.message);

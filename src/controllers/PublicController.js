@@ -47,8 +47,7 @@ const ANALYTICS_CONFIG_KEYS = [
   'clarity_enabled',
   'clarity_project_id',
   'generic_analytics_enabled',
-  'generic_analytics_script_url',
-  'generic_analytics_data_attributes'
+  'generic_analytics_code'
 ];
 const dbMutex = new Mutex();
 const MIRRORS_CACHE_TTL_MS = 60 * 1000;

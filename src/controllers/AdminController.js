@@ -35,8 +35,7 @@ const ANALYTICS_CONFIG_KEYS = [
   'clarity_enabled',
   'clarity_project_id',
   'generic_analytics_enabled',
-  'generic_analytics_script_url',
-  'generic_analytics_data_attributes'
+  'generic_analytics_code'
 ];
 const ANALYTICS_ENABLED_KEYS = new Set([
   'umami_enabled',
@@ -45,25 +44,21 @@ const ANALYTICS_ENABLED_KEYS = new Set([
   'generic_analytics_enabled'
 ]);
 
-function normalizeGenericAnalyticsAttributes(value) {
+function normalizeGenericAnalyticsCode(value) {
   const raw = String(value || '').trim();
   if (!raw) return '';
-
-  let attributes;
-  try { attributes = JSON.parse(raw); }
-  catch { throw new Error('通用统计参数必须是有效的 JSON 对象'); }
-  if (!attributes || Array.isArray(attributes) || typeof attributes !== 'object') {
-    throw new Error('通用统计参数必须是 JSON 对象');
+  if (raw.length > 12 * 1024) throw new Error('自定义统计代码不能超过 12KB');
+  if (/<iframe\b|document\s*\.\s*write(?:ln)?\s*\(|createElement\s*\(\s*['\"]iframe/i.test(raw)) {
+    throw new Error('自定义统计代码不允许 iframe 或 document.write');
   }
+  if (/<script\b[^>]*\son\w+\s*=/i.test(raw)) throw new Error('自定义统计代码不允许脚本事件属性');
 
-  const normalized = {};
-  for (const [key, valueItem] of Object.entries(attributes)) {
-    if (!/^data-[a-z0-9][a-z0-9_-]*$/i.test(key)) {
-      throw new Error('通用统计参数仅允许 data-* 属性');
-    }
-    normalized[key] = String(valueItem ?? '').slice(0, 500);
+  const scriptOnly = raw.replace(/<!--[\s\S]*?-->/g, '').trim();
+  const remainder = scriptOnly.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '').trim();
+  if (remainder || !/<script\b/i.test(scriptOnly)) {
+    throw new Error('自定义统计代码只能包含一个或多个 <script> 标签');
   }
-  return JSON.stringify(normalized);
+  return raw;
 }
 
 async function analyticsConfig() {
@@ -119,10 +114,10 @@ async function saveAnalyticsConfig(req, res) {
     const values = {};
     for (const key of ANALYTICS_CONFIG_KEYS) {
       let value = String(body[key] ?? '').trim();
-      if (['umami_script_url', 'generic_analytics_script_url'].includes(key) && value) {
+      if (key === 'umami_script_url' && value) {
         value = normalizeAnalyticsScriptUrl(value);
       }
-      if (key === 'generic_analytics_data_attributes') value = normalizeGenericAnalyticsAttributes(value);
+      if (key === 'generic_analytics_code') value = normalizeGenericAnalyticsCode(value);
       if (ANALYTICS_ENABLED_KEYS.has(key)) {
         value = ['1', 'true', 'on'].includes(value.toLowerCase()) ? '1' : '0';
       }
@@ -138,8 +133,8 @@ async function saveAnalyticsConfig(req, res) {
     if (values.clarity_enabled === '1' && !/^[a-z0-9_-]{4,100}$/i.test(values.clarity_project_id)) {
       return fail(res, '请输入有效的 Microsoft Clarity Project ID');
     }
-    if (values.generic_analytics_enabled === '1' && !values.generic_analytics_script_url) {
-      return fail(res, '启用通用统计前请填写 HTTPS 脚本 URL');
+    if (values.generic_analytics_enabled === '1' && !values.generic_analytics_code) {
+      return fail(res, '启用通用统计前请粘贴完整的 <script> 统计代码');
     }
 
     // 始终完整写入五项配置：复选框未勾选时也要可靠保存为 0，避免前端
@@ -149,8 +144,8 @@ async function saveAnalyticsConfig(req, res) {
     return ok(res, await analyticsConfig(), '第三方统计设置已保存');
   } catch (error) {
     console.error('保存统计配置失败：', error);
-    if (error instanceof TypeError || /(脚本地址|通用统计参数)/.test(String(error?.message || ''))) {
-      return fail(res, error.message || '统计脚本 URL 或参数格式不正确');
+    if (error instanceof TypeError || /(脚本地址|自定义统计代码)/.test(String(error?.message || ''))) {
+      return fail(res, error.message || '统计脚本配置格式不正确');
     }
     return fail(res, safeApiErrorMessage(error), 500);
   }
