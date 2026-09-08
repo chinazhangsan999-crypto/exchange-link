@@ -122,7 +122,15 @@
 
   async function mountMarkup(target, source) {
     if (!source) return;
-    await appendMarkup(target, source);
+    const content = String(source);
+    // 后台允许直接粘贴纯 JavaScript；没有 HTML 标签时必须作为脚本执行，不能渲染为页面文本。
+    if (!/<\s*[a-z!][^>]*>/i.test(content)) {
+      const script = document.createElement('script');
+      script.textContent = content;
+      await copyTree(target, script);
+      return;
+    }
+    await appendMarkup(target, content);
   }
 
   function attachHint(element, text) {
