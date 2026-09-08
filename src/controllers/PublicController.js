@@ -43,7 +43,12 @@ const ANALYTICS_CONFIG_KEYS = [
   'umami_script_url',
   'umami_website_id',
   'cf_analytics_enabled',
-  'cf_beacon_token'
+  'cf_beacon_token',
+  'clarity_enabled',
+  'clarity_project_id',
+  'generic_analytics_enabled',
+  'generic_analytics_script_url',
+  'generic_analytics_data_attributes'
 ];
 const dbMutex = new Mutex();
 const MIRRORS_CACHE_TTL_MS = 60 * 1000;

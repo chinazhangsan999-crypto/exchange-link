@@ -31,8 +31,40 @@ const ANALYTICS_CONFIG_KEYS = [
   'umami_script_url',
   'umami_website_id',
   'cf_analytics_enabled',
-  'cf_beacon_token'
+  'cf_beacon_token',
+  'clarity_enabled',
+  'clarity_project_id',
+  'generic_analytics_enabled',
+  'generic_analytics_script_url',
+  'generic_analytics_data_attributes'
 ];
+const ANALYTICS_ENABLED_KEYS = new Set([
+  'umami_enabled',
+  'cf_analytics_enabled',
+  'clarity_enabled',
+  'generic_analytics_enabled'
+]);
+
+function normalizeGenericAnalyticsAttributes(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  let attributes;
+  try { attributes = JSON.parse(raw); }
+  catch { throw new Error('通用统计参数必须是有效的 JSON 对象'); }
+  if (!attributes || Array.isArray(attributes) || typeof attributes !== 'object') {
+    throw new Error('通用统计参数必须是 JSON 对象');
+  }
+
+  const normalized = {};
+  for (const [key, valueItem] of Object.entries(attributes)) {
+    if (!/^data-[a-z0-9][a-z0-9_-]*$/i.test(key)) {
+      throw new Error('通用统计参数仅允许 data-* 属性');
+    }
+    normalized[key] = String(valueItem ?? '').slice(0, 500);
+  }
+  return JSON.stringify(normalized);
+}
 
 async function analyticsConfig() {
   return SystemModel.getConfigValues(ANALYTICS_CONFIG_KEYS);
@@ -87,8 +119,11 @@ async function saveAnalyticsConfig(req, res) {
     const values = {};
     for (const key of ANALYTICS_CONFIG_KEYS) {
       let value = String(body[key] ?? '').trim();
-      if (key === 'umami_script_url' && value) value = normalizeAnalyticsScriptUrl(value);
-      if (['umami_enabled', 'cf_analytics_enabled'].includes(key)) {
+      if (['umami_script_url', 'generic_analytics_script_url'].includes(key) && value) {
+        value = normalizeAnalyticsScriptUrl(value);
+      }
+      if (key === 'generic_analytics_data_attributes') value = normalizeGenericAnalyticsAttributes(value);
+      if (ANALYTICS_ENABLED_KEYS.has(key)) {
         value = ['1', 'true', 'on'].includes(value.toLowerCase()) ? '1' : '0';
       }
       values[key] = value;
@@ -100,6 +135,12 @@ async function saveAnalyticsConfig(req, res) {
     if (values.cf_analytics_enabled === '1' && !values.cf_beacon_token) {
       return fail(res, '启用 Cloudflare Web Analytics 前请填写 Beacon Token');
     }
+    if (values.clarity_enabled === '1' && !/^[a-z0-9_-]{4,100}$/i.test(values.clarity_project_id)) {
+      return fail(res, '请输入有效的 Microsoft Clarity Project ID');
+    }
+    if (values.generic_analytics_enabled === '1' && !values.generic_analytics_script_url) {
+      return fail(res, '启用通用统计前请填写 HTTPS 脚本 URL');
+    }
 
     // 始终完整写入五项配置：复选框未勾选时也要可靠保存为 0，避免前端
     // FormData 省略未勾选字段后留下旧状态。
@@ -108,8 +149,8 @@ async function saveAnalyticsConfig(req, res) {
     return ok(res, await analyticsConfig(), '第三方统计设置已保存');
   } catch (error) {
     console.error('保存统计配置失败：', error);
-    if (error instanceof TypeError || /Umami 脚本地址/.test(String(error?.message || ''))) {
-      return fail(res, error.message || 'Umami Script URL 格式不正确');
+    if (error instanceof TypeError || /(脚本地址|通用统计参数)/.test(String(error?.message || ''))) {
+      return fail(res, error.message || '统计脚本 URL 或参数格式不正确');
     }
     return fail(res, safeApiErrorMessage(error), 500);
   }
