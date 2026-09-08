@@ -348,7 +348,7 @@ async function syncPartnersFromCsv(items) {
       }
     }
     return { inserted, updated, total: items.length };
-  }, { priority: 'background', label: 'sync partners from csv', maxWaitMs: 120000 });
+  }, { priority: 'background', label: 'sync partners from csv', maxWaitMs: 120000, durability: 'full' });
 }
 
 function listPartnersForExport() {

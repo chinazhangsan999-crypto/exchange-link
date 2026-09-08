@@ -59,7 +59,7 @@ async function createClaimToken({ tokenHash, partnerId, ip, ttlSeconds, startedA
   return withTransaction(async transaction => {
     await transaction.run("DELETE FROM inflow_claim_tokens WHERE expires_at < datetime('now')");
     return transaction.run("INSERT INTO inflow_claim_tokens(token_hash, partner_id, ip, expires_at, started_at_ms, referer) VALUES (?, ?, ?, datetime('now', ?), ?, ?)", [tokenHash, partnerId, ip, `+${ttlSeconds} seconds`, startedAtMs, referer || '']);
-  }, { priority: 'traffic', label: 'create inflow claim' });
+  }, { priority: 'traffic', label: 'create inflow claim', durability: 'normal' });
 }
 
 async function getValidClaimTokenHash(tokenHash) {
@@ -91,7 +91,7 @@ async function processTrackPing({ tokenHash, claim, clientIp, userAgent, visitId
       }
     }
     return { alreadyUsed: false, newlyCounted: !duplicated, autoApproved };
-  }, { priority: 'traffic', label: 'record inbound ping' });
+  }, { priority: 'traffic', label: 'record inbound ping', durability: 'normal' });
 }
 
 async function recordOutbound(linkId, clientIp, attribution = {}) {
@@ -99,7 +99,7 @@ async function recordOutbound(linkId, clientIp, attribution = {}) {
   const visitId = typeof attribution.visitId === 'string' && attribution.visitId.length <= 128 ? attribution.visitId : null;
   return withTransaction(async transaction => {
     await transaction.run("INSERT INTO outbound_logs(link_id, client_ip, source_partner_id, visit_id, created_at) VALUES (?, ?, ?, ?, datetime('now'))", [linkId, clientIp, sourcePartnerId, visitId]);
-  }, { priority: 'traffic', label: 'record outbound click' });
+  }, { priority: 'traffic', label: 'record outbound click', durability: 'normal' });
 }
 
 async function getOverviewTraffic() {

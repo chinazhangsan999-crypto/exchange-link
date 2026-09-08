@@ -78,9 +78,12 @@ async function getRiskControlConfig() {
 }
 
 async function upsertConfig(key, value) {
-  return run(`INSERT INTO site_configs(key, value, updated_at)
-    VALUES (?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`, [key, value]);
+  return withTransaction(
+    ({ run: txRun }) => txRun(`INSERT INTO site_configs(key, value, updated_at)
+      VALUES (?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`, [key, value]),
+    { priority: 'interactive', label: 'save system configuration', durability: 'full' }
+  );
 }
 
 async function upsertConfigs(entries) {
@@ -92,7 +95,7 @@ async function upsertConfigs(entries) {
         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`, [key, value]));
     }
     return results;
-  });
+  }, { priority: 'interactive', label: 'save system configuration', durability: 'full' });
 }
 
 async function getAdminByUsername(username, fields = 'full') {
@@ -101,7 +104,10 @@ async function getAdminByUsername(username, fields = 'full') {
 }
 
 async function updateAdminPassword(id, passwordHash) {
-  return run('UPDATE admins SET password_hash = ? WHERE id = ?', [passwordHash, id]);
+  return withTransaction(
+    ({ run: txRun }) => txRun('UPDATE admins SET password_hash = ? WHERE id = ?', [passwordHash, id]),
+    { priority: 'interactive', label: 'change admin password', durability: 'full' }
+  );
 }
 
 async function listCategories() {
@@ -131,7 +137,7 @@ async function saveCategoryOrder(items) {
       ));
     }
     return results;
-  });
+  }, { priority: 'interactive', label: 'save category order', durability: 'full' });
 }
 
 async function deleteCategory(id) {

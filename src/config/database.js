@@ -12,6 +12,15 @@ const db = new sqlite3.Database(DB_PATH);
 db.configure('busyTimeout', 5000);
 
 const SQLITE_WRITE_RETRY_LIMIT = 3;
+const TRANSACTION_DURABILITY = new Set(['normal', 'full']);
+
+function normalizeTransactionDurability(value) {
+  const durability = String(value || 'normal').toLowerCase();
+  if (!TRANSACTION_DURABILITY.has(durability)) {
+    throw new TypeError('SQLite 事务持久性必须是 normal 或 full');
+  }
+  return durability;
+}
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const isTransientWriteLock = error => /SQLITE_(BUSY|LOCKED)/.test(String(error?.code || error?.message || ''));
@@ -64,7 +73,7 @@ const all = (sql, params = []) => new Promise((resolve, reject) => {
 });
 
 /** 在独立连接中执行原子事务，避免共享连接的并发 BEGIN 冲突。 */
-async function withTransactionDirect(work) {
+async function withTransactionDirect(work, { durability = 'normal' } = {}) {
   const transactionDb = new sqlite3.Database(DATABASE_PATH);
   transactionDb.configure('busyTimeout', 5000);
   const txRun = (sql, params = []) => new Promise((resolve, reject) => {
@@ -86,6 +95,8 @@ async function withTransactionDirect(work) {
 
   try {
     await txRun('PRAGMA foreign_keys = ON');
+    // 此连接独立于共享连接；关键事务在 BEGIN 前提升为 FULL，避免影响高频流水写入。
+    await txRun(`PRAGMA synchronous = ${normalizeTransactionDurability(durability).toUpperCase()}`);
     // 事务开始即申请写锁，避免先读后写时才突然出现 SQLITE_BUSY。
     await txRun('BEGIN IMMEDIATE TRANSACTION');
     transactionStarted = true;
@@ -116,8 +127,9 @@ async function withTransactionDirect(work) {
  * 事务回调仅允许数据库操作；网络请求必须在事务外完成。
  */
 function withTransaction(work, options = {}) {
+  const durability = normalizeTransactionDurability(options.durability);
   return dbWriteCoordinator.run(
-    () => retryTransientWrite(() => withTransactionDirect(work)),
+    () => retryTransientWrite(() => withTransactionDirect(work, { durability })),
     { priority: options.priority || 'interactive', label: options.label || 'sqlite transaction', maxWaitMs: options.maxWaitMs }
   );
 }

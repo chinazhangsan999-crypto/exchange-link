@@ -148,7 +148,7 @@ function syncAdsFromCsv(items) {
       }
     }
     return { inserted, updated };
-  }, { priority: 'background', label: 'sync ads from csv', maxWaitMs: 120000 });
+  }, { priority: 'background', label: 'sync ads from csv', maxWaitMs: 120000, durability: 'full' });
 }
 
 function deleteAd(id) {
@@ -173,7 +173,7 @@ function replaceAdsFromCsv(items) {
       ]);
     }
     return { inserted: items.length, total: items.length };
-  }, { priority: 'background', label: 'replace ads from csv', maxWaitMs: 120000 });
+  }, { priority: 'background', label: 'replace ads from csv', maxWaitMs: 120000, durability: 'full' });
 }
 
 function listAdsForExport() {
