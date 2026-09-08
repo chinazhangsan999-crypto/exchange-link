@@ -11,7 +11,7 @@ const {
   GUEST_JWT_SECRET,
   TRAFFIC_DEBUG
 } = require('../config/env');
-const { getClientIp, parseHostname, matchesPartnerDomain, normalizePartnerUrl, normalizeRegisteredDomain, normalizeSourceMarker } = require('../utils/network');
+const { getClientIp, parseHostname, matchesPartnerDomain, normalizePartnerUrl, normalizeRegisteredDomain } = require('../utils/network');
 const { normalizeUrl } = require('../utils/url');
 const { ok, fail, safeApiErrorMessage, isUniqueConstraintError } = require('../utils/http');
 const {
@@ -21,6 +21,9 @@ const {
   storePendingTrafficReferer,
   readPendingTrafficReferer,
   clearPendingTrafficReferer,
+  storePendingTrafficSource,
+  readPendingTrafficSource,
+  clearPendingTrafficSource,
   getCookie,
   isPartnerVisitRateLimited,
   storeVerificationNonce,
@@ -28,6 +31,7 @@ const {
   consumeVerificationNonce
 } = require('../middlewares/rateLimit');
 const PartnerModel = require('../models/PartnerModel');
+const SourceTokenModel = require('../models/SourceTokenModel');
 const LogModel = require('../models/LogModel');
 const SystemModel = require('../models/SystemModel');
 const AdModel = require('../models/AdsModel');
@@ -62,6 +66,25 @@ function trafficDebug(message) {
   if (TRAFFIC_DEBUG) console.log(`[流量排查] ${message}`);
 }
 
+function buildSourceEntryUrls(sourceSid, configuredSiteUrl) {
+  const encodedSid = encodeURIComponent(String(sourceSid || '').trim());
+  const relativePathUrl = `/r/${encodedSid}`;
+  const relativeQueryUrl = `/?sid=${encodedSid}`;
+  try {
+    const parsed = new URL(normalizeUrl(configuredSiteUrl));
+    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
+      throw new Error('本站地址配置不合法');
+    }
+    return {
+      pathUrl: new URL(relativePathUrl, parsed.origin).href,
+      queryUrl: new URL(relativeQueryUrl, parsed.origin).href
+    };
+  } catch {
+    // 禁止使用请求 Host 拼接公开地址；配置缺失时由浏览器按当前可信同源解析。
+    return { pathUrl: relativePathUrl, queryUrl: relativeQueryUrl };
+  }
+}
+
 function readAttributionVisit(req) {
   const token = decodeURIComponent(getCookie(req, ATTRIBUTION_COOKIE) || '');
   if (!token) return null;
@@ -76,13 +99,17 @@ function readAttributionVisit(req) {
   }
 }
 
-async function isLegitUser(req, refererOverride = '') {
+async function isLegitUser(req, refererOverride = '', { trustedSource = false } = {}) {
   const ua = String(req.headers['user-agent'] || '').trim();
   const invalidUa = /curl|python|requests|headlesschrome|postman|wget|httpclient|scrapy|bot|spider|crawl|slurp/i;
   if (!ua || invalidUa.test(ua)) {
     req.trafficBlockReason = '爬虫、无头浏览器或异常 User-Agent';
     return false;
   }
+
+  // 有效 SID 已在前置中间件中完成数据库解析和签名绑定；Referer 仅用于观察，
+  // 不能因为浏览器隐私策略将其删除而否定 SID 归属。
+  if (trustedSource) return true;
 
   const referer = String(refererOverride || req.get('Referer') || '').trim();
   let refererUrl;
@@ -112,13 +139,86 @@ async function isLegitUser(req, refererOverride = '') {
   return true;
 }
 
+function extractSourceSid(req) {
+  const pathMatch = String(req.path || '').match(/^\/r\/([^/]+)\/?$/);
+  if (pathMatch) {
+    try { return { present: true, value: decodeURIComponent(pathMatch[1]) }; }
+    catch { return { present: true, value: '' }; }
+  }
+  if (req.path === '/' && req.query && Object.prototype.hasOwnProperty.call(req.query, 'sid')) {
+    return { present: true, value: String(req.query.sid || '').trim() };
+  }
+  return { present: false, value: '' };
+}
+
+function cleanSidLandingUrl(req) {
+  if (String(req.path || '').startsWith('/r/')) return '/';
+  const query = String(req.originalUrl || '').split('?')[1] || '';
+  const params = new URLSearchParams(query);
+  params.delete('sid');
+  const suffix = params.toString();
+  return `${req.path || '/'}${suffix ? `?${suffix}` : ''}`;
+}
+
+async function resolveSidLanding(req) {
+  const sidInput = extractSourceSid(req);
+  if (!sidInput.present) return null;
+
+  const referer = String(req.get('Referer') || req.get('Referrer') || '').trim();
+  const observedDomain = normalizeRegisteredDomain(parseHostname(referer));
+  const [sidBinding, candidates] = await Promise.all([
+    SourceTokenModel.findActiveSid(sidInput.value),
+    PartnerModel.listInflowCandidates()
+  ]);
+  const domainPartner = observedDomain
+    ? candidates.find(item => normalizeRegisteredDomain(item.domain) === observedDomain)
+    : null;
+
+  let partnerId = null;
+  let method = 'unattributed';
+  if (domainPartner) {
+    partnerId = domainPartner.id;
+    if (!sidInput.value) method = 'domain_only';
+    else if (!sidBinding) method = 'invalid_sid_domain_match';
+    else if (Number(sidBinding.partner_id) === Number(domainPartner.id)) method = 'sid_domain_match';
+    else method = 'sid_domain_mismatch';
+  } else if (sidBinding) {
+    partnerId = sidBinding.partner_id;
+    method = observedDomain ? 'sid_fallback_unknown_domain' : 'sid_fallback_no_referer';
+  } else {
+    method = observedDomain ? 'invalid_sid_unknown_domain' : 'invalid_sid_no_referer';
+  }
+
+  return {
+    partnerId,
+    sourceTokenId: sidBinding?.token_id || null,
+    sidPartnerId: sidBinding?.partner_id || null,
+    domainPartnerId: domainPartner?.id || null,
+    method,
+    observedDomain,
+    referer
+  };
+}
+
 /**
  * 滑块门禁之前仅保存短效来源凭证。
  * 严禁在这里查询 24h 去重或写入 inbound_logs；正式计分只由 trackPing 完成。
  */
 async function preVerifyInflowTraffic(req, res, next) {
   try {
-    if (req.method !== 'GET' || req.path !== '/') return next();
+    if (req.method !== 'GET') return next();
+    const sidInput = extractSourceSid(req);
+    if (sidInput.present) {
+      const source = await resolveSidLanding(req);
+      // 每次 SID 落地都覆盖旧归属；无效 SID 也必须清掉历史 Cookie，避免陈旧来源串号。
+      clearPendingTrafficReferer(res);
+      if (source?.partnerId) storePendingTrafficSource(req, res, source);
+      else clearPendingTrafficSource(res);
+      res.set('Cache-Control', 'private, no-store');
+      res.set('Referrer-Policy', 'no-referrer');
+      return res.redirect(302, cleanSidLandingUrl(req));
+    }
+    if (req.path !== '/') return next();
     const rawReferer = String(req.get('Referer') || req.get('Referrer') || '').trim();
     const ownHost = String(req.get('host') || '').toLowerCase();
     const refererHost = parseHostname(rawReferer);
@@ -137,41 +237,47 @@ async function trackInflow(req, res, next) {
   try {
     if (req.method !== 'GET' || req.path !== '/') return next();
     const ip = getClientIp(req);
+    const pendingSource = readPendingTrafficSource(req);
     const requestReferer = String(req.get('Referer') || '').trim();
     const restoredReferer = readPendingTrafficReferer(req);
-    const effectiveReferer = restoredReferer || requestReferer;
+    const effectiveReferer = pendingSource?.referer || restoredReferer || requestReferer;
+    if (pendingSource) clearPendingTrafficSource(res);
     if (restoredReferer) clearPendingTrafficReferer(res);
 
-    if (!ip || !(await isLegitUser(req, effectiveReferer))) {
+    if (!ip || !(await isLegitUser(req, effectiveReferer, { trustedSource: Boolean(pendingSource) }))) {
       trafficDebug(`拦截原因: ${req.trafficBlockReason || '无法识别客户端 IP'}`);
       return next();
     }
 
-    const refererUrl = new URL(effectiveReferer);
-    const domain = normalizeRegisteredDomain(refererUrl.hostname);
     const candidates = await PartnerModel.listInflowCandidates();
-    // 兼容历史上曾保存子域名的记录；新写入统一使用可注册主域名。
-    const partner = candidates.find(item => domain === normalizeRegisteredDomain(item.domain));
-    const markerPartner = partner || candidates.find(item => {
-      const marker = normalizeSourceMarker(item.source_marker);
-      return marker.length >= 4 && effectiveReferer.includes(marker);
-    });
-    if (!markerPartner) {
-      return next();
+    let partner = pendingSource
+      ? candidates.find(item => Number(item.id) === Number(pendingSource.partnerId))
+      : null;
+    let observedDomain = pendingSource?.observedDomain || '';
+    if (!partner) {
+      const refererUrl = new URL(effectiveReferer);
+      observedDomain = normalizeRegisteredDomain(refererUrl.hostname);
+      partner = candidates.find(item => observedDomain === normalizeRegisteredDomain(item.domain));
     }
+    if (!partner) return next();
     const now = Date.now();
-    if (isPartnerVisitRateLimited(markerPartner.id, ip)) {
+    if (isPartnerVisitRateLimited(partner.id, ip)) {
       return next();
     }
 
     const token = crypto.randomBytes(24).toString('base64url');
     await LogModel.createClaimToken({
       tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
-      partnerId: markerPartner.id,
+      partnerId: partner.id,
       ip,
       ttlSeconds: CLAIM_TTL_SECONDS,
       startedAtMs: now,
-      referer: effectiveReferer
+      referer: effectiveReferer,
+      sourceTokenId: pendingSource?.sourceTokenId || null,
+      sidPartnerId: pendingSource?.sidPartnerId || null,
+      domainPartnerId: pendingSource?.domainPartnerId || (pendingSource ? null : partner.id),
+      attributionMethod: pendingSource?.method || 'domain_only',
+      observedDomain
     });
     const cookieOptions = {
       maxAge: CLAIM_TTL_SECONDS * 1000,
@@ -469,6 +575,7 @@ async function applyLink(req, res) {
       return fail(res, '填写内容过长，请精简后重试');
     }
     if (!(await SystemModel.categoryExists(String(category).trim()))) return fail(res, '请选择有效的网站分类');
+    const configuredSiteUrl = await SystemModel.configValue('site_url');
     const result = await PartnerModel.createPendingPartner({
       name: String(name).trim(),
       domain,
@@ -482,10 +589,19 @@ async function applyLink(req, res) {
       `> **站点名称：** ${String(name).trim()}\n> **网站 URL：** ${cleanUrl}\n> **所属分类：** ${String(category).trim()}\n> **联系方式：** ${String(contact).trim() || '未填写'}\n> **提交时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
       { eventType: 'new_partner_apply' }
     );
+    const sourceUrls = buildSourceEntryUrls(result.sourceSid, configuredSiteUrl);
     return res.status(200).json({
       code: 200,
       msg: '申请成功，请在贵站添加本站友链等待激活！',
-      data: { id: result.id, domain }
+      data: {
+        id: result.id,
+        domain,
+        source_sid: result.sourceSid,
+        source_links: {
+          path: sourceUrls.pathUrl,
+          query: sourceUrls.queryUrl
+        }
+      }
     });
   } catch (error) {
     console.error('提交友链申请失败：', error);

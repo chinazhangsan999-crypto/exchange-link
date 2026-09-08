@@ -159,7 +159,7 @@ async function initializeDatabase() {
   await run('PRAGMA synchronous = NORMAL');
   await run(`CREATE TABLE IF NOT EXISTS partners (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, domain TEXT NOT NULL UNIQUE,
-    url TEXT NOT NULL, category TEXT NOT NULL, description TEXT DEFAULT '', contact TEXT DEFAULT '', source_marker TEXT NOT NULL DEFAULT '', priority INTEGER DEFAULT 0,
+    url TEXT NOT NULL, category TEXT NOT NULL, description TEXT DEFAULT '', contact TEXT DEFAULT '', priority INTEGER DEFAULT 0,
     is_internal INTEGER DEFAULT 0, is_whitelisted INTEGER DEFAULT 0, is_exempt INTEGER DEFAULT 0,
     is_approved INTEGER DEFAULT 0,
     backlink_status TEXT DEFAULT 'pending', backlink_url TEXT DEFAULT NULL, last_checked_at DATETIME DEFAULT NULL, failed_check_count INTEGER DEFAULT 0, lost_count INTEGER DEFAULT 0,
@@ -168,7 +168,10 @@ async function initializeDatabase() {
   )`);
   await run(`CREATE TABLE IF NOT EXISTS inbound_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT, link_id INTEGER NOT NULL, client_ip TEXT NOT NULL,
-    user_agent TEXT DEFAULT '', referer TEXT DEFAULT NULL, visit_id TEXT DEFAULT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    user_agent TEXT DEFAULT '', referer TEXT DEFAULT NULL, visit_id TEXT DEFAULT NULL,
+    source_token_id INTEGER DEFAULT NULL, sid_partner_id INTEGER DEFAULT NULL,
+    domain_partner_id INTEGER DEFAULT NULL, attribution_method TEXT DEFAULT 'domain_only',
+    observed_domain TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(link_id) REFERENCES partners(id) ON DELETE CASCADE
   )`);
   await run('CREATE INDEX IF NOT EXISTS idx_inbound_time_link ON inbound_logs(created_at, link_id, client_ip)');
@@ -184,7 +187,19 @@ async function initializeDatabase() {
   if (!inboundColumns.some(column => column.name === 'visit_id')) {
     await run('ALTER TABLE inbound_logs ADD COLUMN visit_id TEXT DEFAULT NULL');
   }
+  const inboundAttributionMigrations = [
+    ['source_token_id', 'ALTER TABLE inbound_logs ADD COLUMN source_token_id INTEGER DEFAULT NULL'],
+    ['sid_partner_id', 'ALTER TABLE inbound_logs ADD COLUMN sid_partner_id INTEGER DEFAULT NULL'],
+    ['domain_partner_id', 'ALTER TABLE inbound_logs ADD COLUMN domain_partner_id INTEGER DEFAULT NULL'],
+    ['attribution_method', "ALTER TABLE inbound_logs ADD COLUMN attribution_method TEXT DEFAULT 'domain_only'"],
+    ['observed_domain', "ALTER TABLE inbound_logs ADD COLUMN observed_domain TEXT DEFAULT ''"]
+  ];
+  for (const [column, sql] of inboundAttributionMigrations) {
+    if (!inboundColumns.some(item => item.name === column)) await run(sql);
+  }
   await run('CREATE INDEX IF NOT EXISTS idx_inbound_visit_time ON inbound_logs(visit_id, created_at)');
+  await run('CREATE INDEX IF NOT EXISTS idx_inbound_source_token_time ON inbound_logs(source_token_id, created_at)');
+  await run('CREATE INDEX IF NOT EXISTS idx_inbound_attribution_time ON inbound_logs(attribution_method, created_at)');
   await run(`CREATE TABLE IF NOT EXISTS inflow_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, partner_id INTEGER NOT NULL, ip TEXT NOT NULL,
     user_agent TEXT DEFAULT '', fingerprint TEXT DEFAULT '', is_compliant INTEGER DEFAULT 0,
@@ -245,6 +260,9 @@ async function initializeDatabase() {
   await run(`CREATE TABLE IF NOT EXISTS inflow_claim_tokens (
     token_hash TEXT PRIMARY KEY, partner_id INTEGER NOT NULL, ip TEXT NOT NULL,
     expires_at DATETIME NOT NULL, started_at_ms INTEGER NOT NULL DEFAULT 0, referer TEXT DEFAULT NULL,
+    source_token_id INTEGER DEFAULT NULL, sid_partner_id INTEGER DEFAULT NULL,
+    domain_partner_id INTEGER DEFAULT NULL, attribution_method TEXT DEFAULT 'domain_only',
+    observed_domain TEXT DEFAULT '',
     claimed_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(partner_id) REFERENCES partners(id) ON DELETE CASCADE
   )`);
@@ -258,7 +276,6 @@ async function initializeDatabase() {
     ['is_whitelisted', 'ALTER TABLE partners ADD COLUMN is_whitelisted INTEGER DEFAULT 0'],
     ['is_exempt', 'ALTER TABLE partners ADD COLUMN is_exempt INTEGER DEFAULT 0'],
     ['contact', "ALTER TABLE partners ADD COLUMN contact TEXT DEFAULT ''"],
-    ['source_marker', "ALTER TABLE partners ADD COLUMN source_marker TEXT NOT NULL DEFAULT ''"],
     ['backlink_status', "ALTER TABLE partners ADD COLUMN backlink_status TEXT DEFAULT 'pending'"],
     ['backlink_url', 'ALTER TABLE partners ADD COLUMN backlink_url TEXT DEFAULT NULL'],
     ['last_checked_at', 'ALTER TABLE partners ADD COLUMN last_checked_at DATETIME DEFAULT NULL'],
@@ -272,8 +289,13 @@ async function initializeDatabase() {
   for (const [column, sql] of partnerMigrations) {
     if (!partnerColumns.some(item => item.name === column)) await run(sql);
   }
+  // source_marker 已由不可编辑的随机 SID 取代；先移除依赖索引，再安全删除旧列。
+  await run('DROP INDEX IF EXISTS idx_partners_source_marker_unique');
+  const currentPartnerColumns = await all('PRAGMA table_info(partners)');
+  if (currentPartnerColumns.some(item => item.name === 'source_marker')) {
+    await run('ALTER TABLE partners DROP COLUMN source_marker');
+  }
   await run('CREATE INDEX IF NOT EXISTS idx_partners_internal ON partners(is_internal)');
-  await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_partners_source_marker_unique ON partners(source_marker) WHERE source_marker <> ''");
   await run('CREATE INDEX IF NOT EXISTS idx_partners_whitelisted ON partners(is_whitelisted)');
   await run('CREATE INDEX IF NOT EXISTS idx_partners_exempt ON partners(is_exempt, is_approved)');
   await run('CREATE INDEX IF NOT EXISTS idx_partners_ping_exempt ON partners(ping_exempt, is_approved)');
@@ -295,6 +317,16 @@ async function initializeDatabase() {
   }
   if (!tokenColumns.some(column => column.name === 'referer')) {
     await run('ALTER TABLE inflow_claim_tokens ADD COLUMN referer TEXT DEFAULT NULL');
+  }
+  const claimAttributionMigrations = [
+    ['source_token_id', 'ALTER TABLE inflow_claim_tokens ADD COLUMN source_token_id INTEGER DEFAULT NULL'],
+    ['sid_partner_id', 'ALTER TABLE inflow_claim_tokens ADD COLUMN sid_partner_id INTEGER DEFAULT NULL'],
+    ['domain_partner_id', 'ALTER TABLE inflow_claim_tokens ADD COLUMN domain_partner_id INTEGER DEFAULT NULL'],
+    ['attribution_method', "ALTER TABLE inflow_claim_tokens ADD COLUMN attribution_method TEXT DEFAULT 'domain_only'"],
+    ['observed_domain', "ALTER TABLE inflow_claim_tokens ADD COLUMN observed_domain TEXT DEFAULT ''"]
+  ];
+  for (const [column, sql] of claimAttributionMigrations) {
+    if (!tokenColumns.some(item => item.name === column)) await run(sql);
   }
   await run('CREATE TABLE IF NOT EXISTS admins (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL)');
   await run(`CREATE TABLE IF NOT EXISTS categories (

@@ -56,10 +56,37 @@ async function cleanupOldLogs() {
   return results;
 }
 
-async function createClaimToken({ tokenHash, partnerId, ip, ttlSeconds, startedAtMs, referer }) {
+async function createClaimToken({
+  tokenHash,
+  partnerId,
+  ip,
+  ttlSeconds,
+  startedAtMs,
+  referer,
+  sourceTokenId = null,
+  sidPartnerId = null,
+  domainPartnerId = null,
+  attributionMethod = 'domain_only',
+  observedDomain = ''
+}) {
   return withTransaction(async transaction => {
     await transaction.run("DELETE FROM inflow_claim_tokens WHERE expires_at < datetime('now')");
-    return transaction.run("INSERT INTO inflow_claim_tokens(token_hash, partner_id, ip, expires_at, started_at_ms, referer) VALUES (?, ?, ?, datetime('now', ?), ?, ?)", [tokenHash, partnerId, ip, `+${ttlSeconds} seconds`, startedAtMs, referer || '']);
+    return transaction.run(`INSERT INTO inflow_claim_tokens(
+      token_hash, partner_id, ip, expires_at, started_at_ms, referer,
+      source_token_id, sid_partner_id, domain_partner_id, attribution_method, observed_domain
+    ) VALUES (?, ?, ?, datetime('now', ?), ?, ?, ?, ?, ?, ?, ?)`, [
+      tokenHash,
+      partnerId,
+      ip,
+      `+${ttlSeconds} seconds`,
+      startedAtMs,
+      referer || '',
+      sourceTokenId,
+      sidPartnerId,
+      domainPartnerId,
+      String(attributionMethod || 'domain_only').slice(0, 64),
+      String(observedDomain || '').slice(0, 253)
+    ]);
   }, { priority: 'traffic', label: 'create inflow claim', durability: 'normal' });
 }
 
@@ -78,7 +105,29 @@ async function processTrackPing({ tokenHash, claim, clientIp, userAgent, visitId
 
     const duplicated = await transaction.get("SELECT id FROM inbound_logs WHERE link_id = ? AND client_ip = ? AND created_at >= datetime('now', '-24 hours') LIMIT 1", [claim.partner_id, clientIp]);
     // 每次通过验证的真实心跳都是一条 PV 事实；计分和自动审核仍使用 DISTINCT IP 去重。
-    await transaction.run("INSERT INTO inbound_logs(link_id, client_ip, user_agent, referer, visit_id, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))", [claim.partner_id, clientIp, userAgent, claim.referer || '', visitId]);
+    await transaction.run(`INSERT INTO inbound_logs(
+      link_id, client_ip, user_agent, referer, visit_id,
+      source_token_id, sid_partner_id, domain_partner_id, attribution_method, observed_domain,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`, [
+      claim.partner_id,
+      clientIp,
+      userAgent,
+      claim.referer || '',
+      visitId,
+      claim.source_token_id || null,
+      claim.sid_partner_id || null,
+      claim.domain_partner_id || null,
+      String(claim.attribution_method || 'domain_only').slice(0, 64),
+      String(claim.observed_domain || '').slice(0, 253)
+    ]);
+
+    // SID 使用次数只在通过滑块并完成 3 秒真实心跳后增加；无效或被放弃的落地页不计入。
+    if (claim.source_token_id) {
+      await transaction.run(`UPDATE partner_source_tokens
+        SET used_count = used_count + 1, last_used_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 1`, [claim.source_token_id]);
+    }
 
     let autoApproved = false;
     const pending = await transaction.get('SELECT is_approved FROM partners WHERE id = ?', [claim.partner_id]);

@@ -1,5 +1,6 @@
 'use strict';
 
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { LRUCache } = require('lru-cache');
 const { GUEST_JWT_SECRET, IS_PRODUCTION, TRAFFIC_DEBUG } = require('../config/env');
@@ -9,9 +10,11 @@ const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const SECURITY_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 const GUEST_VERIFY_COOKIE = 'guest_verify_token';
 const PENDING_TRAFFIC_REFERER_COOKIE = 'pending_traffic_referer';
+const PENDING_TRAFFIC_SOURCE_COOKIE = 'pending_inflow_source';
 const VERIFY_NONCE_TTL_MS = 60 * 1000;
 const VERIFY_COOKIE_TTL_MS = 12 * 60 * 60 * 1000;
 const PENDING_TRAFFIC_REFERER_TTL_SECONDS = 5 * 60;
+const PENDING_TRAFFIC_SOURCE_TTL_SECONDS = 15 * 60;
 
 // 容量受控的内存状态：LRU 自动淘汰，避免恶意 IP/端点扫描无限占用内存。
 const visitRateLimitCache = new LRUCache({ max: 100000, ttl: RATE_LIMIT_WINDOW_MS });
@@ -66,6 +69,74 @@ function readPendingTrafficReferer(req) {
 
 function clearPendingTrafficReferer(res) {
   res.cookie(PENDING_TRAFFIC_REFERER_COOKIE, '', {
+    maxAge: 0,
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: IS_PRODUCTION,
+    path: '/'
+  });
+}
+
+function requestUaHash(req) {
+  return crypto.createHash('sha256')
+    .update(String(req.get('user-agent') || '').slice(0, 300))
+    .digest('hex');
+}
+
+/** 保存已解析的 SID/Domain 归属，用于跨越清理 URL 和滑块验证流程。 */
+function storePendingTrafficSource(req, res, source) {
+  const token = jwt.sign({
+    scope: 'pending-inflow-source',
+    role: 'guest',
+    type: 'pending-inflow-source',
+    partnerId: Number(source.partnerId),
+    sourceTokenId: Number(source.sourceTokenId) || null,
+    sidPartnerId: Number(source.sidPartnerId) || null,
+    domainPartnerId: Number(source.domainPartnerId) || null,
+    method: String(source.method || '').slice(0, 64),
+    observedDomain: String(source.observedDomain || '').slice(0, 253),
+    referer: String(source.referer || '').slice(0, 2048),
+    ip: getClientIp(req),
+    uaHash: requestUaHash(req)
+  }, GUEST_JWT_SECRET, { expiresIn: PENDING_TRAFFIC_SOURCE_TTL_SECONDS, algorithm: 'HS256' });
+  res.cookie(PENDING_TRAFFIC_SOURCE_COOKIE, token, {
+    maxAge: PENDING_TRAFFIC_SOURCE_TTL_SECONDS * 1000,
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: IS_PRODUCTION,
+    path: '/'
+  });
+}
+
+function readPendingTrafficSource(req) {
+  try {
+    const payload = jwt.verify(
+      readCookie(req, PENDING_TRAFFIC_SOURCE_COOKIE),
+      GUEST_JWT_SECRET,
+      { algorithms: ['HS256'] }
+    );
+    if (payload?.scope !== 'pending-inflow-source'
+      || payload?.role !== 'guest'
+      || payload?.type !== 'pending-inflow-source'
+      || payload?.ip !== getClientIp(req)
+      || payload?.uaHash !== requestUaHash(req)
+      || !Number.isSafeInteger(Number(payload?.partnerId))) return null;
+    return {
+      partnerId: Number(payload.partnerId),
+      sourceTokenId: Number(payload.sourceTokenId) || null,
+      sidPartnerId: Number(payload.sidPartnerId) || null,
+      domainPartnerId: Number(payload.domainPartnerId) || null,
+      method: String(payload.method || ''),
+      observedDomain: String(payload.observedDomain || ''),
+      referer: String(payload.referer || '')
+    };
+  } catch {
+    return null;
+  }
+}
+
+function clearPendingTrafficSource(res) {
+  res.cookie(PENDING_TRAFFIC_SOURCE_COOKIE, '', {
     maxAge: 0,
     httpOnly: true,
     sameSite: 'lax',
@@ -212,6 +283,9 @@ module.exports = {
   storePendingTrafficReferer,
   readPendingTrafficReferer,
   clearPendingTrafficReferer,
+  storePendingTrafficSource,
+  readPendingTrafficSource,
+  clearPendingTrafficSource,
   getCookie,
   isPartnerVisitRateLimited,
   shouldSendSecurityAlert,

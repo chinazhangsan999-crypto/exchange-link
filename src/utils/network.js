@@ -42,11 +42,6 @@ function normalizePartnerUrl(value) {
   };
 }
 
-/** 来路标记只去除空白，保留大小写；URL 路径和查询参数可能区分大小写。 */
-function normalizeSourceMarker(value) {
-  return String(value || '').trim();
-}
-
 /** 已登记根域名匹配自身或任意子域名，避免 evil-example.com 等伪匹配。 */
 function matchesPartnerDomain(hostname, registeredDomain) {
   const host = String(hostname || '').toLowerCase().replace(/^www\./, '');
@@ -129,7 +124,6 @@ module.exports = {
   parseHostname,
   normalizeRegisteredDomain,
   normalizePartnerUrl,
-  normalizeSourceMarker,
   matchesPartnerDomain,
   isSensitiveNetworkIp
 };

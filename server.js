@@ -8,6 +8,7 @@ const { PORT } = require('./src/config/env');
 const { closeDatabase } = require('./src/config/database');
 const { dbWriteCoordinator } = require('./src/services/DbWriteCoordinator');
 const { initializeDatabase } = require('./src/models/SystemModel');
+const { initializeSourceTokenTables, ensureAllPartnersHaveSid } = require('./src/models/SourceTokenModel');
 const { initializeAdsTable } = require('./src/models/AdsModel');
 const { initializeMirrorsTable, syncMirrorsToPartners } = require('./src/models/MirrorModel');
 const { startJobs, stopJobs } = require('./src/jobs/cron');
@@ -29,9 +30,11 @@ process.on('unhandledRejection', reason => {
 });
 
 initializeDatabase()
+  .then(initializeSourceTokenTables)
   .then(initializeAdsTable)
   .then(initializeMirrorsTable)
   .then(syncMirrorsToPartners)
+  .then(ensureAllPartnersHaveSid)
   .then(() => {
     httpServer = app.listen(PORT, () => {
       console.log(`互助友链系统已启动：http://localhost:${PORT}`);
