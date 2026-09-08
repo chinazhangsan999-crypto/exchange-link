@@ -17,7 +17,8 @@ function notifyChanged(options) {
 function notifyPingAlert(link, title, content, options) {
   if (typeof options?.sendAdminAlert !== 'function') return;
   // 告警通道不可影响探活状态机与数据库写入。
-  void options.sendAdminAlert(title, content);
+  const eventType = title.includes('恢复') ? 'ping_recovered' : 'ping_failed';
+  void options.sendAdminAlert(title, content, { eventType });
 }
 
 function pingAlertContext(link, failedCount, error) {

@@ -12,6 +12,7 @@ const ratio = (numerator, denominator, digits = 4) => denominator ? Number((nume
 const MIN_ALERT_UV = 30;
 const MIN_ATTRIBUTED_SESSIONS = 10;
 const SINGLE_IP_RATIO_THRESHOLD = 0.35;
+let riskScanInProgress = false;
 
 function buildRiskAssessment(uv, diagnostics) {
   const attributedVisits = asNumber(diagnostics.attributed_inbound_visits);
@@ -173,8 +174,16 @@ function formatRiskAlert(report, dashboardReasons) {
 }
 
 async function scanAndNotify({ sendAdminAlert } = {}) {
+  if (riskScanInProgress) return { skipped: 'already_running', sent: 0, candidates: 0 };
   if (typeof sendAdminAlert !== 'function') return { skipped: 'missing_sender' };
-  if (!String(await SystemModel.configValue('webhook_url')).trim()) return { skipped: 'missing_webhook' };
+  const [webhookUrl, barkEnabled, barkDeviceKey] = await Promise.all([
+    SystemModel.configValue('webhook_url'), SystemModel.configValue('bark_enabled'), SystemModel.configValue('bark_device_key')
+  ]);
+  if (!String(webhookUrl).trim() && !(String(barkEnabled) === '1' && String(barkDeviceKey).trim())) {
+    return { skipped: 'missing_alert_channel' };
+  }
+  riskScanInProgress = true;
+  try {
   const metrics = await LogModel.listRiskPartnerMetrics();
   // 先按 UV 做成本低的样本量过滤；完整分层判断只能由统一诊断结果得出。
   const candidates = metrics.filter(item => asNumber(item.score_24h) >= MIN_ALERT_UV);
@@ -195,19 +204,24 @@ async function scanAndNotify({ sendAdminAlert } = {}) {
   const baselineKey = 'risk_alert_webhook_baselined';
   if (String(await SystemModel.configValue(baselineKey)) !== '1') {
     // 初次部署仅登记当前已存在的风险状态；后续新增、恢复后再出现、风险升级才会告警。
-    await Promise.allSettled(reports.map(item => RiskAlertModel.shouldNotify(item.report.partner.id, item.fingerprint)));
+    await Promise.allSettled(reports.map(item => RiskAlertModel.baselineRiskState(item.report.partner.id, item.fingerprint)));
     await SystemModel.upsertConfig(baselineKey, '1');
     return { candidates: candidates.length, sent: 0, baselined: reports.length };
   }
 
   const results = await runPromisePool(reports, 3, async item => {
     const { report, reasons, fingerprint } = item;
-    const decision = await RiskAlertModel.shouldNotify(report.partner.id, fingerprint);
+    const decision = await RiskAlertModel.getNotificationDecision(report.partner.id, fingerprint);
     if (!decision.notify) return { skipped: decision.reason };
-    const sent = await sendAdminAlert('🚨 疑似刷量预警', formatRiskAlert(report, reasons));
+    const sent = await sendAdminAlert('🚨 疑似刷量预警', formatRiskAlert(report, reasons), { eventType: 'risk_alert' });
+    if (sent?.sent) await RiskAlertModel.markAlertDelivered(report.partner.id, fingerprint);
+    else await RiskAlertModel.markAlertFailed(report.partner.id, fingerprint, sent?.reason || '告警通道未送达');
     return { sent: Boolean(sent?.sent), reason: decision.reason };
   }, 15000);
   return { candidates: candidates.length, sent: results.filter(result => result.status === 'fulfilled' && result.value?.sent).length, results };
+  } finally {
+    riskScanInProgress = false;
+  }
 }
 
 module.exports = { analyzePartner, dashboardRiskReasons, buildRiskAssessment, scanAndNotify };

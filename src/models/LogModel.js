@@ -5,9 +5,10 @@ const LOG_RETENTION_DAYS = 7;
 const LOG_DELETE_BATCH_SIZE = 5000;
 const LOG_DELETE_YIELD_MS = 500;
 const LOG_CLEANUP_TARGETS = [
-  { table: 'inbound_logs', timestampColumn: 'created_at' },
-  { table: 'inflow_events', timestampColumn: 'timestamp' },
-  { table: 'outbound_logs', timestampColumn: 'created_at' }
+  { table: 'inbound_logs', timestampColumn: 'created_at', retentionDays: LOG_RETENTION_DAYS },
+  { table: 'inflow_events', timestampColumn: 'timestamp', retentionDays: LOG_RETENTION_DAYS },
+  { table: 'outbound_logs', timestampColumn: 'created_at', retentionDays: LOG_RETENTION_DAYS },
+  { table: 'webhook_delivery_logs', timestampColumn: 'created_at', retentionDays: 30 }
 ];
 
 const delay = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
@@ -37,15 +38,13 @@ async function cleanupTableInBatches(target, cutoff) {
 }
 
 async function cleanupOldLogs() {
-  const cutoff = new Date(Date.now() - LOG_RETENTION_DAYS * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .slice(0, 19)
-    .replace('T', ' ');
   const results = [];
 
   // 串行清理各事实表，避免多个批量 DELETE 同时争抢 SQLite 写锁。
   for (const target of LOG_CLEANUP_TARGETS) {
     try {
+      const cutoff = new Date(Date.now() - target.retentionDays * 24 * 60 * 60 * 1000)
+        .toISOString().slice(0, 19).replace('T', ' ');
       const value = await cleanupTableInBatches(target, cutoff);
       results.push({ table: target.table, status: 'fulfilled', value });
     } catch (reason) {

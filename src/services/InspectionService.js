@@ -201,7 +201,8 @@ async function updateBacklinkStatus(link, status, checkedUrl, options = {}) {
     if (link.backlink_status !== 'lost' && typeof options.sendAdminAlert === 'function') {
       void options.sendAdminAlert(
         '🔴 反向友链掉链告警',
-        `> **站点名称：** ${link.name || `#${link.id}`}\n> **站点网址：** ${link.url || checkedUrl}\n> **累计掉链次数：** ${lostCount}\n> **巡检时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`
+        `> **站点名称：** ${link.name || `#${link.id}`}\n> **站点网址：** ${link.url || checkedUrl}\n> **累计掉链次数：** ${lostCount}\n> **巡检时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+        { eventType: 'backlink_lost' }
       );
     }
     return { id: link.id, backlink_status: 'lost', failed_check_count: 0, lost_count: lostCount, checked_url: checkedUrl };

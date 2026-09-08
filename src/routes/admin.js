@@ -21,6 +21,9 @@ router.get('/api/admin/settings/risk-control', AdminController.getRiskControlSet
 router.post(['/api/admin/config', '/api/admin/settings'], AdminController.saveSettings);
 router.post('/api/admin/settings/logo', siteLogoUpload, AdminController.uploadSiteLogo);
 router.post('/api/admin/settings/test-webhook', AdminController.testWebhook);
+router.post('/api/admin/settings/test-bark', AdminController.testBark);
+router.get('/api/admin/webhook/health', AdminController.getWebhookHealth);
+router.get('/api/admin/webhook/deliveries', AdminController.listWebhookDeliveries);
 router.get('/api/admin/review', AdminController.getReview);
 router.get('/api/admin/overview', AdminController.getOverview);
 router.get('/api/admin/dashboard/stats', AdminController.getDashboardStats);

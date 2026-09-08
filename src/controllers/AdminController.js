@@ -21,7 +21,8 @@ const InspectionService = require('../services/InspectionService');
 const PingService = require('../services/PingService');
 const RiskService = require('../services/RiskService');
 const CacheService = require('../services/CacheService');
-const { sendAdminAlert } = require('../services/AlertService');
+const WebhookDeliveryModel = require('../models/WebhookDeliveryModel');
+const { sendAdminAlert, sendBarkTestAlert, providerForUrl } = require('../services/AlertService');
 const { runTrackedJob } = require('../jobs/cron');
 const { runPromisePool } = require('../utils/asyncPool');
 
@@ -102,7 +103,13 @@ async function saveAnalyticsConfig(req, res) {
 }
 
 async function getSettings(req, res) {
-  try { return ok(res, await SystemModel.getAllConfig()); }
+  try {
+    const settings = await SystemModel.getAllConfig();
+    // Device Key 从不回显到浏览器；空值保存时由 saveSettings 保留现有密钥。
+    settings.bark_device_key_configured = Boolean(String(settings.bark_device_key || '').trim());
+    settings.bark_device_key = '';
+    return ok(res, settings);
+  }
   catch { return fail(res, '获取系统设置失败', 500); }
 }
 
@@ -115,9 +122,26 @@ async function saveSettings(req, res) {
   try {
     const body = req.body || {};
     const entries = [];
+    const currentBarkKey = await SystemModel.configValue('bark_device_key');
+    const barkEnabled = body.bark_enabled === undefined
+      ? String(await SystemModel.configValue('bark_enabled')) === '1'
+      : ['1', 'true', 'on'].includes(String(body.bark_enabled).toLowerCase());
+    const barkDeviceKey = String(body.bark_device_key || '').trim() || String(currentBarkKey || '').trim();
+    const barkServerUrl = String(body.bark_server_url === undefined
+      ? await SystemModel.configValue('bark_server_url') : body.bark_server_url).trim();
+    if (barkEnabled && (!barkDeviceKey || !barkServerUrl)) return fail(res, '启用 Bark 前请填写服务地址和 Device Key');
+    if (barkEnabled) {
+      const parsedBarkUrl = new URL(barkServerUrl);
+      if (parsedBarkUrl.protocol !== 'https:') return fail(res, 'Bark 服务地址必须使用 HTTPS');
+    }
     for (const key of Object.keys(SystemModel.CONFIG_DEFAULTS)) {
       if (body[key] === undefined) continue;
       let value = String(body[key]).trim();
+      if (key === 'bark_device_key') {
+        // 空输入代表“不修改”，显式清除才会删掉已保存的 Device Key。
+        if (!value && !['1', 'true', 'on'].includes(String(body.bark_device_key_clear || '').toLowerCase())) continue;
+        if (value.length > 300) return fail(res, 'Bark Device Key 长度不合法');
+      }
       if (key === 'auto_approve_threshold') {
         const number = Number.parseInt(value, 10);
         if (!Number.isInteger(number) || number < 1 || number > 100000) return fail(res, '自动审核阈值必须是 1 到 100000 的整数');
@@ -140,6 +164,11 @@ async function saveSettings(req, res) {
       if (key === 'site_url') value = normalizeUrl(value);
       if (key === 'publish_url' && value) value = normalizeUrl(value);
       if (key === 'webhook_url' && value) value = normalizeUrl(value);
+      if (key === 'bark_server_url' && value) {
+        value = normalizeUrl(value);
+        if (new URL(value).protocol !== 'https:') return fail(res, 'Bark 服务地址必须使用 HTTPS');
+      }
+      if (key === 'bark_enabled') value = ['1', 'true', 'on'].includes(value.toLowerCase()) ? '1' : '0';
       if (key === 'site_logo_url' && value) {
         if (value.startsWith('/uploads/logo/')) {
           if (!/^\/uploads\/logo\/[a-zA-Z0-9._-]+$/.test(value)) return fail(res, 'Logo 本地地址无效');
@@ -168,6 +197,43 @@ async function saveSettings(req, res) {
   }
 }
 
+function healthStatus(summary, configured) {
+  if (!configured) return 'unconfigured';
+  if (Number(summary.lastFailureStatusCode) === 401 || Number(summary.lastFailureStatusCode) === 403) return 'auth_error';
+  if (Number(summary.consecutiveFailures || 0) >= 3) return 'offline';
+  if (Number(summary.consecutiveFailures || 0) > 0) return 'degraded';
+  return summary.lastSuccessAt ? 'healthy' : 'untested';
+}
+
+async function readWebhookHealth() {
+  const [webhookUrl, barkEnabled, barkDeviceKey] = await Promise.all([
+    SystemModel.configValue('webhook_url'),
+    SystemModel.configValue('bark_enabled'),
+    SystemModel.configValue('bark_device_key')
+  ]);
+  const primaryProvider = providerForUrl(webhookUrl);
+  const health = await WebhookDeliveryModel.getHealth(primaryProvider);
+  const primaryConfigured = Boolean(primaryProvider);
+  const barkConfigured = String(barkEnabled) === '1' && Boolean(String(barkDeviceKey || '').trim());
+  return {
+    primary: { provider: primaryProvider || 'none', configured: primaryConfigured,
+      status: healthStatus(health.primary, primaryConfigured), ...health.primary },
+    backup: { provider: 'bark', configured: barkConfigured,
+      status: healthStatus(health.bark, barkConfigured), ...health.bark },
+    lastFallbackAt: health.lastFallbackAt
+  };
+}
+
+async function getWebhookHealth(req, res) {
+  try { return ok(res, await readWebhookHealth()); }
+  catch (error) { return fail(res, safeApiErrorMessage(error, '获取告警通道状态失败'), 500); }
+}
+
+async function listWebhookDeliveries(req, res) {
+  try { return ok(res, { deliveries: await WebhookDeliveryModel.listDeliveries(req.query?.limit) }); }
+  catch (error) { return fail(res, safeApiErrorMessage(error, '获取告警投递记录失败'), 500); }
+}
+
 async function uploadSiteLogo(req, res) {
   try {
     if (!req.file) return fail(res, '请选择 PNG、JPG 或 WebP 格式的 Logo（最大 2MB）');
@@ -185,7 +251,8 @@ async function uploadSiteLogo(req, res) {
 async function testWebhook(req, res) {
   const result = await sendAdminAlert(
     '🔔 Webhook 测试消息',
-    `> **状态：** Webhook 告警通道已连通\n> **测试时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`
+    `> **状态：** 主告警通道测试\n> **测试时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+    { eventType: 'manual_test_primary', allowBarkFallback: false }
   );
   if (!result.sent) {
     return fail(
@@ -193,7 +260,17 @@ async function testWebhook(req, res) {
       result.reason === '未配置 Webhook' ? '请先保存管理员告警 Webhook 地址' : `测试消息发送失败：${result.reason}`
     );
   }
-  return ok(res, null, '测试消息已发送');
+  return ok(res, { result, health: await readWebhookHealth() }, '主告警通道测试消息已发送');
+}
+
+async function testBark(req, res) {
+  const result = await sendBarkTestAlert(
+    '📱 Bark 测试消息',
+    `> **状态：** Bark 备用告警通道测试\n> **测试时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+    { eventType: 'manual_test_bark' }
+  );
+  if (!result.sent) return fail(res, `Bark 测试消息发送失败：${result.reason || '未知错误'}`);
+  return ok(res, { result, health: await readWebhookHealth() }, 'Bark 测试消息已发送');
 }
 
 async function getReview(req, res) {
@@ -1260,6 +1337,9 @@ module.exports = {
   saveSettings,
   uploadSiteLogo,
   testWebhook,
+  testBark,
+  getWebhookHealth,
+  listWebhookDeliveries,
   getReview,
   getOverview,
   getDashboardStats,

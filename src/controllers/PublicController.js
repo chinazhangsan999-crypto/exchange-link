@@ -474,7 +474,8 @@ async function applyLink(req, res) {
     });
     void sendAdminAlert(
       '🆕 新友链申请',
-      `> **站点名称：** ${String(name).trim()}\n> **网站 URL：** ${cleanUrl}\n> **所属分类：** ${String(category).trim()}\n> **联系方式：** ${String(contact).trim() || '未填写'}\n> **提交时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`
+      `> **站点名称：** ${String(name).trim()}\n> **网站 URL：** ${cleanUrl}\n> **所属分类：** ${String(category).trim()}\n> **联系方式：** ${String(contact).trim() || '未填写'}\n> **提交时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+      { eventType: 'new_partner_apply' }
     );
     return res.status(200).json({
       code: 200,

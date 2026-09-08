@@ -14,6 +14,10 @@ const CONFIG_DEFAULTS = {
   contact_info: '请在后台系统设置中填写站长联系方式。',
   publish_modal_enabled: '1',
   webhook_url: '',
+  bark_enabled: '0',
+  bark_server_url: 'https://api.day.app',
+  bark_device_key: '',
+  bark_group: '星环导航告警',
   lost_prevention_email: '',
   umami_enabled: '0',
   umami_script_url: 'https://cloud.umami.is/script.js',
@@ -301,10 +305,41 @@ async function initializeDatabase() {
     fingerprint TEXT NOT NULL,
     first_detected_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_alerted_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_alerted_fingerprint TEXT DEFAULT NULL,
+    last_failed_at DATETIME DEFAULT NULL,
+    last_failure_reason TEXT DEFAULT NULL,
+    last_attempt_at DATETIME DEFAULT NULL,
     resolved_at DATETIME DEFAULT NULL,
     FOREIGN KEY(partner_id) REFERENCES partners(id) ON DELETE CASCADE
   )`);
   await run('CREATE INDEX IF NOT EXISTS idx_risk_alert_active ON risk_alert_states(resolved_at)');
+  const riskAlertColumns = await all('PRAGMA table_info(risk_alert_states)');
+  const riskAlertMigrations = [
+    ['last_alerted_fingerprint', 'ALTER TABLE risk_alert_states ADD COLUMN last_alerted_fingerprint TEXT DEFAULT NULL'],
+    ['last_failed_at', 'ALTER TABLE risk_alert_states ADD COLUMN last_failed_at DATETIME DEFAULT NULL'],
+    ['last_failure_reason', 'ALTER TABLE risk_alert_states ADD COLUMN last_failure_reason TEXT DEFAULT NULL'],
+    ['last_attempt_at', 'ALTER TABLE risk_alert_states ADD COLUMN last_attempt_at DATETIME DEFAULT NULL']
+  ];
+  for (const [column, sql] of riskAlertMigrations) {
+    if (!riskAlertColumns.some(item => item.name === column)) await run(sql);
+  }
+  await run(`UPDATE risk_alert_states SET last_alerted_fingerprint = fingerprint
+    WHERE last_alerted_fingerprint IS NULL AND last_alerted_at IS NOT NULL`);
+  await run(`CREATE TABLE IF NOT EXISTS webhook_delivery_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    is_fallback INTEGER NOT NULL DEFAULT 0,
+    success INTEGER NOT NULL DEFAULT 0,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    status_code INTEGER DEFAULT NULL,
+    error_code TEXT DEFAULT NULL,
+    error_message TEXT DEFAULT NULL,
+    duration_ms INTEGER DEFAULT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
+  await run('CREATE INDEX IF NOT EXISTS idx_webhook_delivery_created ON webhook_delivery_logs(created_at DESC)');
+  await run('CREATE INDEX IF NOT EXISTS idx_webhook_delivery_provider_success_time ON webhook_delivery_logs(provider, success, created_at DESC)');
 
   const existing = await get('SELECT COUNT(*) AS count FROM partners');
   if (existing.count === 0) {
