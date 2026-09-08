@@ -8,6 +8,7 @@ const LOG_CLEANUP_TARGETS = [
   { table: 'inbound_logs', timestampColumn: 'created_at', retentionDays: LOG_RETENTION_DAYS },
   { table: 'inflow_events', timestampColumn: 'timestamp', retentionDays: LOG_RETENTION_DAYS },
   { table: 'outbound_logs', timestampColumn: 'created_at', retentionDays: LOG_RETENTION_DAYS },
+  { table: 'ad_runtime_events', timestampColumn: 'created_at', retentionDays: LOG_RETENTION_DAYS },
   { table: 'webhook_delivery_logs', timestampColumn: 'created_at', retentionDays: 30 }
 ];
 

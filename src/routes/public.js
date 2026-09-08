@@ -10,6 +10,7 @@ const captchaRateLimiter = createRateLimiter('captcha', 60 * 60 * 1000, 20);
 const trafficRateLimiter = createRateLimiter('traffic', 10 * 1000, 30);
 const verifyInitRateLimiter = createRateLimiter('verify-init', 10 * 60 * 1000, 20);
 const verifyCheckRateLimiter = createRateLimiter('verify-check', 10 * 60 * 1000, 10);
+const showcaseDiagnosticRateLimiter = createRateLimiter('showcase-diagnostics', 60 * 1000, 20);
 
 router.get('/api/health', PublicController.health);
 router.head('/', PublicController.headRoot);
@@ -27,6 +28,7 @@ router.get('/api/captcha', captchaRateLimiter, PublicController.getCaptcha);
 router.post('/api/links/apply', applyRateLimiter, PublicController.applyLink);
 router.get('/api/links', PublicController.getLinks);
 router.get('/api/showcase', PublicController.getAds);
+router.post('/api/showcase/diagnostics', showcaseDiagnosticRateLimiter, PublicController.recordShowcaseDiagnostics);
 router.get('/api/links/:id', PublicController.getLinkDetail);
 router.get('/go', trafficRateLimiter, PublicController.go);
 

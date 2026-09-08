@@ -51,6 +51,7 @@ const ANALYTICS_CONFIG_KEYS = [
 ];
 const dbMutex = new Mutex();
 const MIRRORS_CACHE_TTL_MS = 60 * 1000;
+const SHOWCASE_DIAGNOSTIC_PHASES = new Set(['top_float', 'bottom_float', 'icon_float']);
 let mirrorsCache = { data: null, expireTime: 0 };
 
 function clearMirrorsCache() {
@@ -599,6 +600,55 @@ async function getAds(req, res) {
   }
 }
 
+function normalizeShowcaseDiagnosticHost(value) {
+  const host = String(value || '').trim().toLowerCase();
+  return /^[a-z0-9.-]{1,253}$/.test(host) ? host : '';
+}
+
+function normalizeShowcaseDiagnosticEvent(value) {
+  const adId = Number(value?.adId);
+  const phase = String(value?.phase || '');
+  const bootstrapStatus = String(value?.bootstrapStatus || '');
+  const externalStatus = String(value?.externalStatus || '');
+  if (!Number.isSafeInteger(adId) || adId <= 0
+    || !SHOWCASE_DIAGNOSTIC_PHASES.has(phase)
+    || !AdModel.RUNTIME_STATUSES.has(bootstrapStatus)
+    || !AdModel.RUNTIME_STATUSES.has(externalStatus)) return null;
+  return {
+    adId,
+    phase,
+    providerHost: normalizeShowcaseDiagnosticHost(value?.providerHost),
+    bootstrapStatus,
+    externalStatus,
+    externalScriptCount: Math.min(20, Math.max(0, Number.parseInt(value?.externalScriptCount, 10) || 0)),
+    externalFailedCount: Math.min(20, Math.max(0, Number.parseInt(value?.externalFailedCount, 10) || 0)),
+    slow: value?.slow === true || value?.slow === 1 || value?.slow === '1',
+    durationMs: Math.min(30000, Math.max(0, Number.parseInt(value?.durationMs, 10) || 0)),
+    startedAt: Math.min(Date.now(), Math.max(0, Number.parseInt(value?.startedAt, 10) || 0))
+  };
+}
+
+/** 代码广告的浏览器侧运行诊断：仅接收受限状态字段，不接收联盟源码或访客内容。 */
+async function recordShowcaseDiagnostics(req, res) {
+  try {
+    const candidates = (Array.isArray(req.body?.events) ? req.body.events : [])
+      .slice(0, 3)
+      .map(normalizeShowcaseDiagnosticEvent)
+      .filter(Boolean);
+    if (!candidates.length) return res.status(204).end();
+
+    const activeAds = await AdModel.getActiveCodeAdsByIds(candidates.map(event => event.adId));
+    const activeById = new Map(activeAds.map(ad => [ad.id, ad]));
+    const events = candidates.filter(event => activeById.get(event.adId)?.ad_position === event.phase);
+    if (events.length) await AdModel.recordRuntimeEvents(events);
+    return res.status(204).end();
+  } catch (error) {
+    // 诊断上报绝不能影响页面；sendBeacon 调用方无需等待此响应。
+    console.warn('[Showcase] 保存代码广告运行诊断失败：', error.message);
+    return res.status(204).end();
+  }
+}
+
 async function go(req, res) {
   try {
     const linkId = Number.parseInt(String(req.query.id || ''), 10);
@@ -640,5 +690,6 @@ module.exports = {
   getLinks,
   getLinkDetail,
   getAds,
+  recordShowcaseDiagnostics,
   go
 };

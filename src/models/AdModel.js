@@ -7,6 +7,8 @@ const ACTIVE_POSITIONS = new Set(['banner', 'icon', 'top_float', 'bottom_float',
 const ACTIVE_PLATFORMS = new Set(['all', 'pc', 'ios', 'non_ios', 'android', 'harmony']);
 const NORMAL_POSITIONS = new Set(['banner', 'icon']);
 const CODE_POSITIONS = new Set(['top_float', 'bottom_float', 'icon_float']);
+const RUNTIME_STATUSES = new Set(['success', 'error', 'timeout', 'not_observed']);
+const RUNTIME_RETENTION_DAYS = 7;
 
 /**
  * 兼容迁移：旧库继续保留 type/description 等列，新业务统一使用
@@ -69,6 +71,29 @@ async function initializeAdsTable() {
   await run("UPDATE ads SET ad_code = '' WHERE ad_type = 'normal'");
   await run("UPDATE ads SET image_url = '', target_url = '' WHERE ad_type = 'code'");
   await run('CREATE INDEX IF NOT EXISTS idx_ads_active_position_sort ON ads(status, ad_position, sort_order DESC, id ASC)');
+  await run(`CREATE TABLE IF NOT EXISTS ad_runtime_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ad_id INTEGER NOT NULL,
+    provider_host TEXT DEFAULT '',
+    phase TEXT NOT NULL,
+    bootstrap_status TEXT NOT NULL,
+    external_status TEXT NOT NULL,
+    external_script_count INTEGER NOT NULL DEFAULT 0,
+    external_failed_count INTEGER NOT NULL DEFAULT 0,
+    slow INTEGER NOT NULL DEFAULT 0,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
+  const runtimeColumns = await all('PRAGMA table_info(ad_runtime_events)');
+  if (!runtimeColumns.some(column => column.name === 'started_at')) {
+    await run('ALTER TABLE ad_runtime_events ADD COLUMN started_at INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!runtimeColumns.some(column => column.name === 'slow')) {
+    await run('ALTER TABLE ad_runtime_events ADD COLUMN slow INTEGER NOT NULL DEFAULT 0');
+  }
+  await run('CREATE INDEX IF NOT EXISTS idx_ad_runtime_event_ad_time ON ad_runtime_events(ad_id, created_at DESC)');
+  await run('CREATE INDEX IF NOT EXISTS idx_ad_runtime_event_time ON ad_runtime_events(created_at DESC)');
 }
 
 function selectColumns() {
@@ -90,6 +115,53 @@ function getActiveAds() {
     FROM ads
     WHERE status = 1
     ORDER BY sort_order DESC, id ASC`);
+}
+
+function getActiveCodeAdsByIds(ids) {
+  const normalizedIds = [...new Set(ids.map(Number).filter(id => Number.isSafeInteger(id) && id > 0))];
+  if (!normalizedIds.length) return Promise.resolve([]);
+  const placeholders = normalizedIds.map(() => '?').join(', ');
+  return all(`SELECT id, ad_position
+    FROM ads
+    WHERE status = 1 AND ad_type = 'code' AND id IN (${placeholders})`, normalizedIds);
+}
+
+async function recordRuntimeEvents(events) {
+  for (const event of events) {
+    await run(`INSERT INTO ad_runtime_events(
+      ad_id, provider_host, phase, bootstrap_status, external_status,
+      external_script_count, external_failed_count, slow, duration_ms, started_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      event.adId,
+      event.providerHost,
+      event.phase,
+      event.bootstrapStatus,
+      event.externalStatus,
+      event.externalScriptCount,
+      event.externalFailedCount,
+      event.slow ? 1 : 0,
+      event.durationMs,
+      event.startedAt
+    ], { priority: 'background', label: 'record ad runtime diagnostic' });
+  }
+}
+
+async function cleanupRuntimeEvents() {
+  const cutoff = new Date(Date.now() - RUNTIME_RETENTION_DAYS * 24 * 60 * 60 * 1000)
+    .toISOString().slice(0, 19).replace('T', ' ');
+  let deleted = 0;
+  while (true) {
+    const result = await run(`DELETE FROM ad_runtime_events
+      WHERE id IN (
+        SELECT id FROM ad_runtime_events
+        WHERE created_at < ?
+        LIMIT 5000
+      )`, [cutoff], { priority: 'maintenance', label: 'cleanup ad runtime diagnostics' });
+    if (!result.changes) break;
+    deleted += result.changes;
+    await new Promise(resolve => setTimeout(resolve, 500));
+  }
+  return { table: 'ad_runtime_events', deleted };
 }
 
 function legacyTypeFor(item) {
@@ -189,10 +261,14 @@ module.exports = {
   ACTIVE_PLATFORMS,
   NORMAL_POSITIONS,
   CODE_POSITIONS,
+  RUNTIME_STATUSES,
   initializeAdsTable,
   listAds,
   getAdById,
   getActiveAds,
+  getActiveCodeAdsByIds,
+  recordRuntimeEvents,
+  cleanupRuntimeEvents,
   createAd,
   updateAd,
   syncAdsFromCsv,
