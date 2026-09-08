@@ -84,20 +84,33 @@ async function getAnalyticsConfig(req, res) {
 async function saveAnalyticsConfig(req, res) {
   try {
     const body = req.body || {};
-    const entries = [];
+    const values = {};
     for (const key of ANALYTICS_CONFIG_KEYS) {
-      if (body[key] === undefined) continue;
       let value = String(body[key] ?? '').trim();
       if (key === 'umami_script_url' && value) value = normalizeAnalyticsScriptUrl(value);
       if (['umami_enabled', 'cf_analytics_enabled'].includes(key)) {
         value = ['1', 'true', 'on'].includes(value.toLowerCase()) ? '1' : '0';
       }
-      entries.push([key, value]);
+      values[key] = value;
     }
+
+    if (values.umami_enabled === '1' && !values.umami_website_id) {
+      return fail(res, '启用 Umami 前请填写 Website ID');
+    }
+    if (values.cf_analytics_enabled === '1' && !values.cf_beacon_token) {
+      return fail(res, '启用 Cloudflare Web Analytics 前请填写 Beacon Token');
+    }
+
+    // 始终完整写入五项配置：复选框未勾选时也要可靠保存为 0，避免前端
+    // FormData 省略未勾选字段后留下旧状态。
+    const entries = ANALYTICS_CONFIG_KEYS.map(key => [key, values[key]]);
     await SystemModel.upsertConfigs(entries);
     return ok(res, await analyticsConfig(), '第三方统计设置已保存');
   } catch (error) {
     console.error('保存统计配置失败：', error);
+    if (error instanceof TypeError || /Umami 脚本地址/.test(String(error?.message || ''))) {
+      return fail(res, error.message || 'Umami Script URL 格式不正确');
+    }
     return fail(res, safeApiErrorMessage(error), 500);
   }
 }
