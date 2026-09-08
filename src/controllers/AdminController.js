@@ -821,18 +821,9 @@ function parseAdPayload(body = {}) {
   if (title.length > 80) throw new Error('广告标题不能超过 80 个字符');
   const description = String(body.description || '').trim();
   if (description.length > 300) throw new Error('广告介绍不能超过 300 个字符');
-  const submittedCode = String(body.ad_code || body.adCode || '').trim();
-  if (submittedCode.length > 60 * 1024) throw new Error('自定义代码不能超过 60KB');
-  const compactCode = submittedCode
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/\/\/[^\r\n]*/g, '')
-    .toLowerCase()
-    .replace(/\s+/g, '');
-  if (/<iframe\b/i.test(submittedCode) || compactCode.includes('document.write(') || compactCode.includes('document.writeln(')
-    || /document\[['"]write(?:ln)?['"]\]/i.test(compactCode)) {
-    throw new Error('自定义代码禁止使用 iframe、document.write 或 document.writeln');
-  }
-  if (adType === 'code' && !submittedCode) throw new Error('代码联盟类型必须填写自定义代码');
+  // 联盟代码按管理员提交内容原样保存；兼容 document.write、iframe 与第三方混淆脚本。
+  const submittedCode = String(body.ad_code || body.adCode || '');
+  if (adType === 'code' && !submittedCode.trim()) throw new Error('代码联盟类型必须填写自定义代码');
 
   const parseOptionalUrl = (value, label, required = false) => {
     if (!String(value || '').trim()) {

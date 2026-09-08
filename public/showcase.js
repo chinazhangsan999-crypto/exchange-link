@@ -49,16 +49,10 @@
     })).filter(item => item.id > 0 && item.markup);
   }
 
-  function forbiddenMarkup(source) {
-    const compact = String(source || '')
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/[^\r\n]*/g, '')
-      .toLowerCase()
-      .replace(/\s+/g, '');
-    return /<iframe\b/i.test(source)
-      || compact.includes('document.write(')
-      || compact.includes('document.writeln(')
-      || /document\[['"]write(?:ln)?['"]\]/i.test(compact);
+  function appendMarkup(target, markup) {
+    const template = document.createElement('template');
+    template.innerHTML = String(markup || '');
+    return Promise.all([...template.content.childNodes].map(child => copyTree(target, child)));
   }
 
   async function copyTree(target, sourceNode) {
@@ -71,28 +65,53 @@
       const fresh = document.createElement('script');
       for (const attribute of sourceNode.attributes) fresh.setAttribute(attribute.name, attribute.value);
       fresh.async = false;
-      if (fresh.src) {
-        await new Promise(resolve => {
-          fresh.addEventListener('load', resolve, { once: true });
-          fresh.addEventListener('error', resolve, { once: true });
-          target.append(fresh);
-        });
-      } else {
-        const scriptType = String(fresh.type || '').toLowerCase();
-        const executable = !scriptType || ['text/javascript', 'application/javascript', 'module'].includes(scriptType);
-        if (!executable) {
-          fresh.textContent = sourceNode.textContent || '';
-          target.append(fresh);
-          return;
+      const scriptType = String(fresh.type || '').toLowerCase();
+      const executable = !scriptType || ['text/javascript', 'application/javascript', 'module'].includes(scriptType);
+      if (!executable) {
+        fresh.textContent = sourceNode.textContent || '';
+        target.append(fresh);
+        return;
+      }
+
+      // 很多联盟脚本通过 document.write 输出卡片。页面加载完成后直接调用会清空整页，
+      // 所以仅在本次脚本执行期间将输出接管到当前代码广告挂载区。
+      const originalWrite = document.write.bind(document);
+      const originalWriteln = document.writeln.bind(document);
+      const originalOpen = document.open.bind(document);
+      const originalClose = document.close.bind(document);
+      let pendingOutput = Promise.resolve();
+      const captureOutput = parts => {
+        pendingOutput = pendingOutput.then(() => appendMarkup(target, parts.join('')))
+          .catch(error => console.warn('[Showcase] 联盟代码输出失败：', error));
+      };
+      document.write = (...parts) => captureOutput(parts);
+      document.writeln = (...parts) => captureOutput([...parts, '\n']);
+      document.open = () => document;
+      document.close = () => document;
+      let blobUrl = '';
+      try {
+        if (fresh.src) {
+          await new Promise(resolve => {
+            fresh.addEventListener('load', resolve, { once: true });
+            fresh.addEventListener('error', resolve, { once: true });
+            target.append(fresh);
+          });
+        } else {
+          blobUrl = URL.createObjectURL(new Blob([sourceNode.textContent || ''], { type: 'text/javascript' }));
+          fresh.src = blobUrl;
+          await new Promise(resolve => {
+            fresh.addEventListener('load', resolve, { once: true });
+            fresh.addEventListener('error', resolve, { once: true });
+            target.append(fresh);
+          });
         }
-        const blobUrl = URL.createObjectURL(new Blob([sourceNode.textContent || ''], { type: 'text/javascript' }));
-        fresh.src = blobUrl;
-        await new Promise(resolve => {
-          fresh.addEventListener('load', resolve, { once: true });
-          fresh.addEventListener('error', resolve, { once: true });
-          target.append(fresh);
-        });
-        URL.revokeObjectURL(blobUrl);
+        await pendingOutput;
+      } finally {
+        document.write = originalWrite;
+        document.writeln = originalWriteln;
+        document.open = originalOpen;
+        document.close = originalClose;
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
       }
       return;
     }
@@ -102,14 +121,8 @@
   }
 
   async function mountMarkup(target, source) {
-    if (!source || forbiddenMarkup(source)) {
-      console.warn('[Showcase] 已拒绝不符合规范的自定义内容');
-      return;
-    }
-    const template = document.createElement('template');
-    template.innerHTML = source;
-    if (template.content.querySelector('iframe')) return;
-    for (const child of [...template.content.childNodes]) await copyTree(target, child);
+    if (!source) return;
+    await appendMarkup(target, source);
   }
 
   function attachHint(element, text) {
