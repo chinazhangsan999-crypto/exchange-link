@@ -123,8 +123,11 @@
   async function mountMarkup(target, source) {
     if (!source) return;
     const content = String(source);
-    // 后台允许直接粘贴纯 JavaScript；没有 HTML 标签时必须作为脚本执行，不能渲染为页面文本。
-    if (!/<\s*[a-z!][^>]*>/i.test(content)) {
+    // 不能扫描整段文本判断 HTML：联盟 JS 往往把 "<div>" 放在字符串中，
+    // 会被误判成 HTML 并作为文本渲染。仅识别开头真实存在的 HTML 标签。
+    const beginsWithHtml = /^(?:\uFEFF)?\s*(?:<!--[\s\S]*?-->\s*)*<\/?[a-z][\w:-]*(?:\s[^<>]*)?>/i.test(content);
+    // 后台允许直接粘贴纯 JavaScript；纯 JS 必须作为脚本执行，不能渲染为页面文本。
+    if (!beginsWithHtml) {
       const script = document.createElement('script');
       script.textContent = content;
       await copyTree(target, script);
