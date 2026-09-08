@@ -61,12 +61,11 @@
     if (document.querySelector('#mirrors')) return;
     const panel = document.createElement('section');
     panel.id = 'mirrors'; panel.className = 'panel';
-    panel.innerHTML = `<div class="box mirror-admin-box"><div class="box-head"><div><h2>节点管理</h2><p class="hint">统一管理用于流量互换与霸榜的备用网址节点。</p></div><button id="open-mirror-modal" class="button" type="button">+ 新增节点</button></div><div class="table-wrap"><table class="mirror-admin-table"><thead><tr><th>测速名</th><th>友链霸榜名</th><th>节点地址</th><th>操作</th></tr></thead><tbody id="mirror-table-body"></tbody></table></div><details class="mirror-csv-tools"><summary>CSV 全量同步</summary><p class="hint">格式：测速名, 友链霸榜名, 节点地址, 状态。状态支持“启用 / 停用”或“1 / 0”；未出现在 CSV 中的旧节点会被移除。</p><textarea id="mirror-csv-input" placeholder="华南线路,星环导航华南站,https://node.example.com,启用"></textarea><div class="dialog-foot"><button id="sync-mirror-csv" type="button" class="button ghost">同步 CSV</button></div></details></div>`;
+    panel.innerHTML = `<div class="box mirror-admin-box"><div class="box-head"><div><h2>节点管理</h2><p class="hint">统一管理用于流量互换与霸榜的备用网址节点。</p></div><button id="open-mirror-modal" class="button" type="button">+ 新增节点</button></div><div class="table-wrap"><table class="mirror-admin-table"><thead><tr><th>测速名</th><th>友链霸榜名</th><th>节点地址</th><th>操作</th></tr></thead><tbody id="mirror-table-body"></tbody></table></div></div>`;
     const adsPanel = document.querySelector('#ads');
     adsPanel?.insertAdjacentElement('afterend', panel) || document.querySelector('.shell')?.append(panel);
     const addButton = panel.querySelector('#open-mirror-modal');
     const tableBody = panel.querySelector('#mirror-table-body');
-    const syncButton = panel.querySelector('#sync-mirror-csv');
 
     // 三类入口各自独立绑定，新增按钮明确传 null，禁止沿用任何编辑态数据。
     addButton.addEventListener('click', event => {
@@ -75,7 +74,6 @@
       openMirrorModal(null);
     });
     tableBody.addEventListener('click', handleMirrorTableClick);
-    syncButton.addEventListener('click', syncMirrorCsv);
   }
 
   function renderMirrors() {
@@ -103,7 +101,6 @@
   async function saveMirror(event) { event.preventDefault(); const form = event.currentTarget, data = Object.fromEntries(new FormData(form)), originalUrl = data.original_url; delete data.original_url; data.status = Number(data.status); try { await request(originalUrl ? mirrorEndpoint(originalUrl) : '/api/admin/mirrors', { method: originalUrl ? 'PUT' : 'POST', body: JSON.stringify(data) }); document.querySelector('#mirror-modal').classList.remove('open'); notify(originalUrl ? '节点已更新' : '节点已新增'); await loadMirrors(); } catch (error) { notify(error.message); } }
   async function toggleMirror(button) { try { await request(`${mirrorEndpoint(button.dataset.url)}/status`, { method: 'PATCH', body: JSON.stringify({ status: Number(button.dataset.status) }) }); notify(Number(button.dataset.status) ? '节点已启用' : '节点已停用'); await loadMirrors(); } catch (error) { notify(error.message); } }
   async function deleteMirror(button) { if (!confirm('确定删除该节点吗？对应内部霸榜友链也会同步移除。')) return; try { await request(mirrorEndpoint(button.dataset.url), { method: 'DELETE' }); notify('节点已删除'); await loadMirrors(); } catch (error) { notify(error.message); } }
-  async function syncMirrorCsv() { const csv = document.querySelector('#mirror-csv-input')?.value || ''; if (!csv.trim()) return notify('请先粘贴 CSV 内容'); try { const result = await request('/api/admin/mirrors/sync-csv', { method: 'POST', body: JSON.stringify({ csv }) }); notify(`同步完成：新增 ${result.inserted}，更新 ${result.updated}，移除 ${result.deleted}`); await loadMirrors(); } catch (error) { notify(error.message); } }
 
   function ensureModal() {
     let modal = document.querySelector('#ad-modal');
@@ -161,21 +158,6 @@
   async function toggleAd(button) { try { await request(`/api/admin/ads/${button.dataset.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: Number(button.dataset.status) }) }); notify(Number(button.dataset.status) ? '广告已启用' : '广告已停用'); await loadAds(); } catch (error) { notify(error.message); } }
   async function removeAd(button) { if (!confirm('确定删除这条广告吗？')) return; try { await request(`/api/admin/ads/${button.dataset.id}`, { method: 'DELETE' }); notify('广告已删除'); await loadAds(); } catch (error) { notify(error.message); } }
 
-  function ensureCsvTools() {
-    const panel = document.querySelector('#ads .box');
-    if (!panel || document.querySelector('#showcase-csv-tools')) return;
-    const tools = document.createElement('details');
-    tools.id = 'showcase-csv-tools'; tools.className = 'showcase-csv-tools';
-    tools.innerHTML = '<summary>CSV 同步</summary><p class="hint">格式：广告类型, 广告位置, 显示端, 标题, 介绍(选填), 自定义代码(选填), 图片链接, 跳转链接, 排序, 状态。代码联盟的显示端固定填写 all；含逗号或换行的代码必须使用双引号包裹。</p><textarea id="showcase-csv-input" placeholder="normal,banner,pc,合作品牌,, ,https://example.com/pic.jpg,https://example.com,100,启用"></textarea><div class="dialog-foot"><button id="sync-showcase-csv" type="button" class="button ghost">同步 CSV</button></div>';
-    panel.append(tools);
-    tools.querySelector('#sync-showcase-csv').onclick = async () => {
-      const csv = tools.querySelector('#showcase-csv-input').value;
-      if (!csv.trim()) return notify('请先粘贴 CSV 内容');
-      try { const result = await request('/api/admin/ads/sync-csv', { method: 'POST', body: JSON.stringify({ csv }) }); notify(`同步完成：新增 ${result.inserted} 条，更新 ${result.updated} 条`); await loadAds(); }
-      catch (error) { notify(error.message); }
-    };
-  }
-
   function ensureAdsTableStructure() {
     const table = document.querySelector('#ads table');
     if (!table) return;
@@ -183,7 +165,7 @@
     table.querySelector('thead').innerHTML = '<tr><th>广告标题</th><th>类型</th><th>位置</th><th>显示端</th><th>排序</th><th>状态</th><th>目标链接</th><th>操作</th></tr>';
   }
 
-  ensureStyle(); ensureMirrorPanel(); ensureMirrorsNav(); ensureAdsTableStructure(); ensureCsvTools(); document.querySelector('#open-ad-modal')?.addEventListener('click', () => openModal());
+  ensureStyle(); ensureMirrorPanel(); ensureMirrorsNav(); ensureAdsTableStructure(); document.querySelector('#open-ad-modal')?.addEventListener('click', () => openModal());
   window.loadAdminAds = loadAds;
   window.loadAdminMirrors = loadMirrors;
   window.addEventListener('admin:authenticated', loadAds);

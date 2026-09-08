@@ -81,30 +81,6 @@
   white-space: nowrap;
 }
 
-#mirrors .mirror-csv-tools {
-  margin-top: 18px;
-  padding-top: 15px;
-  border-top: 1px solid #eef2f7;
-}
-
-#mirrors .mirror-csv-tools summary {
-  color: #475569;
-  font-weight: 700;
-  cursor: pointer;
-}
-
-#mirrors .mirror-csv-tools textarea {
-  width: 100%;
-  min-height: 110px;
-  box-sizing: border-box;
-  margin-top: 9px;
-  padding: 10px;
-  border: 1px solid #e2e8f0;
-  border-radius: 10px;
-  resize: vertical;
-  font: 12px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
-}
-
 #mirror-modal { z-index: 1300; }
 
 @media (max-width: 760px) {
