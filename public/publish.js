@@ -75,6 +75,9 @@ function renderPublishLogo(logoValue) {
   const image = new Image(); image.style.cssText = 'width:100%;height:100%;display:block;object-fit:contain;border-radius:inherit'; image.src = logoUrl; image.alt = '网站 Logo';
   image.onerror = () => { mark.replaceChildren(); mark.textContent = '✦'; };
   mark.append(image);
+  const icon = document.querySelector('#runtime-site-favicon') || document.createElement('link');
+  icon.id = 'runtime-site-favicon'; icon.rel = 'icon'; icon.href = `${logoUrl}${logoUrl.includes('?') ? '&' : '?'}favicon=1`;
+  if (!icon.parentNode) document.head.append(icon);
 }
 
 async function loadMirrors() {

@@ -32,6 +32,9 @@
           image.src = logoUrl; image.alt = `${siteName || '网站'} Logo`;
           image.onerror = () => { logo.replaceChildren(); logo.textContent = '✦'; };
           logo.append(image);
+          const icon = document.querySelector('#runtime-site-favicon') || document.createElement('link');
+          icon.id = 'runtime-site-favicon'; icon.rel = 'icon'; icon.href = `${logoUrl}${logoUrl.includes('?') ? '&' : '?'}favicon=1`;
+          if (!icon.parentNode) document.head.append(icon);
         }
       }
       document.title = `管理后台 · ${brand}`;

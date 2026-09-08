@@ -14,6 +14,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const image = new Image(); image.style.cssText = 'width:100%;height:100%;display:block;object-fit:contain;border-radius:inherit'; image.src = logoUrl; image.alt = '网站 Logo';
     image.onerror = () => { mark.replaceChildren(); mark.textContent = '✦'; };
     mark.append(image);
+    const icon = document.querySelector('#runtime-site-favicon') || document.createElement('link');
+    icon.id = 'runtime-site-favicon'; icon.rel = 'icon'; icon.href = `${logoUrl}${logoUrl.includes('?') ? '&' : '?'}favicon=1`;
+    if (!icon.parentNode) document.head.append(icon);
   }).catch(() => {});
   function updateMaxDistance() { maxDistance = Math.max(1, container.clientWidth - button.offsetWidth - 8); }
   async function getToken() { try { const response = await fetch('/api/verify/init', { credentials: 'same-origin', cache: 'no-store' }); const data = await response.json(); if (!data.success || !data.token) throw Error(data.msg); token = data.token; tokenReceivedAt = Date.now(); setHint('请向右拖动滑块完成验证'); return true; } catch { token = ''; tokenReceivedAt = 0; setHint('⚠️ 获取安全凭证失败，请刷新重试', '#dc2626'); return false; } }

@@ -37,6 +37,11 @@
       image.onerror = () => { mark.replaceChildren(); mark.textContent = '✦'; };
       mark.append(image);
     });
+    if (logoUrl) {
+      const icon = document.querySelector('#runtime-site-favicon') || document.createElement('link');
+      icon.id = 'runtime-site-favicon'; icon.rel = 'icon'; icon.href = `${logoUrl}${logoUrl.includes('?') ? '&' : '?'}favicon=1`;
+      if (!icon.parentNode) document.head.append(icon);
+    }
   }
 
   function renderRecommendations(items) {
