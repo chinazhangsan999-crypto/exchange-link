@@ -88,17 +88,17 @@ async function listDeepPingRevivalTargets() {
 
 async function recordPingFailure(id, failedCount, status, options = {}) {
   assertTaskWriteAllowed(options);
-  return run("UPDATE partners SET ping_failed_count = ?, ping_status = ?, last_ping_at = datetime('now', 'localtime') WHERE id = ?", [failedCount, status, id], { priority: 'background', label: 'record ping failure' });
+  return run("UPDATE partners SET ping_failed_count = ?, ping_status = ?, last_ping_at = datetime('now') WHERE id = ?", [failedCount, status, id], { priority: 'background', label: 'record ping failure' });
 }
 
 async function recordPingSuccess(id, options = {}) {
   assertTaskWriteAllowed(options);
-  return run("UPDATE partners SET ping_failed_count = 0, ping_status = 'ok', last_ping_at = datetime('now', 'localtime') WHERE id = ?", [id], { priority: 'background', label: 'record ping success' });
+  return run("UPDATE partners SET ping_failed_count = 0, ping_status = 'ok', last_ping_at = datetime('now') WHERE id = ?", [id], { priority: 'background', label: 'record ping success' });
 }
 
 async function touchPingTimestamp(id, options = {}) {
   assertTaskWriteAllowed(options);
-  return run("UPDATE partners SET last_ping_at = datetime('now', 'localtime') WHERE id = ?", [id], { priority: 'background', label: 'touch ping timestamp' });
+  return run("UPDATE partners SET last_ping_at = datetime('now') WHERE id = ?", [id], { priority: 'background', label: 'touch ping timestamp' });
 }
 
 async function listBacklinkInspectionTargets() {

@@ -187,7 +187,7 @@
         <h4>客户端明细</h4>
         <div class="table-wrap"><table>
           <thead><tr><th>入站 IP</th><th>客户端</th><th>请求次数</th><th>占比</th><th>最近访问</th></tr></thead>
-          <tbody>${ips.map(item => `<tr><td>${escapeHtml(item.ip)}</td><td><span class="env-tag model-tag" title="${escapeHtml(item.client || item.device_model)}">${escapeHtml(item.client || item.device_model || '未知客户端')}</span></td><td>${Number(item.requests || 0)}</td><td>${Number(item.ratio || 0).toFixed(1)}%</td><td>${escapeHtml(item.timestamp || '—')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty-inflow">暂无近 24 小时入站数据</td></tr>'}</tbody>
+          <tbody>${ips.map(item => `<tr><td>${escapeHtml(item.ip)}</td><td><span class="env-tag model-tag" title="${escapeHtml(item.client || item.device_model)}">${escapeHtml(item.client || item.device_model || '未知客户端')}</span></td><td>${Number(item.requests || 0)}</td><td>${Number(item.ratio || 0).toFixed(1)}%</td><td>${escapeHtml(window.formatAdminTime?.(item.timestamp) || item.timestamp || '—')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty-inflow">暂无近 24 小时入站数据</td></tr>'}</tbody>
         </table></div>
       </section>`;
   }

@@ -4,7 +4,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const toast = text => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = text; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
   const api = async (url, options = {}) => { const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}`, ...(options.headers || {}) } }); const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '请求失败'); return result.data; };
-  const time = value => value ? String(value).replace('T', ' ').replace(/\.\d+Z?$/, '') : '—';
+  const time = value => window.formatAdminTime?.(value) || '—';
 
   function switchTo(id, button) { document.querySelectorAll('.tabs button,.panel').forEach(el => el.classList.remove('active')); button.classList.add('active'); document.querySelector('#' + id)?.classList.add('active'); }
   function installRiskControlFields() {

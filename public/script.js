@@ -66,7 +66,7 @@ themeToggle?.addEventListener('click',()=>{const next=document.documentElement.d
 /** 发布页引导弹窗：配置由后台统一维护，每个自然日仅在首次访问时展示一次。 */
 const publishOverlay=document.querySelector('#publishModalOverlay'),modalSiteTitle=document.querySelector('#modalSiteTitle'),modalPublishLink=document.querySelector('#modalPublishLink'),modalContactInfo=document.querySelector('#modalContactInfo'),modalMirrorsContainer=document.querySelector('#modalMirrorsContainer');
 const publishHideDateKey='hide_publish_modal_date';
-function todayString(){return new Date().toISOString().split('T')[0]}
+function todayString(){const parts=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date());const values=Object.fromEntries(parts.filter(part=>part.type!=='literal').map(part=>[part.type,part.value]));return `${values.year}-${values.month}-${values.day}`}
 function safeHttpUrl(value){try{const url=new URL(String(value||'').trim());return /^https?:$/.test(url.protocol)?url.href:''}catch{return ''}}
 function copyText(text,btnEl){const value=String(text||'');if(!value)return;const copied=()=>{const oldText=btnEl.innerText;btnEl.innerText='已复制!';btnEl.style.color='#10b981';setTimeout(()=>{btnEl.innerText=oldText;btnEl.style.color=''},1500)};if(navigator.clipboard?.writeText){navigator.clipboard.writeText(value).then(copied).catch(()=>window.prompt('请手动复制以下内容：',value))}else window.prompt('请手动复制以下内容：',value)}
 function closePublishModal(){if(!publishOverlay)return;closeModal('publishModalOverlay');localStorage.setItem(publishHideDateKey,todayString())}

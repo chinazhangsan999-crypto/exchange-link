@@ -1,5 +1,19 @@
 /** 后台统一初始化、登录回调与 Hash 标签路由。 */
 (() => {
+  /** SQLite UTC 文本统一转为北京时间，避免浏览器把无时区文本误当作本地时间。 */
+  window.formatAdminTime = function formatAdminTime(value) {
+    if (!value) return '—';
+    const raw = String(value).trim();
+    const normalized = raw.replace(' ', 'T');
+    const source = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized) ? normalized : `${normalized}Z`;
+    const date = new Date(source);
+    if (Number.isNaN(date.getTime())) return raw;
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+    }).format(date).replace(/\//g, '-');
+  };
+
   const token = () => localStorage.getItem('webring_admin_token') || '';
   const activeKey = 'admin_active_tab';
   const validTabs = new Set(['dashboard', 'partners', 'logs', 'categories', 'review', 'settings', 'ads', 'mirrors']);

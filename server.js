@@ -1,5 +1,8 @@
 'use strict';
 
+// 业务日界、Node 定时器及本地格式化统一使用北京时间；数据库时间仍以 UTC 保存。
+process.env.TZ = 'Asia/Shanghai';
+
 const app = require('./src/app');
 const { PORT } = require('./src/config/env');
 const { closeDatabase } = require('./src/config/database');

@@ -168,7 +168,7 @@ function formatRiskAlert(report, dashboardReasons) {
     `空 Referer 占比：${formatPercent(d.empty_referer_ratio)}（阈值 ${formatPercent(d.thresholds.empty_referer_threshold)}）`, '',
     `设备类型：${formatDistribution(report.device_type_stats)}`, `操作系统 Top 10：${formatDistribution(report.os_stats)}`,
     `浏览器 Top 10：${formatDistribution(report.browsers)}`,
-    `检测时间：${new Date().toLocaleString('zh-CN', { hour12: false })}`
+    `检测时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`
   ].join('\n');
 }
 

@@ -4,7 +4,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const toast = text => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = text; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
   const request = async (url, options = {}) => { const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}`, ...(options.headers || {}) } }); const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '请求失败'); return result.data; };
-  const time = value => value ? String(value).replace('T', ' ').replace(/\.\d+Z?$/, '') : '—';
+  const time = value => window.formatAdminTime?.(value) || '—';
   let rows = [], sort = { key: 'priority', direction: 'desc' };
 
   /** 渲染反链巡检状态；Ping 连通状态在独立列展示。 */
