@@ -7,7 +7,7 @@ const session = require('express-session');
 const SQLiteStore = require('connect-sqlite3')(session);
 const { IS_PRODUCTION, SESSION_SECRET, TRUSTED_PROXIES } = require('./config/env');
 const { securityHeaders } = require('./middlewares/security');
-const { guestVerificationGate } = require('./middlewares/rateLimit');
+const { observeRequestRisk } = require('./middlewares/rateLimit');
 const { publicRouter, adminRouter } = require('./routes');
 const PublicController = require('./controllers/PublicController');
 const { fail } = require('./utils/http');
@@ -44,9 +44,9 @@ app.use(session({
   }
 }));
 
-// 顺序不可交换：这里只在滑块前暂存外部 Referer；任何流量计分必须等到 3 秒心跳。
+// 顺序不可交换：先暂存 SID/Referer，再观察动态请求风险；首页不会因缺少验证 Cookie 被拦截。
 app.use(PublicController.preVerifyInflowTraffic);
-app.use(guestVerificationGate);
+app.use(observeRequestRisk);
 
 app.use(publicRouter);
 app.use(adminRouter);

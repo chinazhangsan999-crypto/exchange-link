@@ -9,10 +9,13 @@ const { getClientIp, parseHostname } = require('../utils/network');
 const RATE_LIMIT_WINDOW_MS = 60 * 1000;
 const SECURITY_ALERT_COOLDOWN_MS = 5 * 60 * 1000;
 const GUEST_VERIFY_COOKIE = 'guest_verify_token';
+const GUEST_VISITOR_COOKIE = 'guest_visitor_id';
 const PENDING_TRAFFIC_REFERER_COOKIE = 'pending_traffic_referer';
 const PENDING_TRAFFIC_SOURCE_COOKIE = 'pending_inflow_source';
 const VERIFY_NONCE_TTL_MS = 60 * 1000;
 const VERIFY_COOKIE_TTL_MS = 12 * 60 * 60 * 1000;
+const VISITOR_COOKIE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const RISK_CHALLENGE_TTL_MS = 60 * 60 * 1000;
 const PENDING_TRAFFIC_REFERER_TTL_SECONDS = 5 * 60;
 const PENDING_TRAFFIC_SOURCE_TTL_SECONDS = 15 * 60;
 
@@ -21,6 +24,8 @@ const visitRateLimitCache = new LRUCache({ max: 100000, ttl: RATE_LIMIT_WINDOW_M
 const securityAlertCache = new LRUCache({ max: 100000, ttl: SECURITY_ALERT_COOLDOWN_MS });
 const endpointRateLimitCache = new LRUCache({ max: 100000, ttl: 60 * 60 * 1000 });
 const verificationNonces = new LRUCache({ max: 50000, ttl: VERIFY_NONCE_TTL_MS });
+const riskWindowCache = new LRUCache({ max: 100000, ttl: 60 * 60 * 1000 });
+const pendingRiskChallenges = new LRUCache({ max: 100000, ttl: RISK_CHALLENGE_TTL_MS });
 
 function trafficDebug(message) {
   if (TRAFFIC_DEBUG) console.log(`[流量排查] ${message}`);
@@ -42,15 +47,108 @@ function getCookie(req, name) {
   return readCookie(req, name, false);
 }
 
-function hasGuestVerification(req) {
+function readGuestVerification(req) {
   try {
     const payload = jwt.verify(readCookie(req, GUEST_VERIFY_COOKIE), GUEST_JWT_SECRET, { algorithms: ['HS256'] });
     return payload?.scope === 'guest-verified'
       && payload?.role === 'guest'
-      && payload?.type === 'guest-verification';
+      && payload?.type === 'guest-verification'
+      ? payload
+      : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+function readVisitorId(req) {
+  try {
+    const payload = jwt.verify(readCookie(req, GUEST_VISITOR_COOKIE), GUEST_JWT_SECRET, { algorithms: ['HS256'] });
+    return payload?.scope === 'guest-visitor'
+      && payload?.type === 'guest-visitor'
+      && typeof payload?.visitorId === 'string'
+      && payload.visitorId.length >= 16
+      ? payload.visitorId
+      : '';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * 为风险计数签发稳定的匿名访客标识。它不是验证凭证，首次访问和 Cookie 缺失都不会被拦截。
+ */
+function ensureVisitorIdentity(req, res) {
+  if (req.visitorId) return req.visitorId;
+  const existing = readVisitorId(req);
+  const visitorId = existing || crypto.randomBytes(18).toString('base64url');
+  req.visitorId = visitorId;
+  if (!existing) {
+    const token = jwt.sign(
+      { scope: 'guest-visitor', type: 'guest-visitor', visitorId },
+      GUEST_JWT_SECRET,
+      { expiresIn: Math.floor(VISITOR_COOKIE_TTL_MS / 1000), algorithm: 'HS256' }
+    );
+    res.cookie(GUEST_VISITOR_COOKIE, token, {
+      maxAge: VISITOR_COOKIE_TTL_MS,
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: IS_PRODUCTION,
+      path: '/'
+    });
+  }
+  return visitorId;
+}
+
+function requestIdentityKey(req) {
+  return crypto.createHash('sha256')
+    .update(`${req.visitorId || readVisitorId(req)}|${getClientIp(req) || 'unknown'}|${requestUaHash(req)}`)
+    .digest('hex');
+}
+
+function incrementRiskWindow(key, windowMs) {
+  const now = Date.now();
+  const existing = riskWindowCache.get(key);
+  if (!existing || now >= existing.resetAt) {
+    const record = { count: 1, resetAt: now + windowMs, challengeTriggeredAt: 0 };
+    riskWindowCache.set(key, record, { ttl: windowMs });
+    return record;
+  }
+  const record = { ...existing, count: Number(existing.count || 0) + 1 };
+  riskWindowCache.set(key, record, { ttl: Math.max(1, record.resetAt - now) });
+  return record;
+}
+
+function saveRiskWindow(key, record) {
+  riskWindowCache.set(key, record, { ttl: Math.max(1, Number(record.resetAt || 0) - Date.now()) });
+}
+
+function pendingRiskKey(req) {
+  return `risk:${requestIdentityKey(req)}`;
+}
+
+function raisePendingRiskChallenge(req, type, triggeredAt = Date.now()) {
+  const key = pendingRiskKey(req);
+  const existing = pendingRiskChallenges.get(key);
+  if (existing && Number(existing.triggeredAt) >= Number(triggeredAt)) return existing;
+  const challenge = {
+    type: String(type || 'request_risk'),
+    triggeredAt: Number(triggeredAt) || Date.now(),
+    expiresAt: Date.now() + RISK_CHALLENGE_TTL_MS
+  };
+  pendingRiskChallenges.set(key, challenge, { ttl: RISK_CHALLENGE_TTL_MS });
+  return challenge;
+}
+
+function getPendingRiskChallenge(req) {
+  return pendingRiskChallenges.get(pendingRiskKey(req)) || null;
+}
+
+function hasFreshGuestVerification(req, challenge = getPendingRiskChallenge(req)) {
+  if (!challenge) return true;
+  const payload = readGuestVerification(req);
+  return Boolean(payload
+    && payload.visitorId === (req.visitorId || readVisitorId(req))
+    && Number(payload.verifiedAt || 0) >= Number(challenge.triggeredAt || 0));
 }
 
 function readPendingTrafficReferer(req) {
@@ -204,17 +302,128 @@ function isVerificationExempt(req) {
     || pathname.startsWith('/api/admin');
 }
 
-/** 未验证的公开请求转入滑块页，并保存验证回跳后仍需恢复的外部 Referer。 */
-function guestVerificationGate(req, res, next) {
-  if (isVerificationExempt(req) || hasGuestVerification(req)) return next();
+function isStaticAssetPath(pathname) {
+  return /\.(?:css|js|mjs|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|map)$/i.test(String(pathname || ''));
+}
 
-  if (req.method === 'GET' && req.path === '/' && !req.pendingTrafficRefererStored) {
-    storePendingTrafficReferer(req, res);
+function isDynamicRiskRequest(req) {
+  if (isVerificationExempt(req) || isStaticAssetPath(req.path)) return false;
+  if (req.path === '/' || req.path === '/go' || req.path.startsWith('/r/')) return true;
+  if (req.path.startsWith('/api/')) return true;
+  return req.method === 'GET' && String(req.get('accept') || '').includes('text/html');
+}
+
+function sendRateLimitResponse(res, resetAt) {
+  const retryAfter = Math.max(1, Math.ceil((Number(resetAt || 0) - Date.now()) / 1000));
+  res.setHeader('Retry-After', String(retryAfter));
+  return res.status(429).json({ code: 429, msg: `请求过于频繁，请 ${retryAfter} 秒后再试`, data: null });
+}
+
+/**
+ * 只观察动态请求并签发匿名 visitor_id。首页与公开页面永不因风险记录跳转验证页；
+ * 极端请求量仅限制当前动态 API，请求静态资源不进入计数。
+ */
+function observeRequestRisk(req, res, next) {
+  ensureVisitorIdentity(req, res);
+  if (!isDynamicRiskRequest(req)) return next();
+
+  const now = Date.now();
+  const identity = requestIdentityKey(req);
+  const ip = getClientIp(req) || 'unknown';
+  const client10sKey = `dynamic-client-10s:${identity}`;
+  const client60sKey = `dynamic-client-60s:${identity}`;
+  const ip10sKey = `dynamic-ip-10s:${ip}`;
+  const ip60sKey = `dynamic-ip-60s:${ip}`;
+  const client10s = incrementRiskWindow(client10sKey, 10 * 1000);
+  const client60s = incrementRiskWindow(client60sKey, 60 * 1000);
+  const ip10s = incrementRiskWindow(ip10sKey, 10 * 1000);
+  const ip60s = incrementRiskWindow(ip60sKey, 60 * 1000);
+
+  const riskRecord = client10s.count > 30 ? { key: client10sKey, record: client10s }
+    : client60s.count > 120 ? { key: client60sKey, record: client60s }
+      : ip10s.count > 80 ? { key: ip10sKey, record: ip10s }
+        : null;
+  if (riskRecord && !riskRecord.record.challengeTriggeredAt) {
+    riskRecord.record.challengeTriggeredAt = now;
+    saveRiskWindow(riskRecord.key, riskRecord.record);
+    raisePendingRiskChallenge(req, 'dynamic_request_burst', now);
   }
 
-  const target = encodeURIComponent(req.originalUrl || '/');
-  return res.redirect(302, `/verify.html?target=${target}`);
+  // 浏览首页永远放行；极端 IP 总量只对动态 API 和出站操作返回 429。
+  if (ip60s.count > 300 && (req.path.startsWith('/api/') || req.path === '/go')) {
+    return sendRateLimitResponse(res, ip60s.resetAt);
+  }
+  return next();
 }
+
+/** 友链申请：第 5 次触发验证；同一 IP 一小时第 11 次开始硬限流。 */
+function applyRiskProtection(req, res, next) {
+  ensureVisitorIdentity(req, res);
+  const now = Date.now();
+  const ip = getClientIp(req) || 'unknown';
+  const hardRecord = incrementRiskWindow(`apply-ip:${ip}`, 60 * 60 * 1000);
+  if (hardRecord.count > 10) return sendRateLimitResponse(res, hardRecord.resetAt);
+
+  const clientKey = `apply-client:${requestIdentityKey(req)}`;
+  const clientRecord = incrementRiskWindow(clientKey, 60 * 60 * 1000);
+  if (clientRecord.count >= 5) {
+    if (!clientRecord.challengeTriggeredAt) {
+      clientRecord.challengeTriggeredAt = now;
+      saveRiskWindow(clientKey, clientRecord);
+    }
+    raisePendingRiskChallenge(req, 'link_apply', clientRecord.challengeTriggeredAt);
+  }
+  return next();
+}
+
+/** /go 使用独立计数桶；风险判断发生在出站日志写入之前。 */
+function outboundRiskProtection(req, res, next) {
+  ensureVisitorIdentity(req, res);
+  const now = Date.now();
+  const ip = getClientIp(req) || 'unknown';
+  const identity = requestIdentityKey(req);
+  const targetId = String(req.query?.id || 'unknown').slice(0, 32);
+  const hardRecord = incrementRiskWindow(`outbound-ip-10m:${ip}`, 10 * 60 * 1000);
+  if (hardRecord.count > 30) return sendRateLimitResponse(res, hardRecord.resetAt);
+
+  const clientKey = `outbound-client-60s:${identity}`;
+  const targetKey = `outbound-target-30s:${identity}:${targetId}`;
+  const clientRecord = incrementRiskWindow(clientKey, 60 * 1000);
+  const targetRecord = incrementRiskWindow(targetKey, 30 * 1000);
+  const riskRecord = targetRecord.count >= 5 ? { key: targetKey, record: targetRecord, type: 'repeated_outbound_target' }
+    : clientRecord.count >= 10 ? { key: clientKey, record: clientRecord, type: 'outbound_burst' }
+      : null;
+  if (riskRecord) {
+    if (!riskRecord.record.challengeTriggeredAt) {
+      riskRecord.record.challengeTriggeredAt = now;
+      saveRiskWindow(riskRecord.key, riskRecord.record);
+    }
+    raisePendingRiskChallenge(req, riskRecord.type, riskRecord.record.challengeTriggeredAt);
+  }
+  return next();
+}
+
+/** 仅挂在敏感操作上；普通首页和公开浏览永远不会进入此门禁。 */
+function adaptiveVerificationGate(req, res, next) {
+  if (isVerificationExempt(req)) return next();
+  const challenge = getPendingRiskChallenge(req);
+  if (!challenge || hasFreshGuestVerification(req, challenge)) return next();
+
+  const verificationUrl = `/verify.html?target=${encodeURIComponent(req.originalUrl || '/')}`;
+  if (req.method === 'GET' && req.path === '/go') return res.redirect(302, verificationUrl);
+  return res.status(428).json({
+    code: 428,
+    msg: '需要完成安全验证',
+    data: {
+      verificationUrl: req.path === '/api/links/apply'
+        ? '/verify.html?target=%2F%3Fresume%3Dapply'
+        : verificationUrl
+    }
+  });
+}
+
+// 兼容旧导入名称；语义已经变为只处理显式 pending risk 的自适应门禁。
+const guestVerificationGate = adaptiveVerificationGate;
 
 /** 创建容量受控的固定窗口限流中间件。 */
 function createRateLimiter(name, windowMs, maxRequests) {
@@ -278,8 +487,15 @@ module.exports = {
   VERIFY_NONCE_TTL_MS,
   VERIFY_COOKIE_TTL_MS,
   GUEST_VERIFY_COOKIE,
+  GUEST_VISITOR_COOKIE,
   createRateLimiter,
+  observeRequestRisk,
+  applyRiskProtection,
+  outboundRiskProtection,
+  adaptiveVerificationGate,
   guestVerificationGate,
+  ensureVisitorIdentity,
+  hasFreshGuestVerification,
   storePendingTrafficReferer,
   readPendingTrafficReferer,
   clearPendingTrafficReferer,

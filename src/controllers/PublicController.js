@@ -25,6 +25,7 @@ const {
   readPendingTrafficSource,
   clearPendingTrafficSource,
   getCookie,
+  ensureVisitorIdentity,
   isPartnerVisitRateLimited,
   storeVerificationNonce,
   getVerificationNonce,
@@ -295,6 +296,7 @@ function favicon(req, res) {
 }
 
 function initVerification(req, res) {
+  const visitorId = ensureVisitorIdentity(req, res);
   const nonce = crypto.randomBytes(16).toString('hex');
   const issuedAt = Date.now();
   const rawData = `${nonce}-${issuedAt}`;
@@ -303,13 +305,15 @@ function initVerification(req, res) {
     issuedAt,
     expiresAt: issuedAt + VERIFY_NONCE_TTL_MS,
     ip: getClientIp(req),
-    ua: String(req.get('user-agent') || '').slice(0, 300)
+    ua: String(req.get('user-agent') || '').slice(0, 300),
+    visitorId
   });
   const token = `${rawData}.${sign}`;
   return res.json({ code: 200, msg: '验证令牌已生成', data: { token, expiresIn: 60 }, success: true, token });
 }
 
 function checkVerification(req, res) {
+  const visitorId = ensureVisitorIdentity(req, res);
   const { token, tracks, duration, fingerprint = {}, isWebdriver } = req.body || {};
   const reject = (msg, status = 400) => res.status(status).json({ code: status, msg, data: null, success: false });
   if (!token || !Array.isArray(tracks) || isWebdriver || fingerprint.webdriver === true) return reject('环境异常或存在自动化脚本');
@@ -331,7 +335,9 @@ function checkVerification(req, res) {
     || Number(record.issuedAt) !== issuedAt) {
     return reject('验证已超时，请刷新重试');
   }
-  if (record.ip !== getClientIp(req) || record.ua !== String(req.get('user-agent') || '').slice(0, 300)) {
+  if (record.ip !== getClientIp(req)
+    || record.ua !== String(req.get('user-agent') || '').slice(0, 300)
+    || record.visitorId !== visitorId) {
     return reject('验证环境已变化，请重新验证', 403);
   }
   consumeVerificationNonce(nonce);
@@ -356,7 +362,14 @@ function checkVerification(req, res) {
   }
 
   const guestToken = jwt.sign(
-    { scope: 'guest-verified', role: 'guest', type: 'guest-verification' },
+    {
+      scope: 'guest-verified',
+      role: 'guest',
+      type: 'guest-verification',
+      visitorId,
+      verifiedAt,
+      riskVersion: 1
+    },
     GUEST_JWT_SECRET,
     { expiresIn: '12h', algorithm: 'HS256' }
   );
