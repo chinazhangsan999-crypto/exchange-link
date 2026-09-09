@@ -11,6 +11,7 @@ const { parse: parseCsv } = require('csv-parse/sync');
 const { ADMIN_JWT_SECRET } = require('../config/env');
 const { parseHostname, matchesPartnerDomain, normalizePartnerUrl } = require('../utils/network');
 const { normalizeUrl, normalizeAnalyticsScriptUrl } = require('../utils/url');
+const { buildSourceEntryUrls } = require('../utils/sourceLinks');
 const { ok, fail, safeApiErrorMessage, isUniqueConstraintError } = require('../utils/http');
 const PartnerModel = require('../models/PartnerModel');
 const LogModel = require('../models/LogModel');
@@ -668,10 +669,29 @@ async function deletePartner(req, res) {
   }
 }
 
+async function regeneratePartnerSourceSid(req, res) {
+  try {
+    const id = Number.parseInt(String(req.params.id || ''), 10);
+    if (!Number.isSafeInteger(id) || id <= 0) return fail(res, '友链编号不合法');
+    const token = await SourceTokenModel.rotatePartnerSid(id);
+    if (!token) return fail(res, '友链不存在', 404);
+    const sourceUrls = buildSourceEntryUrls(token.sid, await SystemModel.configValue('site_url'));
+    return ok(res, {
+      source_sid: token.sid,
+      source_links: { path: sourceUrls.pathUrl, query: sourceUrls.queryUrl }
+    }, '新的来路识别标记已生成，原标记仍然有效');
+  } catch (error) {
+    console.error('重新生成来路识别标记失败：', error);
+    return fail(res, safeApiErrorMessage(error, '重新生成失败'), 500);
+  }
+}
+
 function checkAllLinks(req, res) {
   if (InspectionService.isBacklinkCheckInProgress()) return fail(res, '反向友链巡检正在执行，请稍后再试', 409);
   const task = runTrackedJob('后台手动全量反向友链巡检', () => InspectionService.checkAllBacklinks({
     sendAdminAlert,
+    aggregateAlerts: true,
+    alertTaskLabel: '后台手动反链全查',
     onDataChanged: CacheService.clearPublicCache
   }));
   if (!task) return fail(res, '服务正在停止，暂时无法启动巡检', 503);
@@ -1373,6 +1393,7 @@ module.exports = {
   whitelistPartner,
   clearPartnerTraffic,
   deletePartner,
+  regeneratePartnerSourceSid,
   checkAllLinks,
   checkLink,
   checkLinkHealth,

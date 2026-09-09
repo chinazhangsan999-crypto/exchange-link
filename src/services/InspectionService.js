@@ -9,6 +9,7 @@ const PartnerModel = require('../models/PartnerModel');
 const SystemModel = require('../models/SystemModel');
 const { parseHostname, isSensitiveNetworkIp } = require('../utils/network');
 const { runPromisePool } = require('../utils/asyncPool');
+const { sendBacklinkInspectionSummary } = require('./InspectionAlertService');
 
 let backlinkCheckInProgress = false;
 
@@ -198,14 +199,21 @@ async function updateBacklinkStatus(link, status, checkedUrl, options = {}) {
     await PartnerModel.recordBacklinkLost(link.id, { signal: options.signal });
     notifyChanged(options);
     const lostCount = Number(link.lost_count || 0) + 1;
-    if (link.backlink_status !== 'lost' && typeof options.sendAdminAlert === 'function') {
+    if (!options.aggregateAlerts && link.backlink_status !== 'lost' && typeof options.sendAdminAlert === 'function') {
       void options.sendAdminAlert(
         '🔴 反向友链掉链告警',
         `> **站点名称：** ${link.name || `#${link.id}`}\n> **站点网址：** ${link.url || checkedUrl}\n> **累计掉链次数：** ${lostCount}\n> **巡检时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
         { eventType: 'backlink_lost' }
       );
     }
-    return { id: link.id, backlink_status: 'lost', failed_check_count: 0, lost_count: lostCount, checked_url: checkedUrl };
+    return {
+      id: link.id,
+      backlink_status: 'lost',
+      failed_check_count: 0,
+      lost_count: lostCount,
+      checked_url: checkedUrl,
+      alert_event: link.backlink_status !== 'lost' ? 'backlink_lost' : null
+    };
   }
 
   await PartnerModel.recordBacklinkStatus(link.id, status, backlinkUrl, { signal: options.signal });
@@ -216,6 +224,9 @@ async function updateBacklinkStatus(link, status, checkedUrl, options = {}) {
     failed_check_count: 0,
     lost_count: Number(link.lost_count || 0),
     checked_url: checkedUrl,
+    alert_event: status === 'valid' && ['lost', 'unreachable', 'dead'].includes(link.backlink_status)
+      ? 'backlink_recovered'
+      : null,
     ...(backlinkUrl ? { discovered_backlink_url: true } : {})
   };
 }
@@ -334,6 +345,8 @@ async function checkSingleBacklink(link, myMainDomain, mySiteName = '', options 
       failed_check_count: failedCount,
       lost_count: Number(link.lost_count || 0),
       checked_url: targetUrl,
+      alert_event: failedCount === 1 ? 'backlink_first_unreachable' : failedCount === 3 ? 'backlink_dead' : null,
+      failure_reason: timedOut ? '连接超时（任务超过 15 秒）' : String(error?.message || '巡检失败'),
       error: timedOut ? '连接超时（任务超过 15 秒）' : error.message
     };
   }
@@ -355,6 +368,8 @@ async function recordBacklinkCheckError(link, error, options = {}) {
     failed_check_count: failedCount,
     lost_count: Number(link.lost_count || 0),
     checked_url: link.backlink_url || link.url,
+    alert_event: failedCount === 1 ? 'backlink_first_unreachable' : failedCount === 3 ? 'backlink_dead' : null,
+    failure_reason: timedOut ? '连接超时（任务超过 15 秒）' : String(error?.message || error || '巡检失败'),
     error: timedOut ? '连接超时（任务超过 15 秒）' : String(error?.message || error)
   };
 }
@@ -406,9 +421,11 @@ async function checkAllLinksBatch(links, myMainDomain, mySiteName, concurrency =
   }, taskTimeoutMs);
 
   return settled.map((result, index) => result.status === 'fulfilled'
-    ? result.value
+    ? { name: links[index].name, url: links[index].url, ...result.value }
     : {
         id: links[index].id,
+        name: links[index].name,
+        url: links[index].url,
         backlink_status: 'unreachable',
         checked_url: links[index].backlink_url || links[index].url,
         error: String(result.reason?.message || result.reason || '巡检任务异常')
@@ -424,7 +441,11 @@ async function checkAllBacklinks(options = {}) {
     if (!myMainDomain) throw new Error('本站地址配置无效，无法进行反链巡检');
     const links = await PartnerModel.listBacklinkInspectionTargets();
     const results = await checkAllLinksBatch(links, myMainDomain, mySiteName, 3, options);
-    return { started: true, total: results.length, results };
+    const report = { started: true, total: results.length, results };
+    if (options.aggregateAlerts) {
+      report.alert_summary = await sendBacklinkInspectionSummary(report, options.sendAdminAlert, options.alertTaskLabel || '每日反链巡检');
+    }
+    return report;
   } finally {
     backlinkCheckInProgress = false;
   }
@@ -440,7 +461,11 @@ async function checkDeepDeadBacklinks(options = {}) {
     if (!myMainDomain) throw new Error('本站地址配置无效，无法进行反链巡检');
     const links = await PartnerModel.listDeepBacklinkRevivalTargets();
     const results = await checkAllLinksBatch(links, myMainDomain, mySiteName, 3, options);
-    return { started: true, total: results.length, results };
+    const report = { started: true, total: results.length, results };
+    if (options.aggregateAlerts) {
+      report.alert_summary = await sendBacklinkInspectionSummary(report, options.sendAdminAlert, options.alertTaskLabel || '死站反链深度复活');
+    }
+    return report;
   } finally {
     backlinkCheckInProgress = false;
   }

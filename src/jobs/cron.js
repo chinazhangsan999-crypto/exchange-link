@@ -55,6 +55,8 @@ function startJobs() {
   backlinkTask = cron.schedule('0 3 * * *', () => {
     runTrackedJob('定时反向友链巡检', () => InspectionService.checkAllBacklinks({
       sendAdminAlert,
+      aggregateAlerts: true,
+      alertTaskLabel: '每日反链巡检',
       onDataChanged: CacheService.clearPublicCache
     }));
   }, { timezone: 'Asia/Shanghai' });
@@ -71,9 +73,9 @@ function startJobs() {
 
   deepRevivalTask = cron.schedule('0 4 * * *', () => {
     runTrackedJob('死站深度复活任务', async () => {
-      const sharedOptions = { onDataChanged: CacheService.clearPublicCache, sendAdminAlert };
+      const sharedOptions = { onDataChanged: CacheService.clearPublicCache, sendAdminAlert, aggregateAlerts: true };
       try {
-        await PingService.runDeepPingRevival(sharedOptions);
+        await PingService.runDeepPingRevival({ ...sharedOptions, alertTaskLabel: '死站 Ping 深度复活' });
       } catch (error) {
         console.error('死站 Ping 深度复活任务失败：', error.message);
       }
@@ -81,7 +83,7 @@ function startJobs() {
       try {
         await InspectionService.checkDeepDeadBacklinks({
           ...sharedOptions,
-          sendAdminAlert
+          alertTaskLabel: '死站反链深度复活'
         });
       } catch (error) {
         console.error('死站反链深度复活任务失败：', error.message);
@@ -110,7 +112,9 @@ function startJobs() {
   const pingTimer = setInterval(() => {
     runTrackedJob('定时站点探活', () => PingService.runFullPingInspection({
       onDataChanged: CacheService.clearPublicCache,
-      sendAdminAlert
+      sendAdminAlert,
+      aggregateAlerts: true,
+      alertTaskLabel: '站点连通性探活'
     }));
   }, 2 * 60 * 60 * 1000);
   pingTimer.unref();

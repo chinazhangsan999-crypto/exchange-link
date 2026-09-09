@@ -5,6 +5,7 @@ const PartnerModel = require('../models/PartnerModel');
 const MirrorModel = require('../models/MirrorModel');
 const { assertSafeBacklinkUrl, createPinnedAxiosConfig } = require('./InspectionService');
 const { runPromisePool } = require('../utils/asyncPool');
+const { sendPingInspectionSummary } = require('./InspectionAlertService');
 
 let pingInspectionInProgress = false;
 let mirrorCheckInProgress = false;
@@ -15,7 +16,7 @@ function notifyChanged(options) {
 }
 
 function notifyPingAlert(link, title, content, options) {
-  if (typeof options?.sendAdminAlert !== 'function') return;
+  if (options?.aggregateAlerts || typeof options?.sendAdminAlert !== 'function') return;
   // 告警通道不可影响探活状态机与数据库写入。
   const eventType = title.includes('恢复') ? 'ping_recovered' : 'ping_failed';
   void options.sendAdminAlert(title, content, { eventType });
@@ -87,6 +88,7 @@ async function persistPingFailure(link, error, options = {}) {
   if (options.signal?.aborted && !timedOut) throwIfAborted(options.signal);
   const failedCount = Number(link.ping_failed_count || 0) + 1;
   const status = failedCount >= 3 ? 'unreachable' : (link.ping_status || 'ok');
+  const failureReason = timedOut ? '连接超时（任务超过 15 秒）' : String(error?.message || '探活失败');
   await PartnerModel.recordPingFailure(link.id, failedCount, status, {
     signal: options.signal,
     // 超时是本轮巡检的最终业务结论，必须允许写入；停机取消会在上方直接抛出。
@@ -107,8 +109,11 @@ async function persistPingFailure(link, error, options = {}) {
     id: link.id,
     ping_status: status,
     ping_failed_count: failedCount,
+    previous_failed_count: Number(link.ping_failed_count || 0),
+    alert_event: failedCount === 1 ? 'ping_first_failure' : failedCount === 3 ? 'ping_offline' : null,
+    failure_reason: failureReason,
     last_ping_at: new Date().toISOString(),
-    error: timedOut ? '连接超时（任务超过 15 秒）' : String(error?.message || '探活失败')
+    error: failureReason
   };
 }
 
@@ -158,6 +163,7 @@ async function pingSingleLink(link, options = {}) {
           id: link.id,
           ping_status: 'ok',
           ping_failed_count: 0,
+          alert_event: null,
           last_ping_at: new Date().toISOString(),
           revived: false,
           timestamp_refreshed: true
@@ -167,6 +173,7 @@ async function pingSingleLink(link, options = {}) {
         id: link.id,
         ping_status: 'ok',
         ping_failed_count: 0,
+        alert_event: null,
         last_ping_at: link.last_ping_at || null,
         revived: false,
         timestamp_refreshed: false
@@ -189,6 +196,8 @@ async function pingSingleLink(link, options = {}) {
       id: link.id,
       ping_status: 'ok',
       ping_failed_count: 0,
+      previous_failed_count: Number(link.ping_failed_count || 0),
+      alert_event: recovered ? 'ping_recovered' : null,
       last_ping_at: new Date().toISOString(),
       revived
     };
@@ -219,9 +228,11 @@ async function inspectPingTargets(links, options = {}) {
   }, taskTimeoutMs);
 
   return settled.map((result, index) => result.status === 'fulfilled'
-    ? result.value
+    ? { name: links[index].name, url: links[index].url, ...result.value }
     : {
         id: links[index].id,
+        name: links[index].name,
+        url: links[index].url,
         ping_status: links[index].ping_status || 'ok',
         error: String(result.reason?.message || result.reason || '探活任务异常')
       });
@@ -234,7 +245,11 @@ async function runFullPingInspection(options = {}) {
   try {
     const links = await PartnerModel.listPingTargets();
     const results = await inspectPingTargets(links, options);
-    return { started: true, total: links.length, results };
+    const report = { started: true, total: links.length, results };
+    if (options.aggregateAlerts) {
+      report.alert_summary = await sendPingInspectionSummary(report, options.sendAdminAlert, options.alertTaskLabel || '站点连通性探活');
+    }
+    return report;
   } finally {
     pingInspectionInProgress = false;
   }
@@ -247,7 +262,11 @@ async function runDeepPingRevival(options = {}) {
   try {
     const links = await PartnerModel.listDeepPingRevivalTargets();
     const results = await inspectPingTargets(links, options);
-    return { started: true, total: links.length, results };
+    const report = { started: true, total: links.length, results };
+    if (options.aggregateAlerts) {
+      report.alert_summary = await sendPingInspectionSummary(report, options.sendAdminAlert, options.alertTaskLabel || '死站 Ping 深度复活');
+    }
+    return report;
   } finally {
     pingInspectionInProgress = false;
   }

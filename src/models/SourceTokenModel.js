@@ -15,18 +15,28 @@ function normalizeSourceSid(value) {
 }
 
 async function insertPartnerSid(transaction, partnerId) {
-  const existing = await transaction.get(`SELECT id, sid
+  let existing = await transaction.get(`SELECT id, sid
+    FROM partner_source_tokens
+    WHERE default_partner_id = ? AND status = 1 AND is_primary = 1
+    ORDER BY id DESC LIMIT 1`, [partnerId]);
+  if (existing) return existing;
+
+  existing = await transaction.get(`SELECT id, sid
     FROM partner_source_tokens
     WHERE default_partner_id = ? AND status = 1
     ORDER BY id DESC LIMIT 1`, [partnerId]);
-  if (existing) return existing;
+  if (existing) {
+    await transaction.run('UPDATE partner_source_tokens SET is_primary = 0 WHERE default_partner_id = ?', [partnerId]);
+    await transaction.run('UPDATE partner_source_tokens SET is_primary = 1 WHERE id = ?', [existing.id]);
+    return existing;
+  }
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const sid = createSourceSid();
     try {
       const result = await transaction.run(`INSERT INTO partner_source_tokens(
-        default_partner_id, sid, token_hint, status
-      ) VALUES (?, ?, ?, 1)`, [partnerId, sid, sid.slice(-6)]);
+        default_partner_id, sid, token_hint, status, is_primary
+      ) VALUES (?, ?, ?, 1, 1)`, [partnerId, sid, sid.slice(-6)]);
       return { id: result.id, sid };
     } catch (error) {
       if (!/UNIQUE constraint failed/i.test(String(error?.message || '')) || attempt === 4) throw error;
@@ -50,12 +60,34 @@ async function ensureAllPartnersHaveSid() {
     const partners = await transaction.all(`SELECT p.id
       FROM partners p
       LEFT JOIN partner_source_tokens token
-        ON token.default_partner_id = p.id AND token.status = 1
+        ON token.default_partner_id = p.id AND token.status = 1 AND token.is_primary = 1
       WHERE token.id IS NULL
       ORDER BY p.id ASC`);
     for (const partner of partners) await insertPartnerSid(transaction, partner.id);
     return { created: partners.length };
   }, { priority: 'background', label: 'backfill partner source sids', durability: 'full' });
+}
+
+async function rotatePartnerSid(partnerId) {
+  const id = Number(partnerId);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error('友链编号不合法');
+  return withTransaction(async transaction => {
+    const partner = await transaction.get('SELECT id FROM partners WHERE id = ?', [id]);
+    if (!partner) return null;
+    await transaction.run('UPDATE partner_source_tokens SET is_primary = 0 WHERE default_partner_id = ? AND status = 1', [id]);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const sid = createSourceSid();
+      try {
+        const result = await transaction.run(`INSERT INTO partner_source_tokens(
+          default_partner_id, sid, token_hint, status, is_primary
+        ) VALUES (?, ?, ?, 1, 1)`, [id, sid, sid.slice(-6)]);
+        return { id: result.id, sid };
+      } catch (error) {
+        if (!/UNIQUE constraint failed/i.test(String(error?.message || '')) || attempt === 4) throw error;
+      }
+    }
+    throw new Error('生成友链 SID 失败');
+  }, { priority: 'interactive', label: 'rotate partner source sid', durability: 'full' });
 }
 
 async function findActiveSid(value) {
@@ -78,21 +110,33 @@ async function initializeSourceTokenTables() {
     token_hint TEXT NOT NULL DEFAULT '',
     label TEXT NOT NULL DEFAULT '',
     status INTEGER NOT NULL DEFAULT 1,
+    is_primary INTEGER NOT NULL DEFAULT 0,
     used_count INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_used_at DATETIME,
     revoked_at DATETIME,
     FOREIGN KEY(default_partner_id) REFERENCES partners(id) ON DELETE SET NULL
   )`);
-  await run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_source_token_partner_active
+  const columns = await all('PRAGMA table_info(partner_source_tokens)');
+  if (!columns.some(column => column.name === 'is_primary')) {
+    await run('ALTER TABLE partner_source_tokens ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0');
+  }
+  await run(`UPDATE partner_source_tokens
+    SET is_primary = CASE WHEN id = (
+      SELECT MAX(latest.id) FROM partner_source_tokens latest
+      WHERE latest.default_partner_id = partner_source_tokens.default_partner_id AND latest.status = 1
+    ) THEN 1 ELSE 0 END
+    WHERE default_partner_id IS NOT NULL AND status = 1`);
+  await run('DROP INDEX IF EXISTS idx_source_token_partner_active');
+  await run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_source_token_partner_primary
     ON partner_source_tokens(default_partner_id)
-    WHERE status = 1 AND default_partner_id IS NOT NULL`);
+    WHERE status = 1 AND is_primary = 1 AND default_partner_id IS NOT NULL`);
   await run('CREATE INDEX IF NOT EXISTS idx_source_token_sid_status ON partner_source_tokens(sid, status)');
   await ensureAllPartnersHaveSid();
 }
 
 function listPartnerSids() {
-  return all(`SELECT id, default_partner_id, sid, token_hint, label, status,
+  return all(`SELECT id, default_partner_id, sid, token_hint, label, status, is_primary,
       used_count, created_at, last_used_at, revoked_at
     FROM partner_source_tokens
     ORDER BY default_partner_id ASC, id ASC`);
@@ -105,6 +149,7 @@ module.exports = {
   insertPartnerSid,
   ensurePartnerSid,
   ensureAllPartnersHaveSid,
+  rotatePartnerSid,
   findActiveSid,
   initializeSourceTokenTables,
   listPartnerSids

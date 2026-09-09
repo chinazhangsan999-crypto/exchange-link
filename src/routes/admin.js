@@ -35,6 +35,7 @@ router.patch('/api/admin/partners/:id', AdminController.updatePartnerApproval);
 router.post('/api/admin/partners/:id/whitelist', AdminController.whitelistPartner);
 router.post('/api/admin/partners/:id/traffic/clear', AdminController.clearPartnerTraffic);
 router.delete('/api/admin/partners/:id', AdminController.deletePartner);
+router.post('/api/admin/partners/:id/source-sid/regenerate', AdminController.regeneratePartnerSourceSid);
 router.post('/api/admin/links/check-all', AdminController.checkAllLinks);
 router.post('/api/admin/links/:id/check', AdminController.checkLink);
 router.post('/api/admin/links/:id/ping', AdminController.checkLinkHealth);

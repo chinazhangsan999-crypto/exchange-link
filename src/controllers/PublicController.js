@@ -12,8 +12,8 @@ const {
   TRAFFIC_DEBUG
 } = require('../config/env');
 const { getClientIp, parseHostname, matchesPartnerDomain, normalizePartnerUrl, normalizeRegisteredDomain } = require('../utils/network');
-const { normalizeUrl } = require('../utils/url');
 const { ok, fail, safeApiErrorMessage, isUniqueConstraintError } = require('../utils/http');
+const { buildSourceEntryUrls } = require('../utils/sourceLinks');
 const {
   VERIFY_NONCE_TTL_MS,
   VERIFY_COOKIE_TTL_MS,
@@ -64,25 +64,6 @@ function clearMirrorsCache() {
 
 function trafficDebug(message) {
   if (TRAFFIC_DEBUG) console.log(`[流量排查] ${message}`);
-}
-
-function buildSourceEntryUrls(sourceSid, configuredSiteUrl) {
-  const encodedSid = encodeURIComponent(String(sourceSid || '').trim());
-  const relativePathUrl = `/r/${encodedSid}`;
-  const relativeQueryUrl = `/?sid=${encodedSid}`;
-  try {
-    const parsed = new URL(normalizeUrl(configuredSiteUrl));
-    if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
-      throw new Error('本站地址配置不合法');
-    }
-    return {
-      pathUrl: new URL(relativePathUrl, parsed.origin).href,
-      queryUrl: new URL(relativeQueryUrl, parsed.origin).href
-    };
-  } catch {
-    // 禁止使用请求 Host 拼接公开地址；配置缺失时由浏览器按当前可信同源解析。
-    return { pathUrl: relativePathUrl, queryUrl: relativeQueryUrl };
-  }
 }
 
 function readAttributionVisit(req) {
@@ -549,7 +530,7 @@ function getCaptcha(req, res) {
     ignoreChars: '',
     noise: 2,
     color: true,
-    background: '#0d1b2a',
+    background: '#ffffff',
     charPreset: '0123456789',
     width: 118,
     height: 42,
@@ -560,6 +541,8 @@ function getCaptcha(req, res) {
 }
 
 async function applyLink(req, res) {
+  let normalizedDomain = '';
+  let configuredSiteUrl = '';
   try {
     const { name, url, category, description = '', contact = '', captcha } = req.body || {};
     const expectedCaptcha = req.session.captcha;
@@ -571,11 +554,27 @@ async function applyLink(req, res) {
       return fail(res, '验证码错误或已过期');
     }
     const { url: cleanUrl, domain } = normalizePartnerUrl(url);
+    normalizedDomain = domain;
     if (String(name).trim().length > 80 || String(description).trim().length > 200 || String(contact).trim().length > 200) {
       return fail(res, '填写内容过长，请精简后重试');
     }
     if (!(await SystemModel.categoryExists(String(category).trim()))) return fail(res, '请选择有效的网站分类');
-    const configuredSiteUrl = await SystemModel.configValue('site_url');
+    configuredSiteUrl = await SystemModel.configValue('site_url');
+    const existing = await PartnerModel.findSubmissionByDomain(domain);
+    if (existing) {
+      const token = existing.source_sid ? { sid: existing.source_sid } : await SourceTokenModel.ensurePartnerSid(existing.id);
+      const sourceUrls = buildSourceEntryUrls(token.sid, configuredSiteUrl);
+      return res.status(200).json({
+        code: 200,
+        msg: '申请成功，请在贵站添加本站友链等待激活！',
+        data: {
+          id: existing.id,
+          domain: existing.domain,
+          source_sid: token.sid,
+          source_links: { path: sourceUrls.pathUrl, query: sourceUrls.queryUrl }
+        }
+      });
+    }
     const result = await PartnerModel.createPendingPartner({
       name: String(name).trim(),
       domain,
@@ -584,12 +583,13 @@ async function applyLink(req, res) {
       contact: String(contact).trim(),
       category: String(category).trim()
     });
+    const sourceUrls = buildSourceEntryUrls(result.sourceSid, configuredSiteUrl);
+    const contactForAlert = (String(contact).trim() || '未填写').replace(/[\r\n`]+/g, ' ');
     void sendAdminAlert(
       '🆕 新友链申请',
-      `> **站点名称：** ${String(name).trim()}\n> **网站 URL：** ${cleanUrl}\n> **所属分类：** ${String(category).trim()}\n> **联系方式：** ${String(contact).trim() || '未填写'}\n> **提交时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
+      `> **站点名称：** ${String(name).trim()}\n> **网站 URL：** ${cleanUrl}\n> **所属分类：** ${String(category).trim()}\n> **站长联系方式（点击复制）：** \`${contactForAlert}\`\n> **专属路径地址：** [${sourceUrls.pathUrl}](${sourceUrls.pathUrl})\n> **专属参数地址：** \`${sourceUrls.queryUrl}\`\n> **提交时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
       { eventType: 'new_partner_apply' }
     );
-    const sourceUrls = buildSourceEntryUrls(result.sourceSid, configuredSiteUrl);
     return res.status(200).json({
       code: 200,
       msg: '申请成功，请在贵站添加本站友链等待激活！',
@@ -605,7 +605,27 @@ async function applyLink(req, res) {
     });
   } catch (error) {
     console.error('提交友链申请失败：', error);
-    if (isUniqueConstraintError(error)) return fail(res, '该友链域名已提交，请勿重复申请', 409);
+    if (isUniqueConstraintError(error) && normalizedDomain) {
+      try {
+        const existing = await PartnerModel.findSubmissionByDomain(normalizedDomain);
+        if (existing) {
+          const token = existing.source_sid ? { sid: existing.source_sid } : await SourceTokenModel.ensurePartnerSid(existing.id);
+          const sourceUrls = buildSourceEntryUrls(token.sid, configuredSiteUrl);
+          return res.status(200).json({
+            code: 200,
+            msg: '申请成功，请在贵站添加本站友链等待激活！',
+            data: {
+              id: existing.id,
+              domain: existing.domain,
+              source_sid: token.sid,
+              source_links: { path: sourceUrls.pathUrl, query: sourceUrls.queryUrl }
+            }
+          });
+        }
+      } catch (lookupError) {
+        console.error('读取重复申请的专属地址失败：', lookupError);
+      }
+    }
     return fail(res, safeApiErrorMessage(error), 500);
   }
 }

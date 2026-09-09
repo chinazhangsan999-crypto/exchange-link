@@ -8,7 +8,26 @@ const WEBHOOK_TIMEOUT_MS = 10_000;
 const BARK_TIMEOUT_MS = 8_000;
 const RETRY_DELAYS_MS = [400, 1_200];
 const BARK_RETRY_DELAYS_MS = [800];
+// Bark 最终通过 APNs 投递；为标题、分组和 JSON 字段预留空间，正文按 UTF-8 字节安全分段。
+const BARK_BODY_MAX_BYTES = 2_500;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function splitUtf8Text(value, maxBytes = BARK_BODY_MAX_BYTES) {
+  const text = String(value || '');
+  if (!text) return [''];
+  const chunks = [];
+  let current = '';
+  for (const character of text) {
+    if (Buffer.byteLength(current + character, 'utf8') > maxBytes && current) {
+      chunks.push(current);
+      current = character;
+    } else {
+      current += character;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
 
 function getWebhookErrorDetails(error) {
   return {
@@ -113,14 +132,22 @@ function barkPushEndpoint(value) {
 async function deliverBark({ serverUrl, deviceKey, group, title, message }) {
   if (!deviceKey) throw Object.assign(new Error('Bark Device Key 未配置'), { code: 'CONFIG' });
   const endpoint = barkPushEndpoint(serverUrl);
-  const result = await postWithRetry(endpoint, {
-    device_key: deviceKey,
-    title,
-    body: message,
-    group: group || '网站告警',
-    level: 'timeSensitive'
-  }, { timeoutMs: BARK_TIMEOUT_MS, retryDelays: BARK_RETRY_DELAYS_MS });
-  return { provider: 'bark', ...result };
+  const parts = splitUtf8Text(message);
+  let attemptCount = 0;
+  let statusCode = null;
+  for (let index = 0; index < parts.length; index += 1) {
+    const partTitle = parts.length > 1 ? `${title}（${index + 1}/${parts.length}）` : title;
+    const result = await postWithRetry(endpoint, {
+      device_key: deviceKey,
+      title: partTitle,
+      body: parts[index],
+      group: group || '网站告警',
+      level: 'timeSensitive'
+    }, { timeoutMs: BARK_TIMEOUT_MS, retryDelays: BARK_RETRY_DELAYS_MS });
+    attemptCount += result.attemptCount;
+    statusCode = result.statusCode;
+  }
+  return { provider: 'bark', sent: true, attemptCount, statusCode, partCount: parts.length };
 }
 
 async function loadAlertConfig() {

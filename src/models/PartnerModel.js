@@ -47,7 +47,7 @@ const ADMIN_LINK_QUERY = `SELECT
   p.id, p.name, p.domain, p.url, p.category, p.description, p.contact,
   (SELECT token.sid FROM partner_source_tokens token
     WHERE token.default_partner_id = p.id AND token.status = 1
-    ORDER BY token.id DESC LIMIT 1) AS source_sid,
+    ORDER BY token.is_primary DESC, token.id DESC LIMIT 1) AS source_sid,
   p.priority,
   p.is_approved, p.is_whitelisted, p.is_exempt, p.backlink_status, p.backlink_url, p.last_checked_at,
   p.failed_check_count, p.failed_check_count AS check_fail_count,
@@ -243,6 +243,16 @@ async function findAnalyticsPartner(id) {
     FROM partners p WHERE p.id = ?`, [id]);
 }
 
+async function findSubmissionByDomain(domain) {
+  return get(`SELECT p.id, p.domain,
+      (SELECT token.sid FROM partner_source_tokens token
+        WHERE token.default_partner_id = p.id AND token.status = 1
+        ORDER BY token.is_primary DESC, token.id DESC LIMIT 1) AS source_sid
+    FROM partners p
+    WHERE lower(p.domain) = lower(?)
+    LIMIT 1`, [domain]);
+}
+
 async function createPendingPartner({ name, domain, url, description, contact, category }) {
   return withTransaction(async transaction => {
     const result = await transaction.run(`INSERT INTO partners(name, domain, url, description, contact, category, is_approved, backlink_status)
@@ -394,6 +404,7 @@ module.exports = {
   listReviewPartners,
   listAdminPartners,
   findAnalyticsPartner,
+  findSubmissionByDomain,
   createPendingPartner,
   createApprovedPartner,
   updatePartner,

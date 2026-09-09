@@ -1,0 +1,25 @@
+.source-sid-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sid-generate-button {
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  padding: 3px 10px;
+  background: #eff6ff;
+  color: #2563eb;
+  font: 700 12px inherit;
+  cursor: pointer;
+}
+
+.sid-generate-button:hover {
+  background: #2563eb;
+  color: #fff;
+}
+
+.sid-generate-button:disabled {
+  opacity: .6;
+  cursor: wait;
+}
