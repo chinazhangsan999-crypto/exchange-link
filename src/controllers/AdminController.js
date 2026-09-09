@@ -491,8 +491,10 @@ async function getOverview(req, res) {
 
 async function getDashboardStats(req, res) {
   try {
-    const [todayExchange, newPartnerCounts, newPartnerTraffic, partners] = await Promise.all([
+    const [todayExchange, todayLeader, partnerStats, newPartnerCounts, newPartnerTraffic, partners] = await Promise.all([
       LogModel.getTodayExchange(),
+      LogModel.getTodayTrafficLeader(),
+      PartnerModel.getOverviewPartnerStats(),
       PartnerModel.getNewPartnerCounts(),
       LogModel.getNewPartnerTraffic(),
       LogModel.listRiskPartnerMetrics()
@@ -522,6 +524,8 @@ async function getDashboardStats(req, res) {
       todayOutbound: outboundCount,
       today_inflow_uv: inboundCount,
       today_outflow_uv: outboundCount,
+      active_partners: Number(partnerStats.active?.value || 0),
+      today_leader: todayLeader || null,
       new_partners_24h: newPartnerCounts.last24h.value,
       new_partners_24h_today_uv: newPartnerTraffic.last24h.value,
       new_partners_7d: newPartnerCounts.last7d.value,
@@ -1060,6 +1064,14 @@ async function resetCheckStatus(req, res) {
 async function getLogs(req, res) {
   try { return ok(res, await LogModel.searchInboundLogs(String(req.query.q || '').trim())); }
   catch { return fail(res, '获取入站日志失败', 500); }
+}
+
+async function getRejectedInboundLogs(req, res) {
+  try { return ok(res, await LogModel.searchRejectedInboundLogs(String(req.query.q || '').trim())); }
+  catch (error) {
+    console.error('获取未入站用户明细失败：', error);
+    return fail(res, '获取未入站用户明细失败', 500);
+  }
 }
 
 async function getCategories(req, res) {
@@ -1691,6 +1703,7 @@ module.exports = {
   resetLostCount,
   resetCheckStatus,
   getLogs,
+  getRejectedInboundLogs,
   getCategories,
   createCategory,
   saveCategoryOrder,

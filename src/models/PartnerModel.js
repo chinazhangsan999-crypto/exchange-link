@@ -231,7 +231,11 @@ async function getApprovedOutboundTarget(id) {
 
 async function getOverviewPartnerStats() {
   const [active, leader, clicks] = await Promise.all([
-    get('SELECT COUNT(*) AS value FROM partners WHERE is_approved = 1'),
+    get(`SELECT COUNT(*) AS value FROM partners p
+      WHERE p.is_approved = 1
+        AND COALESCE(p.is_internal, 0) = 0
+        AND COALESCE(p.backlink_status, 'valid') <> 'lost'
+        AND COALESCE(p.ping_status, 'ok') = 'ok'`),
     get(`${finishPublicLinkQuery('WHERE p.is_approved = 1')} ORDER BY score_24h DESC, p.id ASC LIMIT 1`),
     get(`SELECT COUNT(*) AS value FROM outbound_logs o
       INNER JOIN partners p ON p.id = o.link_id

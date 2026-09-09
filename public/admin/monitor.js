@@ -3,7 +3,7 @@
   if (!document.querySelector('link[href^="/admin/monitor.css"]')) {
     const stylesheet = document.createElement('link');
     stylesheet.rel = 'stylesheet';
-    stylesheet.href = '/admin/monitor.css?v=20260906-2';
+    stylesheet.href = '/admin/monitor.css?v=20260910-wide-client-audit';
     document.head.append(stylesheet);
   }
 
@@ -11,7 +11,7 @@
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[character]));
-  const state = { currentId: null, requestSequence: 0 };
+  const state = { currentId: null, requestSequence: 0, clients: [], clientFilter: 'all', clientQuery: '' };
 
   function toast(message) {
     const element = document.querySelector('#toast');
@@ -133,6 +133,119 @@
       : `<span class="tag healthy">🟢 ${healthyText}</span>`;
   }
 
+  const sourceLabels = {
+    sid_domain_match: 'SID + 域名一致', sid_fallback_no_referer: 'SID（无 Referer）',
+    sid_fallback_unknown_domain: 'SID + 未登记来源', domain_only: '来源域名匹配',
+    legacy_domain: '旧版域名匹配', invalid_sid_domain_match: '无效 SID + 域名匹配',
+    sid_domain_mismatch: 'SID 与域名冲突'
+  };
+
+  function formatTime(value) {
+    if (!value) return '—';
+    if (typeof window.formatAdminTime === 'function') return window.formatAdminTime(value);
+    const raw = String(value);
+    const date = new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(raw) ? raw : `${raw.replace(' ', 'T')}Z`);
+    return Number.isNaN(date.getTime()) ? raw : new Intl.DateTimeFormat('zh-CN', {
+      timeZone: 'Asia/Shanghai', hour12: false, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit'
+    }).format(date).replaceAll('/', '-');
+  }
+
+  function durationText(seconds) {
+    const value = Math.max(0, Number(seconds) || 0);
+    if (value < 60) return `${Math.round(value)} 秒`;
+    if (value < 3600) return `${Math.round(value / 60)} 分钟`;
+    return `${(value / 3600).toFixed(value < 36000 ? 1 : 0)} 小时`;
+  }
+
+  function riskTag(item) {
+    if (item.risk_level === 'high') return '<span class="client-risk high">🔴 高风险证据</span>';
+    if (item.risk_level === 'observe') return '<span class="client-risk observe">🟡 建议观察</span>';
+    return '<span class="client-risk normal">🟢 暂无明显异常</span>';
+  }
+
+  function clientEvidence(item) {
+    const flags = item.flags || {};
+    const reasons = item.risk_reasons || [];
+    const source = sourceLabels[item.attribution_method] || item.attribution_method || '历史数据未记录';
+    const recent = (item.recent_times || []).map(time => `<span>${escapeHtml(formatTime(time))}</span>`).join('') || '<span>暂无</span>';
+    const interactionRate = item.sessions ? (Number(item.interacted_sessions || 0) / Number(item.sessions) * 100).toFixed(1) : '0.0';
+    return `<tr class="client-evidence-row" data-detail-index="${item._index}" hidden><td colspan="8">
+      <div class="client-evidence">
+        <div class="evidence-grid">
+          <section><b>完整客户端信息</b><p>UA：${escapeHtml(item.raw_user_agent || '历史数据未采集')}</p><p>平台：${escapeHtml(item.client_platform || '历史数据未采集')} · 分辨率：${escapeHtml(item.screen_resolution || '未采集')} · 语言：${escapeHtml(item.client_language || '未采集')}</p></section>
+          <section><b>来源证据</b><p>识别方式：${escapeHtml(source)}</p><p>Referer：${escapeHtml(item.referer || '空 Referer')}</p><p>本客户端空 Referer：${Number(item.empty_referer_count || 0)} 次</p></section>
+          <section><b>行为证据</b><p>首次：${escapeHtml(formatTime(item.first_seen))}</p><p>最近：${escapeHtml(formatTime(item.timestamp))}</p><p>中位间隔：${item.median_interval_seconds == null ? '样本不足' : durationText(item.median_interval_seconds)} · 1 分钟峰值：${Number(item.max_events_1m || 0)} 次 · 5 分钟峰值：${Number(item.max_events_5m || 0)} 次</p></section>
+          <section><b>互动与关联</b><p>有效会话互动：${Number(item.interacted_sessions || 0)}/${Number(item.sessions || 0)}（${interactionRate}%）· 出站点击：${Number(item.interaction_clicks || 0)}</p><p>首次互动延迟：${item.first_interaction_seconds == null ? '无互动' : durationText(item.first_interaction_seconds)}</p><p>匿名访客涉及 ${Number(item.ip_count || 1)} 个 IP；同 IP 涉及 ${Number(item.ip_visitor_count || 1)} 个匿名访客；同环境涉及 ${Number(item.environment_ip_count || 0)} 个 IP</p></section>
+        </div>
+        <div class="recent-times"><b>最近访问（北京时间）</b>${recent}</div>
+        <div class="evidence-verdict"><b>审核依据：</b>${escapeHtml(reasons.join('；') || '目前没有发现明显的自动化、来源冲突或环境关联证据。')} ${flags.risky ? '请结合站点总体 KPI 人工判断，不会自动处罚。' : ''}</div>
+      </div>
+    </td></tr>`;
+  }
+
+  function clientRows(items) {
+    if (!items.length) return '<tr><td colspan="8" class="empty-inflow">暂无近 24 小时入站数据</td></tr>';
+    return items.map((raw, index) => {
+      const item = { ...raw, _index: index };
+      const flags = item.flags || {};
+      const reasons = item.risk_reasons || [];
+      const source = sourceLabels[item.attribution_method] || item.attribution_method || '历史数据未记录';
+      const identity = item.visitor_short ? `访客 …${item.visitor_short}` : '历史记录（按 IP 聚合）';
+      const environment = item.environment_short ? `环境 …${item.environment_short}` : '环境摘要未采集';
+      const searchText = [item.ip, item.visitor_short, item.client, item.raw_user_agent, item.source_domain, item.referer, reasons.join(' ')].join(' ').toLowerCase();
+      return `<tr class="client-audit-row" data-client-index="${index}" data-risk="${flags.risky ? 1 : 0}" data-no-interaction="${flags.no_interaction ? 1 : 0}" data-source-anomaly="${flags.source_anomaly ? 1 : 0}" data-periodic="${flags.periodic ? 1 : 0}" data-environment-anomaly="${flags.environment_anomaly ? 1 : 0}" data-search="${escapeHtml(searchText)}">
+        <td><strong>${escapeHtml(item.ip || '未知 IP')}</strong><small>${escapeHtml(identity)}</small></td>
+        <td><span class="env-tag model-tag" title="${escapeHtml(item.raw_user_agent || item.client)}">${escapeHtml(item.client || item.device_model || '未知客户端')}</span><small>${escapeHtml(environment)}</small></td>
+        <td><strong>${escapeHtml(item.source_domain || '空 Referer')}</strong><small>${escapeHtml(source)}</small></td>
+        <td><strong>${Number(item.ip_count || 1)} UV / ${Number(item.requests || 0)} PV</strong><small>当前 IP ${Number(item.ip_requests || 0)} PV · ${Number(item.ip_ratio || 0).toFixed(1)}%</small></td>
+        <td><strong>${Number(item.interacted_sessions || 0)}/${Number(item.sessions || 0)} 会话</strong><small>${Number(item.interaction_clicks || 0)} 次出站点击</small></td>
+        <td><strong>跨度 ${durationText(item.duration_seconds)}</strong><small>中位间隔 ${item.median_interval_seconds == null ? '样本不足' : durationText(item.median_interval_seconds)} · 1min ${Number(item.max_events_1m || 0)} 次</small></td>
+        <td>${riskTag(item)}<small>${escapeHtml(reasons.slice(0, 2).join('；') || '无明显异常')}${reasons.length > 2 ? `；另 ${reasons.length - 2} 项` : ''}</small></td>
+        <td><strong>${escapeHtml(formatTime(item.timestamp))}</strong><button type="button" class="client-detail-button" data-client-detail="${index}" aria-expanded="false">展开证据</button></td>
+      </tr>${clientEvidence(item)}`;
+    }).join('');
+  }
+
+  function applyClientFilters() {
+    const filter = state.clientFilter;
+    const query = state.clientQuery.toLowerCase();
+    document.querySelectorAll('#client-audit-body .client-audit-row').forEach(row => {
+      const filterMatch = filter === 'all' || row.dataset[filter] === '1';
+      const queryMatch = !query || row.dataset.search.includes(query);
+      row.hidden = !(filterMatch && queryMatch);
+      if (row.hidden) {
+        const detail = document.querySelector(`#client-audit-body [data-detail-index="${row.dataset.clientIndex}"]`);
+        if (detail) detail.hidden = true;
+      }
+    });
+    const visible = document.querySelectorAll('#client-audit-body .client-audit-row:not([hidden])').length;
+    const counter = document.querySelector('#client-filter-count');
+    if (counter) counter.textContent = `显示 ${visible} / ${state.clients.length} 个客户端`;
+  }
+
+  function bindClientAudit() {
+    document.querySelectorAll('[data-client-filter]').forEach(button => button.addEventListener('click', () => {
+      state.clientFilter = button.dataset.clientFilter;
+      document.querySelectorAll('[data-client-filter]').forEach(item => item.classList.toggle('active', item === button));
+      applyClientFilters();
+    }));
+    document.querySelector('#client-audit-search')?.addEventListener('input', event => {
+      state.clientQuery = event.target.value.trim();
+      applyClientFilters();
+    });
+    document.querySelector('#client-audit-body')?.addEventListener('click', event => {
+      const button = event.target.closest('[data-client-detail]');
+      if (!button) return;
+      const detail = document.querySelector(`#client-audit-body [data-detail-index="${button.dataset.clientDetail}"]`);
+      if (!detail) return;
+      detail.hidden = !detail.hidden;
+      button.setAttribute('aria-expanded', String(!detail.hidden));
+      button.textContent = detail.hidden ? '展开证据' : '收起证据';
+    });
+    applyClientFilters();
+  }
+
   function renderAnalytics(data) {
     const diagnostics = data.diagnostics || {};
     const deadWaterInteraction = percent(diagnostics.dead_water_interaction_rate);
@@ -141,6 +254,9 @@
     const emptyReferer = percent(diagnostics.empty_referer_ratio);
     const pvUv = numberText(diagnostics.pv_uv_ratio ?? data.pvUvRatio);
     const ips = data.inflow_ips || data.all_inflow_ips || [];
+    state.clients = ips;
+    state.clientFilter = 'all';
+    state.clientQuery = '';
 
     document.querySelector('#analytics-name').textContent = `${data.partner.name} · ${data.partner.domain}`;
     document.querySelector('#analytics-content').innerHTML = `
@@ -184,12 +300,21 @@
         </div>
       </section>
       <section class="analytics-table">
-        <h4>客户端明细</h4>
+        <div class="client-table-head"><div><h4>客户端明细</h4><p id="client-filter-count" class="hint"></p></div>
+          <div class="client-filters" role="group" aria-label="客户端风险筛选">
+            <button type="button" class="active" data-client-filter="all">全部</button><button type="button" data-client-filter="risk">风险/观察</button>
+            <button type="button" data-client-filter="noInteraction">无互动</button><button type="button" data-client-filter="sourceAnomaly">来源异常</button>
+            <button type="button" data-client-filter="periodic">规律访问</button><button type="button" data-client-filter="environmentAnomaly">环境关联</button>
+            <input id="client-audit-search" type="search" placeholder="搜索 IP、访客、来源或 UA" autocomplete="off">
+          </div>
+        </div>
+        ${data.client_events_truncated ? `<p class="client-data-note">为保证后台流畅，仅分析最近 ${Number(data.pv24h || 0) > 2000 ? '2,000 条访问并优先展示 300 个客户端' : '300 个客户端'}；总体 KPI 仍基于完整的近 24 小时数据。</p>` : ''}
         <div class="table-wrap"><table>
-          <thead><tr><th>入站 IP</th><th>客户端</th><th>请求次数</th><th>占比</th><th>最近访问</th></tr></thead>
-          <tbody>${ips.map(item => `<tr><td>${escapeHtml(item.ip)}</td><td><span class="env-tag model-tag" title="${escapeHtml(item.client || item.device_model)}">${escapeHtml(item.client || item.device_model || '未知客户端')}</span></td><td>${Number(item.requests || 0)}</td><td>${Number(item.ratio || 0).toFixed(1)}%</td><td>${escapeHtml(window.formatAdminTime?.(item.timestamp) || item.timestamp || '—')}</td></tr>`).join('') || '<tr><td colspan="5" class="empty-inflow">暂无近 24 小时入站数据</td></tr>'}</tbody>
+          <thead><tr><th>IP / 匿名访客</th><th>客户端环境</th><th>来源校验</th><th>24h 访问</th><th>后续互动</th><th>时间特征</th><th>风险证据</th><th>最近访问 / 操作</th></tr></thead>
+          <tbody id="client-audit-body">${clientRows(ips)}</tbody>
         </table></div>
       </section>`;
+    bindClientAudit();
   }
 
   async function showAnalytics(id) {

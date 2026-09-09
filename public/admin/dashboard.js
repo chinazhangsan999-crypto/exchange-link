@@ -19,6 +19,12 @@
       document.querySelector('#new-24h-uv').textContent = data.new_partners_24h_today_uv;
       document.querySelector('#new-7d').textContent = data.new_partners_7d;
       document.querySelector('#new-7d-uv').textContent = data.new_partners_7d_total_uv;
+      const activeCount = document.querySelector('#active-count');
+      if (activeCount) activeCount.textContent = Number(data.active_partners || 0);
+      const leader = document.querySelector('#leader');
+      if (leader) leader.textContent = data.today_leader
+        ? `${data.today_leader.name} · ${Number(data.today_leader.uv || 0)} UV`
+        : '今日暂无有效带量';
 
       const body = document.querySelector('#suspicious-body');
       body.innerHTML = data.suspicious_partners.map(item => `<tr><td><b>${esc(item.name)}</b><span class="domain">${esc(item.domain)}</span></td><td>${item.score_24h}</td><td>${item.pv_24h}</td><td>${item.risk_reasons.map(reason => `<span class="tag ${item.risk_level === 'high' ? 'off' : 'warn'} risk-reason-tag">${item.risk_level === 'high' ? '高风险：' : '中风险：'}${esc(reason)}</span>`).join('')}</td><td><div class="actions"><button class="action see-risk" data-id="${item.id}">查看风控</button><button class="action disable-risk" data-id="${item.id}">禁用</button></div></td></tr>`).join('') || '<tr><td colspan="5" class="hint">暂未发现达到告警条件的站点</td></tr>';

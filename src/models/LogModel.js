@@ -6,6 +6,7 @@ const LOG_DELETE_BATCH_SIZE = 5000;
 const LOG_DELETE_YIELD_MS = 500;
 const LOG_CLEANUP_TARGETS = [
   { table: 'inbound_logs', timestampColumn: 'created_at', retentionDays: LOG_RETENTION_DAYS },
+  { table: 'inbound_rejection_logs', timestampColumn: 'last_seen_at', retentionDays: LOG_RETENTION_DAYS },
   { table: 'inflow_events', timestampColumn: 'timestamp', retentionDays: LOG_RETENTION_DAYS },
   { table: 'outbound_logs', timestampColumn: 'created_at', retentionDays: LOG_RETENTION_DAYS },
   { table: 'ad_runtime_events', timestampColumn: 'created_at', retentionDays: LOG_RETENTION_DAYS },
@@ -41,6 +42,14 @@ async function cleanupTableInBatches(target, cutoff) {
 async function cleanupOldLogs() {
   const results = [];
 
+  // 未完成心跳的访问只在定时维护阶段归档，避免给正常访客的入站请求增加批量写入。
+  try {
+    const value = await archiveExpiredClaims();
+    results.push({ table: 'inflow_claim_tokens', status: 'fulfilled', value });
+  } catch (reason) {
+    results.push({ table: 'inflow_claim_tokens', status: 'rejected', reason });
+  }
+
   // 串行清理各事实表，避免多个批量 DELETE 同时争抢 SQLite 写锁。
   for (const target of LOG_CLEANUP_TARGETS) {
     try {
@@ -56,6 +65,23 @@ async function cleanupOldLogs() {
   return results;
 }
 
+async function archiveExpiredClaims() {
+  return withTransaction(async transaction => {
+    const archived = await transaction.run(`INSERT INTO inbound_rejection_logs(
+      client_ip, visitor_hash, user_agent, referer, observed_domain, partner_id,
+      source_token_id, attribution_method, visitor_type, stage, reason_code, reason_text,
+      request_path, first_seen_at, last_seen_at, created_at
+    ) SELECT ip, visitor_hash, user_agent, COALESCE(referer, ''), COALESCE(observed_domain, ''), partner_id,
+      source_token_id, COALESCE(attribution_method, ''), 'source_validation', 'heartbeat',
+      'heartbeat_expired', '15分钟内未完成有效心跳', COALESCE(request_path, '/'),
+      created_at, expires_at, expires_at
+      FROM inflow_claim_tokens
+      WHERE claimed_at IS NULL AND expires_at < datetime('now')`);
+    const removed = await transaction.run("DELETE FROM inflow_claim_tokens WHERE expires_at < datetime('now')");
+    return { archived: archived.changes || 0, removed: removed.changes || 0 };
+  }, { priority: 'maintenance', label: 'archive expired inflow claims', durability: 'normal' });
+}
+
 async function createClaimToken({
   tokenHash,
   partnerId,
@@ -67,14 +93,17 @@ async function createClaimToken({
   sidPartnerId = null,
   domainPartnerId = null,
   attributionMethod = 'domain_only',
-  observedDomain = ''
+  observedDomain = '',
+  userAgent = '',
+  visitorHash = '',
+  requestPath = '/'
 }) {
   return withTransaction(async transaction => {
-    await transaction.run("DELETE FROM inflow_claim_tokens WHERE expires_at < datetime('now')");
     return transaction.run(`INSERT INTO inflow_claim_tokens(
       token_hash, partner_id, ip, expires_at, started_at_ms, referer,
-      source_token_id, sid_partner_id, domain_partner_id, attribution_method, observed_domain
-    ) VALUES (?, ?, ?, datetime('now', ?), ?, ?, ?, ?, ?, ?, ?)`, [
+      source_token_id, sid_partner_id, domain_partner_id, attribution_method, observed_domain,
+      user_agent, visitor_hash, request_path
+    ) VALUES (?, ?, ?, datetime('now', ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
       tokenHash,
       partnerId,
       ip,
@@ -85,9 +114,58 @@ async function createClaimToken({
       sidPartnerId,
       domainPartnerId,
       String(attributionMethod || 'domain_only').slice(0, 64),
-      String(observedDomain || '').slice(0, 253)
+      String(observedDomain || '').slice(0, 253),
+      String(userAgent || '').slice(0, 500),
+      String(visitorHash || '').slice(0, 64),
+      String(requestPath || '/').slice(0, 500)
     ]);
   }, { priority: 'traffic', label: 'create inflow claim', durability: 'normal' });
+}
+
+async function recordRejectedInbound(event = {}) {
+  const clientIp = String(event.clientIp || '').trim().slice(0, 128);
+  const stage = String(event.stage || 'source').trim().slice(0, 64);
+  const reasonCode = String(event.reasonCode || 'unknown').trim().slice(0, 64);
+  if (!clientIp || !stage || !reasonCode) return { skipped: true };
+  const partnerId = Number.isInteger(Number(event.partnerId)) && Number(event.partnerId) > 0
+    ? Number(event.partnerId) : null;
+  const values = {
+    visitorHash: String(event.visitorHash || '').slice(0, 64),
+    userAgent: String(event.userAgent || '').replace(/[\r\n\t]+/g, ' ').slice(0, 500),
+    referer: String(event.referer || '').replace(/[\r\n\t]+/g, ' ').slice(0, 2048),
+    observedDomain: String(event.observedDomain || '').slice(0, 253),
+    sourceTokenId: Number.isInteger(Number(event.sourceTokenId)) && Number(event.sourceTokenId) > 0
+      ? Number(event.sourceTokenId) : null,
+    attributionMethod: String(event.attributionMethod || '').slice(0, 64),
+    visitorType: String(event.visitorType || 'source_validation').slice(0, 64),
+    reasonText: String(event.reasonText || '未通过入站校验').replace(/[\r\n\t]+/g, ' ').slice(0, 300),
+    requestPath: String(event.requestPath || '/').slice(0, 500)
+  };
+  return withTransaction(async transaction => {
+    const existing = await transaction.get(`SELECT id FROM inbound_rejection_logs
+      WHERE ((? <> '' AND visitor_hash = ?) OR (? = '' AND client_ip = ?))
+        AND stage = ? AND reason_code = ?
+        AND COALESCE(partner_id, 0) = COALESCE(?, 0)
+        AND last_seen_at >= datetime('now', '-10 minutes')
+      ORDER BY last_seen_at DESC LIMIT 1`, [
+      values.visitorHash, values.visitorHash, values.visitorHash, clientIp, stage, reasonCode, partnerId
+    ]);
+    if (existing) {
+      return transaction.run(`UPDATE inbound_rejection_logs
+        SET occurrence_count = occurrence_count + 1, last_seen_at = CURRENT_TIMESTAMP,
+          client_ip = ?, user_agent = ?, referer = ?, observed_domain = ?, reason_text = ?
+        WHERE id = ?`, [clientIp, values.userAgent, values.referer, values.observedDomain, values.reasonText, existing.id]);
+    }
+    return transaction.run(`INSERT INTO inbound_rejection_logs(
+      client_ip, visitor_hash, user_agent, referer, observed_domain, partner_id,
+      source_token_id, attribution_method, visitor_type, stage, reason_code, reason_text,
+      request_path
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      clientIp, values.visitorHash, values.userAgent, values.referer, values.observedDomain,
+      partnerId, values.sourceTokenId, values.attributionMethod, values.visitorType,
+      stage, reasonCode, values.reasonText, values.requestPath
+    ]);
+  }, { priority: 'traffic', label: 'record rejected inbound', durability: 'normal' });
 }
 
 async function getValidClaimTokenHash(tokenHash) {
@@ -98,7 +176,18 @@ async function getActiveClaim(tokenHash) {
   return get("SELECT * FROM inflow_claim_tokens WHERE token_hash = ? AND claimed_at IS NULL AND expires_at >= datetime('now')", [tokenHash]);
 }
 
-async function processTrackPing({ tokenHash, claim, clientIp, userAgent, visitId }) {
+async function processTrackPing({
+  tokenHash,
+  claim,
+  clientIp,
+  userAgent,
+  visitId,
+  visitorHash = '',
+  clientFingerprint = '',
+  screenResolution = '',
+  clientLanguage = '',
+  clientPlatform = ''
+}) {
   return withTransaction(async transaction => {
     const consume = await transaction.run("UPDATE inflow_claim_tokens SET claimed_at = CURRENT_TIMESTAMP WHERE token_hash = ? AND claimed_at IS NULL", [tokenHash]);
     if (!consume.changes) return { alreadyUsed: true, newlyCounted: false, autoApproved: false };
@@ -108,8 +197,9 @@ async function processTrackPing({ tokenHash, claim, clientIp, userAgent, visitId
     await transaction.run(`INSERT INTO inbound_logs(
       link_id, client_ip, user_agent, referer, visit_id,
       source_token_id, sid_partner_id, domain_partner_id, attribution_method, observed_domain,
+      visitor_hash, client_fingerprint, screen_resolution, client_language, client_platform,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`, [
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`, [
       claim.partner_id,
       clientIp,
       userAgent,
@@ -119,7 +209,12 @@ async function processTrackPing({ tokenHash, claim, clientIp, userAgent, visitId
       claim.sid_partner_id || null,
       claim.domain_partner_id || null,
       String(claim.attribution_method || 'domain_only').slice(0, 64),
-      String(claim.observed_domain || '').slice(0, 253)
+      String(claim.observed_domain || '').slice(0, 253),
+      String(visitorHash || claim.visitor_hash || '').slice(0, 64),
+      String(clientFingerprint || '').slice(0, 64),
+      String(screenResolution || '').slice(0, 32),
+      String(clientLanguage || '').slice(0, 32),
+      String(clientPlatform || '').slice(0, 80)
     ]);
 
     // SID 使用次数只在通过滑块并完成 3 秒真实心跳后增加；无效或被放弃的落地页不计入。
@@ -165,6 +260,18 @@ async function getTodayExchange(now = new Date()) {
   return { inbound, outbound };
 }
 
+async function getTodayTrafficLeader(now = new Date()) {
+  const { start, end } = getLocalDayUtcRange(now);
+  return get(`SELECT p.id, p.name, p.domain, p.url, COUNT(DISTINCT l.client_ip) AS uv
+    FROM inbound_logs l
+    INNER JOIN partners p ON p.id = l.link_id
+    WHERE l.created_at >= ? AND l.created_at < ?
+      AND p.is_approved = 1 AND COALESCE(p.is_internal, 0) = 0
+    GROUP BY p.id
+    ORDER BY uv DESC, p.priority DESC, p.id ASC
+    LIMIT 1`, [start, end]);
+}
+
 async function getNewPartnerTraffic() {
   const [last24h, last7d] = await Promise.all([
     get("SELECT COUNT(DISTINCT l.client_ip) AS value FROM inbound_logs l JOIN partners p ON p.id = l.link_id WHERE p.created_at >= datetime('now', '-24 hours') AND l.created_at >= datetime('now', '-24 hours')"),
@@ -204,8 +311,9 @@ async function clearPartnerTraffic(partnerId) {
   }, { priority: 'interactive', label: 'clear partner traffic' });
 }
 
-async function getPartnerAnalytics(partnerId) {
-  const [summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak] = await Promise.all([
+async function getPartnerAnalytics(partnerId, { includeClients = true, clientEventLimit = 2000 } = {}) {
+  const safeClientEventLimit = Math.max(100, Math.min(5000, Number(clientEventLimit) || 2000));
+  const [summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak, clientEvents, clientInteractions] = await Promise.all([
     get(`SELECT COUNT(*) AS pv,
       COUNT(DISTINCT client_ip) AS uv,
       CASE WHEN COUNT(*) > 0 THEN 100 ELSE 0 END AS compliance_rate,
@@ -256,15 +364,54 @@ async function getPartnerAnalytics(partnerId) {
         FROM inbound_logs
         WHERE link_id = ? AND created_at >= datetime('now', '-24 hours')
         GROUP BY strftime('%Y-%m-%d %H', created_at)
-      )`, [partnerId])
+      )`, [partnerId]),
+    includeClients
+      ? all(`SELECT id, client_ip AS ip, user_agent, referer, visit_id, attribution_method,
+          observed_domain, visitor_hash, client_fingerprint, screen_resolution,
+          client_language, client_platform, created_at AS timestamp
+        FROM inbound_logs
+        WHERE link_id = ? AND created_at >= datetime('now', '-24 hours')
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?`, [partnerId, safeClientEventLimit])
+      : Promise.resolve([]),
+    includeClients
+      ? all(`SELECT inbound.visit_id, COUNT(outbound.id) AS click_count,
+          MIN(MAX(0, ROUND((julianday(outbound.created_at) - julianday(inbound.created_at)) * 86400))) AS first_interaction_seconds
+        FROM inbound_logs inbound
+        INNER JOIN outbound_logs outbound
+          ON outbound.source_partner_id = inbound.link_id
+          AND outbound.visit_id = inbound.visit_id
+          AND outbound.created_at >= inbound.created_at
+          AND outbound.created_at < datetime(inbound.created_at, '+30 minutes')
+        WHERE inbound.link_id = ? AND inbound.visit_id IS NOT NULL
+          AND inbound.created_at >= datetime('now', '-24 hours')
+        GROUP BY inbound.visit_id`, [partnerId])
+      : Promise.resolve([])
   ]);
-  return { summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak };
+  return {
+    summary,
+    inflowLogs,
+    requestRows,
+    deadWaterInteraction,
+    attributedInteraction,
+    hourlyPeak,
+    clientEvents,
+    clientInteractions,
+    clientEventsTruncated: includeClients && Number(summary.pv || 0) > clientEvents.length
+  };
 }
 
 async function searchInboundLogs(query = '') {
   const keyword = String(query || '').trim();
   return all(`SELECT l.id, l.link_id AS partner_id, l.client_ip AS ip, l.user_agent,
-    l.created_at AS timestamp, p.name AS partner_name, p.domain
+    l.referer, l.observed_domain, l.attribution_method, l.created_at AS timestamp,
+    p.name AS partner_name, p.domain,
+    CASE WHEN EXISTS (
+      SELECT 1 FROM inbound_logs previous
+      WHERE previous.link_id = l.link_id AND previous.client_ip = l.client_ip
+        AND previous.created_at >= datetime(l.created_at, '-24 hours')
+        AND (previous.created_at < l.created_at OR (previous.created_at = l.created_at AND previous.id < l.id))
+    ) THEN 0 ELSE 1 END AS newly_counted
     FROM inbound_logs l
     JOIN partners p ON p.id = l.link_id
     ${keyword ? 'WHERE l.client_ip LIKE ? OR p.name LIKE ? OR p.domain LIKE ?' : ''}
@@ -272,19 +419,38 @@ async function searchInboundLogs(query = '') {
     LIMIT 200`, keyword ? [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`] : []);
 }
 
+async function searchRejectedInboundLogs(query = '') {
+  const keyword = String(query || '').trim();
+  const params = keyword ? [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`] : [];
+  return all(`SELECT r.id, r.client_ip AS ip, r.user_agent, r.referer, r.observed_domain,
+    r.partner_id, r.source_token_id, r.attribution_method, r.visitor_type,
+    r.stage, r.reason_code, r.reason_text, r.request_path, r.occurrence_count,
+    r.first_seen_at, r.last_seen_at AS timestamp, p.name AS partner_name, p.domain
+    FROM inbound_rejection_logs r
+    LEFT JOIN partners p ON p.id = r.partner_id
+    ${keyword ? `WHERE r.client_ip LIKE ? OR COALESCE(p.name, '') LIKE ? OR COALESCE(p.domain, '') LIKE ?
+      OR r.observed_domain LIKE ? OR r.reason_text LIKE ?` : ''}
+    ORDER BY r.last_seen_at DESC, r.id DESC
+    LIMIT 200`, params);
+}
+
 module.exports = {
   LOG_RETENTION_DAYS,
   cleanupOldLogs,
+  archiveExpiredClaims,
   createClaimToken,
+  recordRejectedInbound,
   getValidClaimTokenHash,
   getActiveClaim,
   processTrackPing,
   recordOutbound,
   getOverviewTraffic,
   getTodayExchange,
+  getTodayTrafficLeader,
   getNewPartnerTraffic,
   listRiskPartnerMetrics,
   clearPartnerTraffic,
   getPartnerAnalytics,
-  searchInboundLogs
+  searchInboundLogs,
+  searchRejectedInboundLogs
 };

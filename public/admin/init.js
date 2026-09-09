@@ -16,9 +16,9 @@
 
   const token = () => localStorage.getItem('webring_admin_token') || '';
   const activeKey = 'admin_active_tab';
-  const validTabs = new Set(['dashboard', 'partners', 'logs', 'categories', 'review', 'settings', 'ads', 'mirrors']);
-  const aliases = { links: 'partners', 'inbound-logs': 'logs', audit: 'review' };
-  const routes = { partners: 'links', logs: 'inbound-logs', review: 'audit' };
+  const validTabs = new Set(['dashboard', 'partners', 'logs', 'rejected-logs', 'categories', 'review', 'settings', 'ads', 'mirrors']);
+  const aliases = { links: 'partners', 'inbound-logs': 'logs', 'unentered-logs': 'rejected-logs', audit: 'review' };
+  const routes = { partners: 'links', logs: 'inbound-logs', 'rejected-logs': 'unentered-logs', review: 'audit' };
   const toast = message => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = message; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
   const normalizeTab = value => aliases[value] || value;
 
@@ -87,6 +87,7 @@
     const primary = [
       tabs.querySelector('[data-tab="dashboard"]'),
       tabs.querySelector('[data-tab="logs"]'),
+      tabs.querySelector('[data-tab="rejected-logs"]'),
       tabs.querySelector('[data-tab="categories"]'),
       document.querySelector('#review-tab'),
       tabs.querySelector('[data-tab="partners"]'),
@@ -111,6 +112,7 @@
       Promise.resolve(window.setupPartnerCategoryFilter?.())
     ]);
     if (tab === 'logs') return window.loadLogs?.();
+    if (tab === 'rejected-logs') return window.loadRejectedLogs?.();
     if (tab === 'categories') return window.loadCategories?.();
     if (tab === 'review') return window.fetchPendingCount?.();
     if (tab === 'settings') return window.loadAdminSettings?.();

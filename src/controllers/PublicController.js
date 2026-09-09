@@ -67,6 +67,46 @@ function trafficDebug(message) {
   if (TRAFFIC_DEBUG) console.log(`[流量排查] ${message}`);
 }
 
+function visitorIdentityHash(req) {
+  const identity = String(req.visitorId || '').trim();
+  return identity ? crypto.createHash('sha256').update(identity).digest('hex') : '';
+}
+
+function normalizeClientEnvironment(userAgent, fingerprint = {}) {
+  const resolutionInput = String(fingerprint.resolution || '').trim();
+  const screenResolution = /^\d{1,5}x\d{1,5}$/i.test(resolutionInput) ? resolutionInput.slice(0, 32) : '';
+  const clientLanguage = String(fingerprint.language || '').replace(/[^a-z0-9_-]/gi, '').slice(0, 32);
+  const clientPlatform = String(fingerprint.platform || '').replace(/[\r\n\t]+/g, ' ').trim().slice(0, 80);
+  const hasEnvironment = Boolean(screenResolution || clientLanguage || clientPlatform);
+  const clientFingerprint = hasEnvironment
+    ? crypto.createHash('sha256')
+      .update([String(userAgent || ''), screenResolution, clientLanguage, clientPlatform].join('\n'))
+      .digest('hex')
+    : '';
+  return { screenResolution, clientLanguage, clientPlatform, clientFingerprint };
+}
+
+function queueRejectedInbound(req, details = {}) {
+  const clientIp = getClientIp(req);
+  if (!clientIp) return;
+  const referer = details.referer ?? String(req.get('Referer') || req.get('Referrer') || '').trim();
+  void LogModel.recordRejectedInbound({
+    clientIp,
+    visitorHash: visitorIdentityHash(req),
+    userAgent: String(req.get('user-agent') || '').trim(),
+    referer,
+    observedDomain: details.observedDomain ?? normalizeRegisteredDomain(parseHostname(referer)),
+    partnerId: details.partnerId,
+    sourceTokenId: details.sourceTokenId,
+    attributionMethod: details.attributionMethod,
+    visitorType: details.visitorType || 'source_validation',
+    stage: details.stage || 'source',
+    reasonCode: details.reasonCode || 'unknown',
+    reasonText: details.reasonText || '未通过入站校验',
+    requestPath: String(req.originalUrl || req.path || '/').slice(0, 500)
+  }).catch(error => console.error('[未入站记录失败]：', error.message));
+}
+
 function readAttributionVisit(req) {
   const token = decodeURIComponent(getCookie(req, ATTRIBUTION_COOKIE) || '');
   if (!token) return null;
@@ -86,6 +126,7 @@ async function isLegitUser(req, refererOverride = '', { trustedSource = false } 
   const invalidUa = /curl|python|requests|headlesschrome|postman|wget|httpclient|scrapy|bot|spider|crawl|slurp/i;
   if (!ua || invalidUa.test(ua)) {
     req.trafficBlockReason = '爬虫、无头浏览器或异常 User-Agent';
+    req.trafficBlockCode = 'abnormal_user_agent';
     return false;
   }
 
@@ -96,11 +137,13 @@ async function isLegitUser(req, refererOverride = '', { trustedSource = false } 
   const referer = String(refererOverride || req.get('Referer') || '').trim();
   let refererUrl;
   try { refererUrl = new URL(referer); } catch {
-    req.trafficBlockReason = '缺失或伪造 Referer';
+    req.trafficBlockReason = referer ? 'Referer 格式无效' : '普通直访，未携带 SID 或 Referer';
+    req.trafficBlockCode = referer ? 'invalid_referer' : 'direct_no_source';
     return false;
   }
   if (!/^https?:$/.test(refererUrl.protocol)) {
     req.trafficBlockReason = 'Referer 协议不合法';
+    req.trafficBlockCode = 'invalid_referer_protocol';
     return false;
   }
 
@@ -116,6 +159,7 @@ async function isLegitUser(req, refererOverride = '', { trustedSource = false } 
     && refererUrl.port !== ownUrl.port;
   if (!sourceHost || (ownHost && matchesPartnerDomain(sourceHost, ownHost) && !isDifferentLocalPort)) {
     req.trafficBlockReason = '本站来源或无效 Referer';
+    req.trafficBlockCode = 'internal_navigation';
     return false;
   }
   return true;
@@ -191,11 +235,23 @@ async function preVerifyInflowTraffic(req, res, next) {
     if (req.method !== 'GET') return next();
     const sidInput = extractSourceSid(req);
     if (sidInput.present) {
+      ensureVisitorIdentity(req, res);
       const source = await resolveSidLanding(req);
       // 每次 SID 落地都覆盖旧归属；无效 SID 也必须清掉历史 Cookie，避免陈旧来源串号。
       clearPendingTrafficReferer(res);
       if (source?.partnerId) storePendingTrafficSource(req, res, source);
-      else clearPendingTrafficSource(res);
+      else {
+        clearPendingTrafficSource(res);
+        queueRejectedInbound(req, {
+          referer: source?.referer || '',
+          observedDomain: source?.observedDomain || '',
+          sourceTokenId: source?.sourceTokenId || null,
+          attributionMethod: source?.method || 'invalid_sid',
+          stage: 'sid_resolution',
+          reasonCode: 'invalid_sid',
+          reasonText: 'SID 不存在、已失效或无法归属到友链'
+        });
+      }
       res.set('Cache-Control', 'private, no-store');
       res.set('Referrer-Policy', 'no-referrer');
       return res.redirect(302, cleanSidLandingUrl(req));
@@ -228,6 +284,15 @@ async function trackInflow(req, res, next) {
 
     if (!ip || !(await isLegitUser(req, effectiveReferer, { trustedSource: Boolean(pendingSource) }))) {
       trafficDebug(`拦截原因: ${req.trafficBlockReason || '无法识别客户端 IP'}`);
+      if (ip && req.trafficBlockCode !== 'internal_navigation') {
+        queueRejectedInbound(req, {
+          referer: effectiveReferer,
+          visitorType: req.trafficBlockCode === 'direct_no_source' ? 'ordinary_direct' : 'source_validation',
+          stage: 'source_resolution',
+          reasonCode: req.trafficBlockCode || 'missing_client_ip',
+          reasonText: req.trafficBlockReason || '无法识别客户端 IP'
+        });
+      }
       return next();
     }
 
@@ -241,9 +306,28 @@ async function trackInflow(req, res, next) {
       observedDomain = normalizeRegisteredDomain(refererUrl.hostname);
       partner = candidates.find(item => observedDomain === normalizeRegisteredDomain(item.domain));
     }
-    if (!partner) return next();
+    if (!partner) {
+      queueRejectedInbound(req, {
+        referer: effectiveReferer,
+        observedDomain,
+        stage: 'source_resolution',
+        reasonCode: 'unregistered_source_domain',
+        reasonText: '来源域名未登记，无法归属到友链'
+      });
+      return next();
+    }
     const now = Date.now();
     if (isPartnerVisitRateLimited(partner.id, ip)) {
+      queueRejectedInbound(req, {
+        referer: effectiveReferer,
+        observedDomain,
+        partnerId: partner.id,
+        sourceTokenId: pendingSource?.sourceTokenId,
+        attributionMethod: pendingSource?.method || 'domain_only',
+        stage: 'claim_issue',
+        reasonCode: 'entry_cooldown',
+        reasonText: '同一站点与 IP 处于60秒入口冷却期'
+      });
       return next();
     }
 
@@ -259,7 +343,10 @@ async function trackInflow(req, res, next) {
       sidPartnerId: pendingSource?.sidPartnerId || null,
       domainPartnerId: pendingSource?.domainPartnerId || (pendingSource ? null : partner.id),
       attributionMethod: pendingSource?.method || 'domain_only',
-      observedDomain
+      observedDomain,
+      userAgent: String(req.get('user-agent') || '').trim(),
+      visitorHash: visitorIdentityHash(req),
+      requestPath: String(req.originalUrl || req.path || '/').slice(0, 500)
     });
     const cookieOptions = {
       maxAge: CLAIM_TTL_SECONDS * 1000,
@@ -407,29 +494,64 @@ async function trackPing(req, res) {
     const body = req.body || {};
     const cookieToken = decodeURIComponent(getCookie(req, 'track_session') || getCookie(req, 'inflow_claim'));
     const suppliedToken = String(body.token || '');
-    if (!cookieToken || (suppliedToken && suppliedToken !== cookieToken)) return fail(res, '追踪会话无效或已过期', 401);
+    if (!cookieToken || (suppliedToken && suppliedToken !== cookieToken)) {
+      if (cookieToken || suppliedToken) queueRejectedInbound(req, {
+        stage: 'heartbeat', reasonCode: 'claim_token_mismatch',
+        reasonText: '追踪会话不匹配或已过期'
+      });
+      return fail(res, '追踪会话无效或已过期', 401);
+    }
     const tokenHash = crypto.createHash('sha256').update(cookieToken).digest('hex');
     const claim = await LogModel.getActiveClaim(tokenHash);
     if (!claim) return fail(res, '追踪会话已使用或已过期', 409);
-    if (!claim.started_at_ms || Date.now() - Number(claim.started_at_ms) < 3000) return fail(res, '停留时间不足，暂不计入带量', 429);
+    if (!claim.started_at_ms || Date.now() - Number(claim.started_at_ms) < 3000) {
+      queueRejectedInbound(req, {
+        referer: claim.referer, observedDomain: claim.observed_domain, partnerId: claim.partner_id,
+        sourceTokenId: claim.source_token_id, attributionMethod: claim.attribution_method,
+        stage: 'heartbeat', reasonCode: 'stay_too_short', reasonText: '页面停留时间不足3秒'
+      });
+      return fail(res, '停留时间不足，暂不计入带量', 429);
+    }
     const clientIp = getClientIp(req);
     const ua = String(req.get('user-agent') || '').trim();
     if (clientIp !== claim.ip || !ua || /curl|python|requests|headlesschrome|postman|wget|httpclient|scrapy|bot|spider|crawl|slurp/i.test(ua)) {
+      queueRejectedInbound(req, {
+        referer: claim.referer, observedDomain: claim.observed_domain, partnerId: claim.partner_id,
+        sourceTokenId: claim.source_token_id, attributionMethod: claim.attribution_method,
+        stage: 'heartbeat', reasonCode: 'environment_mismatch', reasonText: 'IP、User-Agent 或访问环境校验未通过'
+      });
       return fail(res, '访问环境校验未通过', 403);
     }
 
     const fingerprint = body.fingerprint && typeof body.fingerprint === 'object' ? body.fingerprint : {};
     const compliant = fingerprint.webdriver !== true && fingerprint.abnormalScreen !== true && fingerprint.missingLanguage !== true;
-    if (!compliant) return fail(res, '访问环境校验未通过', 403);
+    if (!compliant) {
+      queueRejectedInbound(req, {
+        referer: claim.referer, observedDomain: claim.observed_domain, partnerId: claim.partner_id,
+        sourceTokenId: claim.source_token_id, attributionMethod: claim.attribution_method,
+        stage: 'fingerprint', reasonCode: 'abnormal_fingerprint', reasonText: '浏览器指纹或自动化环境异常'
+      });
+      return fail(res, '访问环境校验未通过', 403);
+    }
+    const clientEnvironment = normalizeClientEnvironment(ua, fingerprint);
     const visitId = crypto.randomUUID();
     const transactionResult = await dbMutex.runExclusive(() => LogModel.processTrackPing({
       tokenHash,
       claim,
       clientIp,
       userAgent: ua,
-      visitId
+      visitId,
+      visitorHash: claim.visitor_hash || visitorIdentityHash(req),
+      ...clientEnvironment
     }));
-    if (transactionResult.alreadyUsed) return fail(res, '追踪会话已使用', 409);
+    if (transactionResult.alreadyUsed) {
+      queueRejectedInbound(req, {
+        referer: claim.referer, observedDomain: claim.observed_domain, partnerId: claim.partner_id,
+        sourceTokenId: claim.source_token_id, attributionMethod: claim.attribution_method,
+        stage: 'database_write', reasonCode: 'claim_already_used', reasonText: '追踪会话已被使用'
+      });
+      return fail(res, '追踪会话已使用', 409);
+    }
     const { newlyCounted, autoApproved } = transactionResult;
     if (newlyCounted || autoApproved) CacheService.clearPublicCache();
     const expiredCookie = { maxAge: 0, httpOnly: true, sameSite: 'lax', secure: IS_PRODUCTION, path: '/' };

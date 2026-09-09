@@ -171,7 +171,9 @@ async function initializeDatabase() {
     user_agent TEXT DEFAULT '', referer TEXT DEFAULT NULL, visit_id TEXT DEFAULT NULL,
     source_token_id INTEGER DEFAULT NULL, sid_partner_id INTEGER DEFAULT NULL,
     domain_partner_id INTEGER DEFAULT NULL, attribution_method TEXT DEFAULT 'domain_only',
-    observed_domain TEXT DEFAULT '', created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    observed_domain TEXT DEFAULT '', visitor_hash TEXT DEFAULT '', client_fingerprint TEXT DEFAULT '',
+    screen_resolution TEXT DEFAULT '', client_language TEXT DEFAULT '', client_platform TEXT DEFAULT '',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(link_id) REFERENCES partners(id) ON DELETE CASCADE
   )`);
   await run('CREATE INDEX IF NOT EXISTS idx_inbound_time_link ON inbound_logs(created_at, link_id, client_ip)');
@@ -192,7 +194,12 @@ async function initializeDatabase() {
     ['sid_partner_id', 'ALTER TABLE inbound_logs ADD COLUMN sid_partner_id INTEGER DEFAULT NULL'],
     ['domain_partner_id', 'ALTER TABLE inbound_logs ADD COLUMN domain_partner_id INTEGER DEFAULT NULL'],
     ['attribution_method', "ALTER TABLE inbound_logs ADD COLUMN attribution_method TEXT DEFAULT 'domain_only'"],
-    ['observed_domain', "ALTER TABLE inbound_logs ADD COLUMN observed_domain TEXT DEFAULT ''"]
+    ['observed_domain', "ALTER TABLE inbound_logs ADD COLUMN observed_domain TEXT DEFAULT ''"],
+    ['visitor_hash', "ALTER TABLE inbound_logs ADD COLUMN visitor_hash TEXT DEFAULT ''"],
+    ['client_fingerprint', "ALTER TABLE inbound_logs ADD COLUMN client_fingerprint TEXT DEFAULT ''"],
+    ['screen_resolution', "ALTER TABLE inbound_logs ADD COLUMN screen_resolution TEXT DEFAULT ''"],
+    ['client_language', "ALTER TABLE inbound_logs ADD COLUMN client_language TEXT DEFAULT ''"],
+    ['client_platform', "ALTER TABLE inbound_logs ADD COLUMN client_platform TEXT DEFAULT ''"]
   ];
   for (const [column, sql] of inboundAttributionMigrations) {
     if (!inboundColumns.some(item => item.name === column)) await run(sql);
@@ -200,6 +207,32 @@ async function initializeDatabase() {
   await run('CREATE INDEX IF NOT EXISTS idx_inbound_visit_time ON inbound_logs(visit_id, created_at)');
   await run('CREATE INDEX IF NOT EXISTS idx_inbound_source_token_time ON inbound_logs(source_token_id, created_at)');
   await run('CREATE INDEX IF NOT EXISTS idx_inbound_attribution_time ON inbound_logs(attribution_method, created_at)');
+  await run('CREATE INDEX IF NOT EXISTS idx_inbound_visitor_time ON inbound_logs(link_id, visitor_hash, created_at DESC)');
+  await run('CREATE INDEX IF NOT EXISTS idx_inbound_fingerprint_time ON inbound_logs(link_id, client_fingerprint, created_at DESC)');
+  await run(`CREATE TABLE IF NOT EXISTS inbound_rejection_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_ip TEXT NOT NULL,
+    visitor_hash TEXT DEFAULT '',
+    user_agent TEXT DEFAULT '',
+    referer TEXT DEFAULT '',
+    observed_domain TEXT DEFAULT '',
+    partner_id INTEGER DEFAULT NULL,
+    source_token_id INTEGER DEFAULT NULL,
+    attribution_method TEXT DEFAULT '',
+    visitor_type TEXT DEFAULT 'source_validation',
+    stage TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    reason_text TEXT DEFAULT '',
+    request_path TEXT DEFAULT '/',
+    occurrence_count INTEGER NOT NULL DEFAULT 1,
+    first_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(partner_id) REFERENCES partners(id) ON DELETE SET NULL
+  )`);
+  await run('CREATE INDEX IF NOT EXISTS idx_inbound_rejection_last_seen ON inbound_rejection_logs(last_seen_at DESC)');
+  await run('CREATE INDEX IF NOT EXISTS idx_inbound_rejection_lookup ON inbound_rejection_logs(client_ip, reason_code, partner_id, last_seen_at DESC)');
+  await run('CREATE INDEX IF NOT EXISTS idx_inbound_rejection_visitor_lookup ON inbound_rejection_logs(visitor_hash, reason_code, partner_id, last_seen_at DESC)');
   await run(`CREATE TABLE IF NOT EXISTS inflow_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, partner_id INTEGER NOT NULL, ip TEXT NOT NULL,
     user_agent TEXT DEFAULT '', fingerprint TEXT DEFAULT '', is_compliant INTEGER DEFAULT 0,
@@ -262,7 +295,7 @@ async function initializeDatabase() {
     expires_at DATETIME NOT NULL, started_at_ms INTEGER NOT NULL DEFAULT 0, referer TEXT DEFAULT NULL,
     source_token_id INTEGER DEFAULT NULL, sid_partner_id INTEGER DEFAULT NULL,
     domain_partner_id INTEGER DEFAULT NULL, attribution_method TEXT DEFAULT 'domain_only',
-    observed_domain TEXT DEFAULT '',
+    observed_domain TEXT DEFAULT '', user_agent TEXT DEFAULT '', visitor_hash TEXT DEFAULT '', request_path TEXT DEFAULT '/',
     claimed_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(partner_id) REFERENCES partners(id) ON DELETE CASCADE
   )`);
@@ -323,7 +356,10 @@ async function initializeDatabase() {
     ['sid_partner_id', 'ALTER TABLE inflow_claim_tokens ADD COLUMN sid_partner_id INTEGER DEFAULT NULL'],
     ['domain_partner_id', 'ALTER TABLE inflow_claim_tokens ADD COLUMN domain_partner_id INTEGER DEFAULT NULL'],
     ['attribution_method', "ALTER TABLE inflow_claim_tokens ADD COLUMN attribution_method TEXT DEFAULT 'domain_only'"],
-    ['observed_domain', "ALTER TABLE inflow_claim_tokens ADD COLUMN observed_domain TEXT DEFAULT ''"]
+    ['observed_domain', "ALTER TABLE inflow_claim_tokens ADD COLUMN observed_domain TEXT DEFAULT ''"],
+    ['user_agent', "ALTER TABLE inflow_claim_tokens ADD COLUMN user_agent TEXT DEFAULT ''"],
+    ['visitor_hash', "ALTER TABLE inflow_claim_tokens ADD COLUMN visitor_hash TEXT DEFAULT ''"],
+    ['request_path', "ALTER TABLE inflow_claim_tokens ADD COLUMN request_path TEXT DEFAULT '/'"]
   ];
   for (const [column, sql] of claimAttributionMigrations) {
     if (!tokenColumns.some(item => item.name === column)) await run(sql);

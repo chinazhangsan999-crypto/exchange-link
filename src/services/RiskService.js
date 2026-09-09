@@ -71,21 +71,186 @@ function makeStats(map, total, names = [], limit = 10) {
     .slice(0, limit);
 }
 
+function sqliteUtcMilliseconds(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 0;
+  const normalized = raw.replace(' ', 'T');
+  const parsed = Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized) ? normalized : `${normalized}Z`);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function median(values) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+}
+
+function maxEventsInWindow(timestamps, windowMs) {
+  let maximum = 0;
+  let start = 0;
+  for (let end = 0; end < timestamps.length; end += 1) {
+    while (timestamps[end] - timestamps[start] > windowMs) start += 1;
+    maximum = Math.max(maximum, end - start + 1);
+  }
+  return maximum;
+}
+
+function refererHostname(value) {
+  try { return new URL(String(value || '')).hostname.replace(/^www\./i, ''); }
+  catch { return ''; }
+}
+
+function buildClientAuditRows(events, interactions, pv, thresholds) {
+  const groups = new Map();
+  const ipCounts = new Map();
+  const ipIdentities = new Map();
+  const fingerprintIps = new Map();
+  const interactionMap = new Map((interactions || []).map(item => [String(item.visit_id || ''), item]));
+
+  for (const event of events || []) {
+    const ip = String(event.ip || '未知 IP');
+    const visitorHash = String(event.visitor_hash || '');
+    const identityKey = visitorHash ? `visitor:${visitorHash}` : `ip:${ip}`;
+    if (!groups.has(identityKey)) groups.set(identityKey, { identityKey, visitorHash, events: [], ips: new Set(), uas: new Set(), fingerprints: new Set() });
+    const group = groups.get(identityKey);
+    group.events.push(event);
+    group.ips.add(ip);
+    if (event.user_agent) group.uas.add(String(event.user_agent));
+    if (event.client_fingerprint) group.fingerprints.add(String(event.client_fingerprint));
+    ipCounts.set(ip, (ipCounts.get(ip) || 0) + 1);
+    if (!ipIdentities.has(ip)) ipIdentities.set(ip, new Set());
+    ipIdentities.get(ip).add(identityKey);
+    if (event.client_fingerprint) {
+      const fingerprintIpSet = fingerprintIps.get(event.client_fingerprint) || new Set();
+      fingerprintIpSet.add(ip);
+      fingerprintIps.set(event.client_fingerprint, fingerprintIpSet);
+    }
+  }
+
+  return [...groups.values()].map(group => {
+    const ordered = [...group.events].sort((a, b) => sqliteUtcMilliseconds(b.timestamp) - sqliteUtcMilliseconds(a.timestamp));
+    const latest = ordered[0] || {};
+    const timestamps = ordered.map(item => sqliteUtcMilliseconds(item.timestamp)).filter(Boolean).sort((a, b) => a - b);
+    const intervals = timestamps.slice(1).map((value, index) => Math.max(0, (value - timestamps[index]) / 1000));
+    const meanInterval = intervals.length ? intervals.reduce((sum, value) => sum + value, 0) / intervals.length : 0;
+    const deviation = intervals.length
+      ? Math.sqrt(intervals.reduce((sum, value) => sum + ((value - meanInterval) ** 2), 0) / intervals.length)
+      : 0;
+    const intervalVariation = meanInterval ? deviation / meanInterval : 1;
+    const fixedInterval = intervals.length >= 4 && median(intervals) >= 1 && median(intervals) <= 300 && intervalVariation <= 0.15;
+    const visitIds = new Set(ordered.map(item => String(item.visit_id || '')).filter(Boolean));
+    let interactedSessions = 0;
+    let interactionClicks = 0;
+    let firstInteractionSeconds = null;
+    for (const visitId of visitIds) {
+      const interaction = interactionMap.get(visitId);
+      if (!interaction) continue;
+      interactedSessions += 1;
+      interactionClicks += asNumber(interaction.click_count);
+      const delay = asNumber(interaction.first_interaction_seconds);
+      if (firstInteractionSeconds === null || delay < firstInteractionSeconds) firstInteractionSeconds = delay;
+    }
+    const requests = ordered.length;
+    const latestIp = String(latest.ip || '未知 IP');
+    const ipRequests = asNumber(ipCounts.get(latestIp));
+    const emptyRefererCount = ordered.filter(item => !String(item.referer || '').trim()).length;
+    const attributionMethods = [...new Set(ordered.map(item => String(item.attribution_method || '')).filter(Boolean))];
+    const sourceAnomaly = attributionMethods.some(method => /mismatch|invalid|unknown/i.test(method));
+    const environmentIpCount = latest.client_fingerprint
+      ? (fingerprintIps.get(latest.client_fingerprint)?.size || 1)
+      : 0;
+    const noInteraction = visitIds.size >= 5 && interactedSessions === 0;
+    const highIpRatio = pv >= 20 && ratio(ipRequests, pv) >= SINGLE_IP_RATIO_THRESHOLD;
+    const emptyRefererHigh = requests >= 5 && ratio(emptyRefererCount, requests) > thresholds.empty_referer_threshold;
+    const environmentAnomaly = group.uas.size >= 3 || group.ips.size >= 3 || environmentIpCount >= 5;
+    const strongReasons = [];
+    const observationReasons = [];
+    if (highIpRatio) strongReasons.push('单一 IP 请求占比过高');
+    if (fixedInterval) strongReasons.push('访问间隔高度规律');
+    if (sourceAnomaly) strongReasons.push('来源归属存在异常');
+    if (noInteraction) observationReasons.push('多次访问无后续互动');
+    if (emptyRefererHigh) observationReasons.push('该客户端空 Referer 偏高');
+    if (group.uas.size >= 3) observationReasons.push('客户端 UA 频繁变化');
+    if (group.ips.size >= 3) observationReasons.push('同一匿名访客切换多个 IP');
+    if (environmentIpCount >= 5) observationReasons.push('相同环境摘要分布于多个 IP');
+    if ((ipIdentities.get(latestIp)?.size || 0) >= 5) observationReasons.push('共享 IP 下存在多个匿名访客');
+    const riskLevel = strongReasons.length >= 2 ? 'high'
+      : (strongReasons.length || observationReasons.length ? 'observe' : 'normal');
+    const parsed = new UAParser(latest.user_agent || '').getResult();
+    return {
+      identity_key: group.identityKey,
+      visitor_short: group.visitorHash ? group.visitorHash.slice(-8).toUpperCase() : '',
+      ip: latestIp,
+      ip_count: group.ips.size,
+      ip_visitor_count: ipIdentities.get(latestIp)?.size || 1,
+      client: clientName(parsed),
+      device_model: clientName(parsed),
+      device_type: normalizeType(parsed),
+      raw_user_agent: String(latest.user_agent || ''),
+      screen_resolution: String(latest.screen_resolution || ''),
+      client_language: String(latest.client_language || ''),
+      client_platform: String(latest.client_platform || ''),
+      environment_short: latest.client_fingerprint ? String(latest.client_fingerprint).slice(-8).toUpperCase() : '',
+      environment_ip_count: environmentIpCount,
+      requests,
+      sessions: visitIds.size || requests,
+      ratio: ratio(requests, pv) * 100,
+      ip_requests: ipRequests,
+      ip_ratio: ratio(ipRequests, pv) * 100,
+      duplicate_pv: Math.max(0, requests - group.ips.size),
+      first_seen: ordered[ordered.length - 1]?.timestamp || '',
+      timestamp: latest.timestamp || '',
+      duration_seconds: timestamps.length > 1 ? Math.round((timestamps[timestamps.length - 1] - timestamps[0]) / 1000) : 0,
+      min_interval_seconds: intervals.length ? Math.round(Math.min(...intervals)) : null,
+      median_interval_seconds: intervals.length ? Math.round(median(intervals)) : null,
+      max_events_1m: maxEventsInWindow(timestamps, 60 * 1000),
+      max_events_5m: maxEventsInWindow(timestamps, 5 * 60 * 1000),
+      recent_times: ordered.slice(0, 10).map(item => item.timestamp),
+      referer: String(latest.referer || ''),
+      source_domain: String(latest.observed_domain || refererHostname(latest.referer) || ''),
+      attribution_method: String(latest.attribution_method || ''),
+      attribution_methods: attributionMethods,
+      empty_referer_count: emptyRefererCount,
+      ua_count: group.uas.size,
+      fingerprint_count: group.fingerprints.size,
+      interacted_sessions: interactedSessions,
+      interaction_clicks: interactionClicks,
+      first_interaction_seconds: firstInteractionSeconds,
+      risk_level: riskLevel,
+      risk_reasons: [...strongReasons, ...observationReasons],
+      flags: {
+        risky: riskLevel !== 'normal',
+        no_interaction: noInteraction,
+        source_anomaly: sourceAnomaly || emptyRefererHigh,
+        periodic: fixedInterval,
+        environment_anomaly: environmentAnomaly
+      }
+    };
+  }).sort((a, b) => {
+    const ranks = { high: 2, observe: 1, normal: 0 };
+    return (ranks[b.risk_level] || 0) - (ranks[a.risk_level] || 0)
+      || b.ip_ratio - a.ip_ratio
+      || String(b.timestamp).localeCompare(String(a.timestamp));
+  });
+}
+
 /** Shared by the admin monitor and the Webhook scanner. includeClients=false excludes IP/client rows. */
 async function analyzePartner(partnerId, { includeClients = true } = {}) {
   const partner = await PartnerModel.findAnalyticsPartner(Number(partnerId));
   if (!partner) return null;
-  const [{ summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak }, thresholds] = await Promise.all([
-    LogModel.getPartnerAnalytics(partner.id),
+  const [{
+    summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak,
+    clientEvents, clientInteractions, clientEventsTruncated
+  }, thresholds] = await Promise.all([
+    LogModel.getPartnerAnalytics(partner.id, { includeClients }),
     SystemModel.getRiskControlConfig()
   ]);
   const pv = asNumber(summary.pv);
   const uv = asNumber(summary.uv || inflowLogs.length);
-  const requestMap = new Map(requestRows.map(row => [row.ip, row]));
   const deviceCounts = new Map();
   const osCounts = new Map();
   const browserCounts = new Map();
-  const clientRows = includeClients ? [] : null;
 
   for (const log of inflowLogs) {
     const parsed = new UAParser(log.user_agent || '').getResult();
@@ -95,15 +260,14 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
     deviceCounts.set(deviceType, (deviceCounts.get(deviceType) || 0) + 1);
     osCounts.set(osName, (osCounts.get(osName) || 0) + 1);
     browserCounts.set(browserName, (browserCounts.get(browserName) || 0) + 1);
-    if (clientRows) {
-      const requests = asNumber(requestMap.get(log.ip)?.requests || 1);
-      const client = clientName(parsed);
-      clientRows.push({ ip: log.ip, client, device_model: client, device_type: deviceType, timestamp: log.timestamp,
-        requests, ratio: pv ? Number((requests * 100 / pv).toFixed(1)) : 0 });
-    }
   }
 
-  const topIps = (clientRows || []).slice().sort((a, b) => b.requests - a.requests || String(b.timestamp).localeCompare(String(a.timestamp))).slice(0, 10);
+  const allClientRows = includeClients
+    ? buildClientAuditRows(clientEvents, clientInteractions, pv, thresholds)
+    : [];
+  // 风控弹窗只保留最值得优先审核的 300 个客户端，避免异常流量导致浏览器一次渲染数千行。
+  const clientRows = allClientRows.slice(0, 300);
+  const topIps = clientRows.slice(0, 10);
   const deadWaterInteractedUv = asNumber(deadWaterInteraction?.interacted_uv);
   const deadWaterInboundUv = asNumber(deadWaterInteraction?.inbound_uv || uv);
   const attributedInteractedVisits = asNumber(attributedInteraction?.interacted_visits);
@@ -145,8 +309,11 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
     partner, pv24h: pv, uv24h: uv, pvUvRatio, outflowClicks: asNumber(partner.outflow_clicks),
     roi: Number((asNumber(partner.outflow_clicks) / (uv + 1)).toFixed(3)), complianceRate: asNumber(summary.compliance_rate),
     device_type_stats: deviceStats, os_stats: osStats, operatingSystems: osStats, browsers: makeStats(browserCounts, inflowLogs.length),
-    inflow_ips: clientRows || [], all_inflow_ips: clientRows || [], topIps, diagnostics, risk, riskReasons,
-    warnings: { pvUvHigh: diagnostics.pv_uv_anomaly, singleIpHigh: (topIps[0]?.ratio || 0) > 30,
+    inflow_ips: clientRows, all_inflow_ips: clientRows,
+    client_groups_total: allClientRows.length,
+    client_events_truncated: Boolean(clientEventsTruncated || allClientRows.length > clientRows.length),
+    topIps, diagnostics, risk, riskReasons,
+    warnings: { pvUvHigh: diagnostics.pv_uv_anomaly, singleIpHigh: diagnostics.single_ip_concentrated,
       deadWaterLow: diagnostics.dead_water_low, attributedInteractionLow: diagnostics.attributed_interaction_low,
       timeBurst: diagnostics.time_burst, emptyReferer: diagnostics.empty_referer }
   };
