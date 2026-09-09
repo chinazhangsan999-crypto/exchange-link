@@ -59,7 +59,15 @@ function describePingResult(item = {}) {
 }
 
 function enrichPingResult(link, result = {}) {
-  const enriched = { name: link.name, url: link.url, checked_at: new Date().toISOString(), ...result };
+  const enriched = {
+    name: link.name,
+    domain: link.domain,
+    url: link.url,
+    contact: link.contact,
+    backlink_url: link.backlink_url,
+    checked_at: new Date().toISOString(),
+    ...result
+  };
   if (!enriched.result_text) enriched.result_text = describePingResult(enriched);
   return enriched;
 }

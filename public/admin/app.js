@@ -39,7 +39,7 @@
 
   function renderPartnerRow(item) {
     const approved = Number(item.is_approved) === 1, priority = Number(item.priority || 0);
-    return `<tr data-id="${item.id}"><td class="site-cell"><a class="site-name-link" href="/go?id=${item.id}" target="_blank" rel="noopener" title="${esc(item.name)}">${esc(item.name)}</a><span class="site-domain" title="${esc(item.domain)}">${esc(item.domain)}</span></td><td><span class="category-pill" title="${esc(item.category || '未分类')}">${esc(item.category || '未分类')}</span></td><td>${renderContactCell(item)}</td><td>${inspectionStatus(item)}</td><td class="ping-cell">${renderPingStatusBadge(item)}</td><td class="col-traffic"><div class="traffic-row-primary"><span class="traffic-item item-24h">24h: <strong class="val-blue">${Number(item.score_24h || 0)}</strong></span><span class="traffic-divider">/</span><span class="traffic-item item-out">出: <strong class="val-dark">${Number(item.outflow_24h || 0)}</strong></span></div><div class="traffic-row-secondary"><span class="traffic-item item-total">总: <strong class="val-dark">${Number(item.total_score ?? item.score_total ?? 0)}</strong></span></div></td><td class="col-weight">${priority > 0 ? `<span class="badge-weight-num">${priority}</span>` : '<span class="priority-zero">0</span>'}</td><td><span class="compact-time" title="反链：${esc(time(item.last_checked_at))}">${esc(time(item.last_checked_at))}</span></td><td><div class="action-btn-group"><button class="btn-sm btn-action btn-check backlink-check" data-id="${item.id}">查反链</button><button class="btn-sm btn-action btn-default monitor" data-id="${item.id}" title="查看流量与风控详情">📊 监控</button><button class="btn-sm btn-action btn-default reset-lost" data-id="${item.id}" title="重置反链巡检与连通状态">🔄 重置</button><button class="btn-sm btn-action btn-default edit" data-id="${item.id}">编辑</button><button class="btn-sm btn-action btn-default state" data-id="${item.id}" data-state="${approved ? 0 : 1}">${approved ? '禁用' : '通过'}</button><button class="btn-sm btn-action btn-reject delete" data-id="${item.id}">删除</button></div></td></tr>`;
+    return `<tr data-id="${item.id}"><td class="site-cell"><a class="site-name-link" href="/go?id=${item.id}" target="_blank" rel="noopener" title="${esc(item.name)}">${esc(item.name)}</a><span class="site-domain" title="${esc(item.domain)}">${esc(item.domain)}</span></td><td><span class="category-pill" title="${esc(item.category || '未分类')}">${esc(item.category || '未分类')}</span></td><td>${renderContactCell(item)}</td><td>${inspectionStatus(item)}</td><td class="ping-cell">${renderPingStatusBadge(item)}</td><td class="col-traffic"><div class="traffic-row-primary"><span class="traffic-item item-24h">24h: <strong class="val-blue">${Number(item.score_24h || 0)}</strong></span><span class="traffic-divider">/</span><span class="traffic-item item-out">出: <strong class="val-dark">${Number(item.outflow_24h || 0)}</strong></span></div><div class="traffic-row-secondary"><span class="traffic-item item-total">总: <strong class="val-dark">${Number(item.total_score ?? item.score_total ?? 0)}</strong></span></div></td><td class="col-weight">${priority > 0 ? `<span class="badge-weight-num">${priority}</span>` : '<span class="priority-zero">0</span>'}</td><td><span class="compact-time" title="反链：${esc(time(item.last_checked_at))}">${esc(time(item.last_checked_at))}</span></td><td><div class="action-btn-group"><button class="btn-sm btn-action btn-check backlink-check" data-id="${item.id}" title="同时检查反链挂载状态和网站连通状态">查反链</button><button class="btn-sm btn-action btn-default monitor" data-id="${item.id}" title="查看流量与风控详情">📊 监控</button><button class="btn-sm btn-action btn-default reset-lost" data-id="${item.id}" title="重置反链巡检与连通状态">🔄 重置</button><button class="btn-sm btn-action btn-default edit" data-id="${item.id}">编辑</button><button class="btn-sm btn-action btn-default state" data-id="${item.id}" data-state="${approved ? 0 : 1}">${approved ? '禁用' : '通过'}</button><button class="btn-sm btn-action btn-reject delete" data-id="${item.id}">删除</button></div></td></tr>`;
   }
 
   function renderRows() {
@@ -79,14 +79,21 @@
   async function checkOne(button) {
     try {
       button.disabled = true;
-      button.textContent = '巡检中';
-      const updated = await request(`/api/admin/links/${button.dataset.id}/check`, { method: 'POST' });
+      button.textContent = '检测中...';
+      const updated = await request(`/api/admin/links/${button.dataset.id}/inspect`, { method: 'POST' });
       const item = rows.find(row => Number(row.id) === Number(button.dataset.id));
       if (item) {
-        Object.assign(item, updated, { last_checked_at: updated.checked_at || item.last_checked_at });
+        Object.assign(item, updated.backlink, updated.connectivity, {
+          last_checked_at: updated.backlink?.exempted
+            ? item.last_checked_at
+            : (updated.backlink?.checked_at || updated.checked_at || item.last_checked_at),
+          last_ping_at: updated.connectivity?.skipped
+            ? item.last_ping_at
+            : (updated.connectivity?.last_ping_at || updated.connectivity?.checked_at || item.last_ping_at)
+        });
         replacePartnerRow(item);
       }
-      toast(updated.result_text || '反链巡检完成');
+      toast(`反链：${updated.backlink?.result_text || '检测完成'}；连通：${updated.connectivity?.result_text || '检测完成'}`);
     } catch (error) {
       toast(error.message);
     } finally {

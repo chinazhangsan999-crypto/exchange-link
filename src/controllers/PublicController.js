@@ -38,7 +38,7 @@ const SystemModel = require('../models/SystemModel');
 const AdModel = require('../models/AdsModel');
 const MirrorModel = require('../models/MirrorModel');
 const CacheService = require('../services/CacheService');
-const { sendAdminAlert } = require('../services/AlertService');
+const { sendAdminAlert, formatAlertLink, formatContactLine } = require('../services/AlertService');
 
 const CLAIM_TTL_SECONDS = 15 * 60;
 const ATTRIBUTION_COOKIE = 'inflow_visit';
@@ -597,11 +597,27 @@ async function applyLink(req, res) {
       category: String(category).trim()
     });
     const sourceUrls = buildSourceEntryUrls(result.sourceSid, configuredSiteUrl);
-    const contactForAlert = (String(contact).trim() || '未填写').replace(/[\r\n`]+/g, ' ');
+    const contactForAlert = String(contact).replace(/[\r\n\t]+/g, ' ').trim();
     void sendAdminAlert(
       '🆕 新友链申请',
-      `> **站点名称：** ${String(name).trim()}\n> **网站 URL：** ${cleanUrl}\n> **所属分类：** ${String(category).trim()}\n> **站长联系方式（点击复制）：** \`${contactForAlert}\`\n> **专属路径地址：** [${sourceUrls.pathUrl}](${sourceUrls.pathUrl})\n> **专属参数地址：** \`${sourceUrls.queryUrl}\`\n> **提交时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
-      { eventType: 'new_partner_apply' }
+      [
+        `站点名称：${String(name).trim()}`,
+        `站点域名：${formatAlertLink(domain, domain, { allowDomain: true })}`,
+        `站点网址：${formatAlertLink(cleanUrl, cleanUrl)}`,
+        `反链检测网址：${formatAlertLink(cleanUrl, cleanUrl)}`,
+        '说明：未单独配置，默认检测站点网址',
+        `所属分类：${String(category).trim()}`,
+        formatContactLine('友链站长联系方式', contactForAlert),
+        `专属路径地址：${formatAlertLink(sourceUrls.pathUrl, sourceUrls.pathUrl)}`,
+        `专属参数地址：${formatAlertLink(sourceUrls.queryUrl, sourceUrls.queryUrl)}`,
+        `提交时间：${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}`
+      ].join('\n'),
+      {
+        eventType: 'new_partner_apply',
+        copyButtons: contactForAlert ? [{ label: '📋 复制站长联系方式', text: contactForAlert }] : [],
+        barkUrl: cleanUrl,
+        barkCopy: contactForAlert
+      }
     );
     return res.status(200).json({
       code: 200,

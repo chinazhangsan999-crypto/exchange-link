@@ -881,6 +881,67 @@ async function checkLink(req, res) {
   }
 }
 
+function runInspectionWithTimeout(message, worker) {
+  const controller = new AbortController();
+  const timeoutError = Object.assign(new Error(message), { code: 'TASK_TIMEOUT' });
+  const timeoutId = setTimeout(() => controller.abort(timeoutError), 15000);
+  return Promise.resolve()
+    .then(() => worker(controller.signal))
+    .finally(() => clearTimeout(timeoutId));
+}
+
+async function inspectLink(req, res) {
+  try {
+    const id = Number.parseInt(String(req.params.id || ''), 10);
+    if (!Number.isSafeInteger(id) || id <= 0) return fail(res, '友链编号不合法');
+
+    const [link, siteUrl, siteName] = await Promise.all([
+      PartnerModel.findCombinedInspectionPartner(id),
+      SystemModel.configValue('site_url'),
+      SystemModel.configValue('site_name')
+    ]);
+    if (!link) return fail(res, '友链不存在、未审核或已删除', 404);
+
+    const myMainDomain = parseHostname(siteUrl);
+    const [backlinkSettled, pingSettled] = await Promise.allSettled([
+      runInspectionWithTimeout('反链巡检超过 15 秒', signal => {
+        if (!myMainDomain && Number(link.is_exempt) !== 1) {
+          throw Object.assign(new Error('本站地址配置无效，无法进行反链巡检'), { code: 'CONFIG' });
+        }
+        return InspectionService.checkSingleBacklink(link, myMainDomain, siteName, { signal });
+      }),
+      runInspectionWithTimeout('站点探活超过 15 秒', signal => PingService.pingSingleLink(link, { signal }))
+    ]);
+
+    // 两个服务各自完成短写入后再统一清缓存，避免并行任务重复刷新公共缓存。
+    CacheService.clearPublicCache();
+    const rejected = [backlinkSettled, pingSettled].find(item => item.status === 'rejected');
+    if (rejected) throw rejected.reason;
+
+    const checkedAt = new Date().toISOString();
+    const backlink = {
+      ...backlinkSettled.value,
+      checked_at: backlinkSettled.value.checked_at || checkedAt,
+      result_text: backlinkSettled.value.result_text || backlinkResultMessage(backlinkSettled.value)
+    };
+    const connectivity = {
+      ...pingSettled.value,
+      checked_at: pingSettled.value.checked_at || pingSettled.value.last_ping_at || checkedAt,
+      healthy: pingSettled.value.ping_status === 'ok' && !pingSettled.value.error,
+      result_text: pingSettled.value.result_text || pingResultMessage(pingSettled.value)
+    };
+    const result = { partner_id: link.id, checked_at: checkedAt, backlink, connectivity };
+
+    if (backlink.alert_event || connectivity.alert_event) {
+      await InspectionAlertService.sendCombinedSingleResult(link, result, sendAdminAlert);
+    }
+    return ok(res, result, '单站联合检测完成');
+  } catch (error) {
+    console.error('单站联合检测失败：', error);
+    return fail(res, safeApiErrorMessage(error, '单站联合检测失败'), 500);
+  }
+}
+
 async function checkLinkHealth(req, res) {
   const controller = new AbortController();
   const timeoutError = Object.assign(new Error('站点探活超过 15 秒'), { code: 'TASK_TIMEOUT' });
@@ -1625,6 +1686,7 @@ module.exports = {
   pingAllLinks,
   getInspectionJob,
   checkLink,
+  inspectLink,
   checkLinkHealth,
   resetLostCount,
   resetCheckStatus,

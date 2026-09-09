@@ -107,7 +107,10 @@ function describeBacklinkResult(item = {}) {
 function enrichBacklinkResult(link, result = {}) {
   const enriched = {
     name: link.name,
+    domain: link.domain,
     url: link.url,
+    contact: link.contact,
+    backlink_url: link.backlink_url,
     checked_at: new Date().toISOString(),
     ...result
   };

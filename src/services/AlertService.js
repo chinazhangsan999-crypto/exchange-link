@@ -10,7 +10,60 @@ const RETRY_DELAYS_MS = [400, 1_200];
 const BARK_RETRY_DELAYS_MS = [800];
 // Bark 最终通过 APNs 投递；为标题、分组和 JSON 字段预留空间，正文按 UTF-8 字节安全分段。
 const BARK_BODY_MAX_BYTES = 2_500;
+const TELEGRAM_COPY_TEXT_MAX_LENGTH = 256;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function cleanInlineText(value, maxLength = 256) {
+  return String(value ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim().slice(0, maxLength);
+}
+
+function markdownInlineCode(value) {
+  const text = cleanInlineText(value).replace(/[`\\]/g, character => character === '`' ? '＇' : '/');
+  return `\`${text}\``;
+}
+
+function safeHttpUrl(value, { allowDomain = false } = {}) {
+  let candidate = cleanInlineText(value, 2_048);
+  if (!candidate) return '';
+  if (allowDomain && !/^https?:\/\//i.test(candidate)) candidate = `https://${candidate}`;
+  try {
+    const parsed = new URL(candidate);
+    return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function escapeMarkdownLabel(value) {
+  return cleanInlineText(value, 500).replace(/([_*\[\]()`])/g, '\\$1');
+}
+
+function formatAlertLink(label, value, options = {}) {
+  const url = safeHttpUrl(value, options);
+  const text = escapeMarkdownLabel(label || value || '链接');
+  if (!url) return text;
+  return `[${text}](${url.replace(/[()]/g, character => encodeURIComponent(character))})`;
+}
+
+function formatContactLine(label, value) {
+  const contact = cleanInlineText(value, TELEGRAM_COPY_TEXT_MAX_LENGTH);
+  return contact ? `${label}：${markdownInlineCode(contact)}` : `${label}：未填写`;
+}
+
+function normalizeCopyButtons(buttons = []) {
+  const normalized = [];
+  const seen = new Set();
+  for (const item of Array.isArray(buttons) ? buttons : []) {
+    const copyText = cleanInlineText(item?.text, TELEGRAM_COPY_TEXT_MAX_LENGTH);
+    if (!copyText || seen.has(copyText)) continue;
+    seen.add(copyText);
+    normalized.push({
+      label: cleanInlineText(item?.label || '📋 复制联系方式', 64) || '📋 复制联系方式',
+      text: copyText
+    });
+  }
+  return normalized;
+}
 
 function splitUtf8Text(value, maxBytes = BARK_BODY_MAX_BYTES) {
   const text = String(value || '');
@@ -84,7 +137,7 @@ async function recordDeliverySafely(data) {
   }
 }
 
-async function deliverPrimary(webhookUrl, title, message) {
+async function deliverPrimary(webhookUrl, title, message, options = {}) {
   const parsed = new URL(webhookUrl);
   const provider = providerForUrl(webhookUrl);
   if (!provider) throw Object.assign(new Error('仅支持 Telegram 或企业微信机器人地址'), { code: 'UNSUPPORTED_PROVIDER' });
@@ -99,7 +152,20 @@ async function deliverPrimary(webhookUrl, title, message) {
     if (!chatId) throw Object.assign(new Error('Telegram 配置缺少 chat_id'), { code: 'CONFIG' });
     parsed.search = '';
     endpoint = parsed.toString();
-    telegramPayload = { chat_id: chatId, text: `*${title}*\n\n${message}`, parse_mode: 'Markdown' };
+    const copyButtons = normalizeCopyButtons(options.copyButtons);
+    telegramPayload = {
+      chat_id: chatId,
+      text: `*${title}*\n\n${message}`,
+      parse_mode: 'Markdown',
+      ...(copyButtons.length ? {
+        reply_markup: {
+          inline_keyboard: copyButtons.map(button => [{
+            text: button.label,
+            copy_text: { text: button.text }
+          }])
+        }
+      } : {})
+    };
     payload = telegramPayload;
   }
 
@@ -109,7 +175,11 @@ async function deliverPrimary(webhookUrl, title, message) {
     if (!telegramPayload || !isTelegramMarkdownError(error)) throw Object.assign(error, { provider });
     const initialAttempts = Number(error.attemptCount || 1);
     try {
-      const fallback = await postWithRetry(endpoint, { chat_id: telegramPayload.chat_id, text: `${title}\n\n${message}` },
+      const fallback = await postWithRetry(endpoint, {
+        chat_id: telegramPayload.chat_id,
+        text: `${title}\n\n${message}`,
+        ...(telegramPayload.reply_markup ? { reply_markup: telegramPayload.reply_markup } : {})
+      },
         { timeoutMs: WEBHOOK_TIMEOUT_MS, retryDelays: RETRY_DELAYS_MS });
       return { provider, ...fallback, attemptCount: initialAttempts + fallback.attemptCount, markdownFallback: true };
     } catch (fallbackError) {
@@ -129,7 +199,7 @@ function barkPushEndpoint(value) {
   return parsed.toString();
 }
 
-async function deliverBark({ serverUrl, deviceKey, group, title, message }) {
+async function deliverBark({ serverUrl, deviceKey, group, title, message, url, copy }) {
   if (!deviceKey) throw Object.assign(new Error('Bark Device Key 未配置'), { code: 'CONFIG' });
   const endpoint = barkPushEndpoint(serverUrl);
   const parts = splitUtf8Text(message);
@@ -137,12 +207,18 @@ async function deliverBark({ serverUrl, deviceKey, group, title, message }) {
   let statusCode = null;
   for (let index = 0; index < parts.length; index += 1) {
     const partTitle = parts.length > 1 ? `${title}（${index + 1}/${parts.length}）` : title;
+    const part = parts[index];
     const result = await postWithRetry(endpoint, {
       device_key: deviceKey,
       title: partTitle,
-      body: parts[index],
+      body: part,
+      markdown: part,
       group: group || '网站告警',
-      level: 'timeSensitive'
+      level: 'timeSensitive',
+      ...(safeHttpUrl(url) ? { url: safeHttpUrl(url) } : {}),
+      ...(cleanInlineText(copy, TELEGRAM_COPY_TEXT_MAX_LENGTH) ? {
+        copy: cleanInlineText(copy, TELEGRAM_COPY_TEXT_MAX_LENGTH)
+      } : {})
     }, { timeoutMs: BARK_TIMEOUT_MS, retryDelays: BARK_RETRY_DELAYS_MS });
     attemptCount += result.attemptCount;
     statusCode = result.statusCode;
@@ -154,12 +230,15 @@ async function loadAlertConfig() {
   const values = await Promise.all([
     SystemModel.configValue('site_name'), SystemModel.configValue('webhook_url'),
     SystemModel.configValue('bark_enabled'), SystemModel.configValue('bark_server_url'),
-    SystemModel.configValue('bark_device_key'), SystemModel.configValue('bark_group')
+    SystemModel.configValue('bark_device_key'), SystemModel.configValue('bark_group'),
+    SystemModel.configValue('contact_info'), SystemModel.configValue('contact_email')
   ]);
   return {
     siteName: String(values[0] || '').trim() || '网站', webhookUrl: String(values[1] || '').trim(),
     barkEnabled: String(values[2]) === '1', barkServerUrl: String(values[3] || '').trim(),
-    barkDeviceKey: String(values[4] || '').trim(), barkGroup: String(values[5] || '').trim() || '网站告警'
+    barkDeviceKey: String(values[4] || '').trim(), barkGroup: String(values[5] || '').trim() || '网站告警',
+    adminContact: [values[6], values[7]].map(value => cleanInlineText(value, TELEGRAM_COPY_TEXT_MAX_LENGTH))
+      .find(value => value && !/^请在后台系统设置中填写/.test(value)) || ''
   };
 }
 
@@ -183,7 +262,17 @@ async function sendAdminAlert(title, contentMarkdown, options = {}) {
   }
 
   const displayTitle = `【${config.siteName}】${String(title || '系统通知')}`;
-  const message = String(contentMarkdown || '');
+  const baseMessage = String(contentMarkdown || '').trim();
+  const message = config.adminContact
+    ? `${baseMessage}${baseMessage ? '\n\n' : ''}${formatContactLine('本站管理员联系方式', config.adminContact)}`
+    : baseMessage;
+  const copyButtons = normalizeCopyButtons([
+    ...(Array.isArray(options.copyButtons) ? options.copyButtons : []),
+    ...(config.adminContact ? [{ label: '📋 复制本站管理员联系方式', text: config.adminContact }] : [])
+  ]);
+  const barkCopy = cleanInlineText(options.barkCopy, TELEGRAM_COPY_TEXT_MAX_LENGTH)
+    || cleanInlineText(options.copyButtons?.[0]?.text, TELEGRAM_COPY_TEXT_MAX_LENGTH)
+    || config.adminContact;
   const primaryProvider = providerForUrl(config.webhookUrl) || 'config';
   let primary;
   if (!config.webhookUrl) {
@@ -192,7 +281,7 @@ async function sendAdminAlert(title, contentMarkdown, options = {}) {
   } else {
     const startedAt = Date.now();
     try {
-      const result = await deliverPrimary(config.webhookUrl, displayTitle, message);
+      const result = await deliverPrimary(config.webhookUrl, displayTitle, message, { copyButtons });
       primary = { ...result, durationMs: Date.now() - startedAt };
       await recordDeliverySafely({ eventType, provider: result.provider, success: true, attemptCount: result.attemptCount,
         statusCode: result.statusCode, durationMs: primary.durationMs });
@@ -211,7 +300,8 @@ async function sendAdminAlert(title, contentMarkdown, options = {}) {
   const startedAt = Date.now();
   try {
     const result = await deliverBark({ serverUrl: config.barkServerUrl, deviceKey: config.barkDeviceKey,
-      group: config.barkGroup, title: displayTitle, message });
+      group: config.barkGroup, title: displayTitle, message,
+      url: options.barkUrl, copy: barkCopy });
     const backup = { ...result, durationMs: Date.now() - startedAt };
     await recordDeliverySafely({ eventType, provider: 'bark', isFallback: true, success: true, attemptCount: result.attemptCount,
       statusCode: result.statusCode, durationMs: backup.durationMs });
@@ -232,10 +322,15 @@ async function sendBarkTestAlert(title, contentMarkdown, options = {}) {
   try { config = await loadAlertConfig(); }
   catch { return { sent: false, provider: 'config', reason: '配置读取失败' }; }
   const displayTitle = `【${config.siteName}】${String(title || 'Bark 测试消息')}`;
+  const baseMessage = String(contentMarkdown || '').trim();
+  const message = config.adminContact
+    ? `${baseMessage}${baseMessage ? '\n\n' : ''}${formatContactLine('本站管理员联系方式', config.adminContact)}`
+    : baseMessage;
   const startedAt = Date.now();
   try {
     const result = await deliverBark({ serverUrl: config.barkServerUrl, deviceKey: config.barkDeviceKey,
-      group: config.barkGroup, title: displayTitle, message: String(contentMarkdown || '') });
+      group: config.barkGroup, title: displayTitle, message,
+      url: options.barkUrl, copy: options.barkCopy || config.adminContact });
     await recordDeliverySafely({ eventType: options.eventType || 'manual_test_bark', provider: 'bark', success: true,
       attemptCount: result.attemptCount, statusCode: result.statusCode, durationMs: Date.now() - startedAt });
     return { sent: true, provider: 'bark', fallback: false };
@@ -248,4 +343,11 @@ async function sendBarkTestAlert(title, contentMarkdown, options = {}) {
   }
 }
 
-module.exports = { sendAdminAlert, sendBarkTestAlert, providerForUrl };
+module.exports = {
+  sendAdminAlert,
+  sendBarkTestAlert,
+  providerForUrl,
+  safeHttpUrl,
+  formatAlertLink,
+  formatContactLine
+};

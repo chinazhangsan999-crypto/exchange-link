@@ -72,7 +72,8 @@ async function listInflowCandidates({ includeUrl = false } = {}) {
 }
 
 async function listPingTargets() {
-  return all(`SELECT id, name, domain, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
+  return all(`SELECT id, name, domain, url, contact, backlink_url,
+      ping_exempt, ping_status, ping_failed_count, last_ping_at
     FROM partners
     WHERE is_approved = 1
       AND COALESCE(is_internal, 0) = 0
@@ -83,7 +84,8 @@ async function listPingTargets() {
 
 /** 后台手动健康体检覆盖全部已审核目标，不受长期失效退避阈值限制。 */
 async function listManualPingTargets() {
-  return all(`SELECT id, name, domain, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
+  return all(`SELECT id, name, domain, url, contact, backlink_url,
+      ping_exempt, ping_status, ping_failed_count, last_ping_at
     FROM partners
     WHERE is_approved = 1
       AND COALESCE(is_internal, 0) = 0
@@ -92,7 +94,8 @@ async function listManualPingTargets() {
 }
 
 async function listDeepPingRevivalTargets() {
-  return all(`SELECT id, name, domain, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
+  return all(`SELECT id, name, domain, url, contact, backlink_url,
+      ping_exempt, ping_status, ping_failed_count, last_ping_at
     FROM partners
     WHERE is_approved = 1
       AND COALESCE(is_internal, 0) = 0
@@ -117,7 +120,7 @@ async function touchPingTimestamp(id, options = {}) {
 }
 
 async function listScheduledBacklinkInspectionTargets() {
-  return all(`SELECT p.id, p.name, p.url, p.backlink_url, p.backlink_status, p.is_exempt,
+  return all(`SELECT p.id, p.name, p.domain, p.url, p.contact, p.backlink_url, p.backlink_status, p.is_exempt,
     p.failed_check_count, p.lost_count, COALESCE(recent.rolling_ips, 0) AS traffic_24h
     FROM partners p
     LEFT JOIN (
@@ -138,7 +141,7 @@ async function listScheduledBacklinkInspectionTargets() {
 
 /** 后台手动反链全查覆盖长期 dead 站点，但仍排除内部节点和反链免检站点。 */
 async function listManualBacklinkInspectionTargets() {
-  return all(`SELECT p.id, p.name, p.url, p.backlink_url, p.backlink_status, p.is_exempt,
+  return all(`SELECT p.id, p.name, p.domain, p.url, p.contact, p.backlink_url, p.backlink_status, p.is_exempt,
     p.failed_check_count, p.lost_count, COALESCE(recent.rolling_ips, 0) AS traffic_24h
     FROM partners p
     LEFT JOIN (
@@ -157,7 +160,7 @@ async function listManualBacklinkInspectionTargets() {
 const listBacklinkInspectionTargets = listScheduledBacklinkInspectionTargets;
 
 async function listDeepBacklinkRevivalTargets() {
-  return all(`SELECT p.id, p.name, p.url, p.backlink_url, p.backlink_status, p.is_exempt,
+  return all(`SELECT p.id, p.name, p.domain, p.url, p.contact, p.backlink_url, p.backlink_status, p.is_exempt,
     p.failed_check_count, p.lost_count, COALESCE(recent.rolling_ips, 0) AS traffic_24h
     FROM partners p
     LEFT JOIN (
@@ -268,7 +271,8 @@ async function listAdminPartners(query = '') {
 }
 
 async function findAnalyticsPartner(id) {
-  return get(`SELECT p.id, p.name, p.domain, p.is_approved, p.is_whitelisted, p.priority,
+  return get(`SELECT p.id, p.name, p.domain, p.url, p.contact, p.backlink_url,
+    p.is_approved, p.is_whitelisted, p.priority,
     COALESCE((SELECT COUNT(*) FROM outbound_logs o WHERE o.link_id = p.id), 0) AS outflow_clicks
     FROM partners p WHERE p.id = ?`, [id]);
 }
@@ -341,11 +345,21 @@ async function deletePartner(id) {
 }
 
 async function findBacklinkPartner(id) {
-  return get('SELECT id, name, url, backlink_status, backlink_url, is_exempt, failed_check_count, lost_count FROM partners WHERE id = ?', [id]);
+  return get(`SELECT id, name, domain, url, contact, backlink_status, backlink_url,
+      is_exempt, failed_check_count, lost_count
+    FROM partners WHERE id = ?`, [id]);
 }
 
 async function findPingPartner(id) {
-  return get(`SELECT id, name, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
+  return get(`SELECT id, name, domain, url, contact, backlink_url,
+      ping_exempt, ping_status, ping_failed_count, last_ping_at
+    FROM partners WHERE id = ? AND is_approved = 1`, [id]);
+}
+
+async function findCombinedInspectionPartner(id) {
+  return get(`SELECT id, name, domain, url, contact, backlink_url,
+      backlink_status, is_exempt, failed_check_count, lost_count,
+      ping_exempt, ping_status, ping_failed_count, last_checked_at, last_ping_at
     FROM partners WHERE id = ? AND is_approved = 1`, [id]);
 }
 
@@ -446,6 +460,7 @@ module.exports = {
   deletePartner,
   findBacklinkPartner,
   findPingPartner,
+  findCombinedInspectionPartner,
   resetLostCount,
   resetCheckStatus,
   syncPartnersFromCsv,

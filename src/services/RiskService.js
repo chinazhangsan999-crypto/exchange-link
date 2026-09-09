@@ -6,6 +6,7 @@ const LogModel = require('../models/LogModel');
 const SystemModel = require('../models/SystemModel');
 const RiskAlertModel = require('../models/RiskAlertModel');
 const { runPromisePool } = require('../utils/asyncPool');
+const { formatAlertLink, formatContactLine } = require('./AlertService');
 
 const asNumber = value => Number(value || 0);
 const ratio = (numerator, denominator, digits = 4) => denominator ? Number((numerator / denominator).toFixed(digits)) : 0;
@@ -158,8 +159,15 @@ function formatRiskAlert(report, dashboardReasons) {
   const d = report.diagnostics;
   const reasons = [...new Set([...(dashboardReasons || []), ...(report.riskReasons || [])])];
   const level = report.risk?.level === 'high' ? '高风险' : '中风险';
+  const backlinkUrl = report.partner.backlink_url || report.partner.url;
   return [
-    `站点：${report.partner.name}`, `域名：${report.partner.domain}`, `站点 ID：${report.partner.id}`,
+    `站点：${report.partner.name}`,
+    `域名：${formatAlertLink(report.partner.domain, report.partner.domain, { allowDomain: true })}`,
+    `站点网址：${formatAlertLink(report.partner.url, report.partner.url)}`,
+    `反链检测网址：${formatAlertLink(backlinkUrl, backlinkUrl)}`,
+    ...(!report.partner.backlink_url ? ['说明：未单独配置，默认检测站点网址'] : []),
+    formatContactLine('友链站长联系方式', report.partner.contact),
+    `站点 ID：${report.partner.id}`,
     `风险等级：${level}`, `24h UV / PV：${report.uv24h} / ${report.pv24h}`,
     `命中规则：${reasons.join('、') || '风控指标异常'}`, `建议动作：人工审核，不自动封禁。`, '',
     `死水交互率（近24h）：${formatPercent(d.dead_water_interaction_rate)}（${d.dead_water_interacted_uv}/${d.dead_water_inbound_uv} 入站 IP，阈值 ${formatPercent(d.thresholds.min_interaction_rate)}；仅供人工审核）`,
@@ -213,7 +221,13 @@ async function scanAndNotify({ sendAdminAlert } = {}) {
     const { report, reasons, fingerprint } = item;
     const decision = await RiskAlertModel.getNotificationDecision(report.partner.id, fingerprint);
     if (!decision.notify) return { skipped: decision.reason };
-    const sent = await sendAdminAlert('🚨 疑似刷量预警', formatRiskAlert(report, reasons), { eventType: 'risk_alert' });
+    const contact = String(report.partner.contact || '').replace(/[\r\n\t]+/g, ' ').trim();
+    const sent = await sendAdminAlert('🚨 疑似刷量预警', formatRiskAlert(report, reasons), {
+      eventType: 'risk_alert',
+      copyButtons: contact ? [{ label: `📋 复制：${report.partner.name}`, text: contact }] : [],
+      barkUrl: report.partner.url,
+      barkCopy: contact
+    });
     if (sent?.sent) await RiskAlertModel.markAlertDelivered(report.partner.id, fingerprint);
     else await RiskAlertModel.markAlertFailed(report.partner.id, fingerprint, sent?.reason || '告警通道未送达');
     return { sent: Boolean(sent?.sent), reason: decision.reason };
