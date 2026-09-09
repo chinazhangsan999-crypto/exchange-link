@@ -81,6 +81,16 @@ async function listPingTargets() {
     ORDER BY id ASC`);
 }
 
+/** 后台手动健康体检覆盖全部已审核目标，不受长期失效退避阈值限制。 */
+async function listManualPingTargets() {
+  return all(`SELECT id, name, domain, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
+    FROM partners
+    WHERE is_approved = 1
+      AND COALESCE(is_internal, 0) = 0
+      AND COALESCE(ping_exempt, 0) = 0
+    ORDER BY id ASC`);
+}
+
 async function listDeepPingRevivalTargets() {
   return all(`SELECT id, name, domain, url, ping_exempt, ping_status, ping_failed_count, last_ping_at
     FROM partners
@@ -106,7 +116,7 @@ async function touchPingTimestamp(id, options = {}) {
   return run("UPDATE partners SET last_ping_at = datetime('now') WHERE id = ?", [id], { priority: 'background', label: 'touch ping timestamp' });
 }
 
-async function listBacklinkInspectionTargets() {
+async function listScheduledBacklinkInspectionTargets() {
   return all(`SELECT p.id, p.name, p.url, p.backlink_url, p.backlink_status, p.is_exempt,
     p.failed_check_count, p.lost_count, COALESCE(recent.rolling_ips, 0) AS traffic_24h
     FROM partners p
@@ -125,6 +135,26 @@ async function listBacklinkInspectionTargets() {
       )
     ORDER BY p.id ASC`);
 }
+
+/** 后台手动反链全查覆盖长期 dead 站点，但仍排除内部节点和反链免检站点。 */
+async function listManualBacklinkInspectionTargets() {
+  return all(`SELECT p.id, p.name, p.url, p.backlink_url, p.backlink_status, p.is_exempt,
+    p.failed_check_count, p.lost_count, COALESCE(recent.rolling_ips, 0) AS traffic_24h
+    FROM partners p
+    LEFT JOIN (
+      SELECT link_id, COUNT(DISTINCT client_ip) AS rolling_ips
+      FROM inbound_logs
+      WHERE created_at >= datetime('now', '-24 hours')
+      GROUP BY link_id
+    ) recent ON recent.link_id = p.id
+    WHERE p.is_approved = 1
+      AND COALESCE(p.is_internal, 0) = 0
+      AND COALESCE(p.is_exempt, 0) = 0
+    ORDER BY p.id ASC`);
+}
+
+// 保留旧名称给现有调用方；语义明确为普通定时巡检目标。
+const listBacklinkInspectionTargets = listScheduledBacklinkInspectionTargets;
 
 async function listDeepBacklinkRevivalTargets() {
   return all(`SELECT p.id, p.name, p.url, p.backlink_url, p.backlink_status, p.is_exempt,
@@ -384,11 +414,14 @@ function listPartnersForExport() {
 module.exports = {
   listInflowCandidates,
   listPingTargets,
+  listManualPingTargets,
   listDeepPingRevivalTargets,
   recordPingFailure,
   recordPingSuccess,
   touchPingTimestamp,
   listBacklinkInspectionTargets,
+  listScheduledBacklinkInspectionTargets,
+  listManualBacklinkInspectionTargets,
   listDeepBacklinkRevivalTargets,
   recordBacklinkLost,
   recordBacklinkStatus,

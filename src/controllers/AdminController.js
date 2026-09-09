@@ -25,6 +25,7 @@ const RiskService = require('../services/RiskService');
 const CacheService = require('../services/CacheService');
 const WebhookDeliveryModel = require('../models/WebhookDeliveryModel');
 const { sendAdminAlert, sendBarkTestAlert, providerForUrl } = require('../services/AlertService');
+const InspectionAlertService = require('../services/InspectionAlertService');
 const { runTrackedJob } = require('../jobs/cron');
 const { runPromisePool } = require('../utils/asyncPool');
 
@@ -45,6 +46,141 @@ const ANALYTICS_ENABLED_KEYS = new Set([
   'clarity_enabled',
   'generic_analytics_enabled'
 ]);
+
+const INSPECTION_JOB_TTL_MS = 30 * 60 * 1000;
+const INSPECTION_JOB_LIMIT = 100;
+const inspectionJobs = new Map();
+
+function cleanupInspectionJobs(now = Date.now()) {
+  for (const [jobId, job] of inspectionJobs) {
+    if (job.status !== 'running' && Number(job.finishedAt || 0) + INSPECTION_JOB_TTL_MS <= now) {
+      inspectionJobs.delete(jobId);
+    }
+  }
+  if (inspectionJobs.size < INSPECTION_JOB_LIMIT) return;
+  const completed = [...inspectionJobs.values()]
+    .filter(job => job.status !== 'running')
+    .sort((left, right) => Number(left.finishedAt || 0) - Number(right.finishedAt || 0));
+  while (inspectionJobs.size >= INSPECTION_JOB_LIMIT && completed.length) {
+    inspectionJobs.delete(completed.shift().jobId);
+  }
+}
+
+function hasRunningInspectionJob(type) {
+  cleanupInspectionJobs();
+  return [...inspectionJobs.values()].some(job => job.type === type && job.status === 'running');
+}
+
+function createInspectionJob(type) {
+  cleanupInspectionJobs();
+  if (inspectionJobs.size >= INSPECTION_JOB_LIMIT) return null;
+  const jobId = `${type}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const job = {
+    jobId,
+    type,
+    status: 'running',
+    targetTotal: 0,
+    completed: 0,
+    trafficSkipped: 0,
+    networkChecked: 0,
+    normal: 0,
+    abnormal: 0,
+    recovered: 0,
+    createdAt: Date.now(),
+    updatedAt: Date.now()
+  };
+  inspectionJobs.set(jobId, job);
+  return job;
+}
+
+function updateInspectionJob(jobId, progress = {}) {
+  const job = inspectionJobs.get(jobId);
+  if (!job || job.status !== 'running') return;
+  const allowed = ['targetTotal', 'completed', 'trafficSkipped', 'networkChecked', 'normal', 'abnormal', 'recovered'];
+  for (const key of allowed) {
+    if (Number.isFinite(Number(progress[key]))) job[key] = Number(progress[key]);
+  }
+  job.updatedAt = Date.now();
+}
+
+function reportSummary(report = {}) {
+  const summary = {};
+  for (const [key, value] of Object.entries(report)) {
+    if (key === 'results' || key === 'alert_summary') continue;
+    summary[key] = value;
+  }
+  return summary;
+}
+
+function finalJobProgress(type, report) {
+  if (type === 'backlink') {
+    return {
+      targetTotal: report.target_total,
+      completed: report.completed,
+      trafficSkipped: report.traffic_skipped,
+      networkChecked: report.network_checked,
+      normal: report.normal,
+      abnormal: Number(report.network_checked || 0) - Number(report.normal || 0) - Number(report.recovered || 0),
+      recovered: report.recovered
+    };
+  }
+  return {
+    targetTotal: report.target_total,
+    completed: report.completed,
+    normal: report.normal,
+    abnormal: Number(report.first_failure || 0) + Number(report.ongoing_failure || 0)
+      + Number(report.reached_dead || 0) + Number(report.task_errors || 0),
+    recovered: report.recovered
+  };
+}
+
+function startInspectionJob(type, label, worker) {
+  const job = createInspectionJob(type);
+  if (!job) return null;
+  const task = runTrackedJob(label, async () => {
+    try {
+      const report = await worker(progress => updateInspectionJob(job.jobId, progress));
+      if (!report?.started) throw new Error(report?.reason || '任务未能启动');
+      updateInspectionJob(job.jobId, finalJobProgress(type, report));
+      job.status = 'completed';
+      job.summary = reportSummary(report);
+      job.finishedAt = Date.now();
+      job.updatedAt = job.finishedAt;
+      return report;
+    } catch (error) {
+      job.status = 'failed';
+      job.error = safeApiErrorMessage(error, '巡检任务执行失败');
+      job.finishedAt = Date.now();
+      job.updatedAt = job.finishedAt;
+      throw error;
+    }
+  });
+  if (!task) {
+    inspectionJobs.delete(job.jobId);
+    return null;
+  }
+  return job;
+}
+
+function publicInspectionJob(job) {
+  return {
+    jobId: job.jobId,
+    type: job.type,
+    status: job.status,
+    targetTotal: job.targetTotal,
+    completed: job.completed,
+    trafficSkipped: job.trafficSkipped,
+    networkChecked: job.networkChecked,
+    normal: job.normal,
+    abnormal: job.abnormal,
+    recovered: job.recovered,
+    summary: job.summary || null,
+    error: job.error || null,
+    createdAt: job.createdAt,
+    updatedAt: job.updatedAt,
+    finishedAt: job.finishedAt || null
+  };
+}
 
 function normalizeGenericAnalyticsCode(value) {
   const raw = String(value || '').trim();
@@ -687,18 +823,35 @@ async function regeneratePartnerSourceSid(req, res) {
 }
 
 function checkAllLinks(req, res) {
-  if (InspectionService.isBacklinkCheckInProgress()) return fail(res, '反向友链巡检正在执行，请稍后再试', 409);
-  const task = runTrackedJob('后台手动全量反向友链巡检', () => InspectionService.checkAllBacklinks({
-    sendAdminAlert,
-    aggregateAlerts: true,
-    alertTaskLabel: '后台手动反链全查',
-    onDataChanged: CacheService.clearPublicCache
-  }));
-  if (!task) return fail(res, '服务正在停止，暂时无法启动巡检', 503);
-  return res.status(202).json({ code: 200, msg: '已在后台启动全量反向友链巡检', data: { started: true } });
+  if (InspectionService.isBacklinkCheckInProgress() || hasRunningInspectionJob('backlink')) {
+    return fail(res, '反向友链巡检正在执行，请稍后再试', 409);
+  }
+  const job = startInspectionJob('backlink', '后台手动全量反向友链巡检', onProgress => (
+    InspectionService.checkAllBacklinks({
+      mode: 'manual',
+      skipRecentTraffic: true,
+      includeDeepDead: true,
+      sendAdminAlert,
+      aggregateAlerts: true,
+      alwaysSendSummary: true,
+      includeAllResultsInSummary: true,
+      alertTaskLabel: '后台手动反链全查',
+      onDataChanged: CacheService.clearPublicCache,
+      onProgress
+    })
+  ));
+  if (!job) return fail(res, '服务正在停止或任务队列已满，暂时无法启动巡检', 503);
+  return res.status(202).json({
+    code: 200,
+    msg: '已在后台启动全量反向友链巡检',
+    data: publicInspectionJob(job)
+  });
 }
 
 async function checkLink(req, res) {
+  const controller = new AbortController();
+  const timeoutError = Object.assign(new Error('反链巡检超过 15 秒'), { code: 'TASK_TIMEOUT' });
+  const timeoutId = setTimeout(() => controller.abort(timeoutError), 15000);
   try {
     const link = await PartnerModel.findBacklinkPartner(Number(req.params.id));
     if (!link) return fail(res, '友链不存在', 404);
@@ -708,30 +861,104 @@ async function checkLink(req, res) {
       link,
       myMainDomain,
       await SystemModel.configValue('site_name'),
-      { sendAdminAlert, onDataChanged: CacheService.clearPublicCache }
+      {
+        signal: controller.signal,
+        aggregateAlerts: true,
+        onDataChanged: CacheService.clearPublicCache
+      }
     );
-    return ok(res, result, '反链巡检完成');
+    result.checked_at = result.checked_at || new Date().toISOString();
+    result.result_text = result.result_text || backlinkResultMessage(result);
+    if (result.alert_event) {
+      await InspectionAlertService.sendSingleBacklinkResult(link, result, sendAdminAlert);
+    }
+    return ok(res, result, backlinkResultMessage(result));
   } catch (error) {
     console.error('反链巡检失败：', error);
-    return fail(res, safeApiErrorMessage(error), 500);
+    return fail(res, safeApiErrorMessage(error, '反链巡检失败'), 500);
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
 async function checkLinkHealth(req, res) {
+  const controller = new AbortController();
+  const timeoutError = Object.assign(new Error('站点探活超过 15 秒'), { code: 'TASK_TIMEOUT' });
+  const timeoutId = setTimeout(() => controller.abort(timeoutError), 15000);
   try {
     const id = Number.parseInt(String(req.params.id || ''), 10);
     if (!Number.isSafeInteger(id) || id <= 0) return fail(res, '友链编号不合法');
     const link = await PartnerModel.findPingPartner(id);
     if (!link) return fail(res, '友链不存在、未审核或已删除', 404);
     const result = await PingService.pingSingleLink(link, {
+      signal: controller.signal,
       onDataChanged: CacheService.clearPublicCache,
-      sendAdminAlert
+      aggregateAlerts: true
     });
-    return ok(res, { ...result, healthy: !result.error }, result.error ? '站点连通异常' : '站点连通正常');
+    result.checked_at = result.checked_at || result.last_ping_at || new Date().toISOString();
+    result.result_text = result.result_text || pingResultMessage(result);
+    if (result.alert_event) {
+      await InspectionAlertService.sendSinglePingResult(link, result, sendAdminAlert);
+    }
+    return ok(res, { ...result, healthy: !result.error }, pingResultMessage(result));
   } catch (error) {
     console.error('友链健康探测失败：', error);
     return fail(res, safeApiErrorMessage(error, '友链健康探测失败'), 500);
+  } finally {
+    clearTimeout(timeoutId);
   }
+}
+
+function backlinkResultMessage(result = {}) {
+  if (result.exempted) return '免检站点，未执行巡检';
+  if (result.backlink_status === 'protected') return '防护页拦截，暂时无法判断';
+  if (result.alert_event === 'backlink_recovered') return '已恢复反链';
+  if (result.alert_event === 'backlink_lost') return '确认掉链';
+  if (result.alert_event === 'backlink_first_unreachable') return '首次网络异常（1/3）';
+  if (result.alert_event === 'backlink_dead') return '连续网络失联（3/3）';
+  if (result.backlink_status === 'unreachable') return `持续网络异常（${Number(result.failed_check_count || 0)}/3）`;
+  if (result.backlink_status === 'dead') return '站点持续失联';
+  return '反链正常';
+}
+
+function pingResultMessage(result = {}) {
+  if (result.skipped) return '连通性免检，未执行探活';
+  if (result.alert_event === 'ping_recovered') return '站点连通已恢复';
+  if (result.alert_event === 'ping_first_failure') return '首次连通异常（1/3）';
+  if (result.alert_event === 'ping_offline') return '连续三次探活失败';
+  if (result.error) return `持续连通异常（${Number(result.ping_failed_count || 0)}/3）`;
+  return '站点连通正常';
+}
+
+function pingAllLinks(req, res) {
+  if (PingService.isPingInspectionInProgress() || hasRunningInspectionJob('ping')) {
+    return fail(res, '链群健康体检正在执行，请稍后再试', 409);
+  }
+  const job = startInspectionJob('ping', '后台手动链群健康体检', onProgress => (
+    PingService.runFullPingInspection({
+      mode: 'manual',
+      sendAdminAlert,
+      aggregateAlerts: true,
+      alwaysSendSummary: true,
+      includeAllResultsInSummary: true,
+      alertTaskLabel: '后台手动链群健康体检',
+      onDataChanged: CacheService.clearPublicCache,
+      onProgress
+    })
+  ));
+  if (!job) return fail(res, '服务正在停止或任务队列已满，暂时无法启动体检', 503);
+  return res.status(202).json({
+    code: 200,
+    msg: '已在后台启动链群健康体检',
+    data: publicInspectionJob(job)
+  });
+}
+
+function getInspectionJob(req, res) {
+  cleanupInspectionJobs();
+  const job = inspectionJobs.get(String(req.params.jobId || ''));
+  if (!job) return fail(res, '任务不存在或服务已重启，无法继续读取任务状态', 404);
+  return ok(res, publicInspectionJob(job));
 }
 
 async function resetLostCount(req, res) {
@@ -1395,6 +1622,8 @@ module.exports = {
   deletePartner,
   regeneratePartnerSourceSid,
   checkAllLinks,
+  pingAllLinks,
+  getInspectionJob,
   checkLink,
   checkLinkHealth,
   resetLostCount,

@@ -105,8 +105,11 @@
 
   async function loadTabData(tab) {
     if (!token()) return;
-    if (tab === 'dashboard') return window.initAdminDashboard?.();
-    if (tab === 'partners') return window.loadPartners?.();
+    if (tab === 'dashboard') return window.initDashboard?.();
+    if (tab === 'partners') return Promise.all([
+      Promise.resolve(window.loadPartners?.()),
+      Promise.resolve(window.setupPartnerCategoryFilter?.())
+    ]);
     if (tab === 'logs') return window.loadLogs?.();
     if (tab === 'categories') return window.loadCategories?.();
     if (tab === 'review') return window.fetchPendingCount?.();
@@ -124,7 +127,9 @@
     document.querySelector('#' + tab)?.classList.add('active');
     localStorage.setItem(activeKey, tab);
     const route = routes[tab] || tab;
-    if (options.updateHash !== false && window.location.hash !== '#' + route) window.location.hash = route;
+    if (options.updateHash !== false && window.location.hash !== '#' + route) {
+      history.replaceState(null, '', `${location.pathname}${location.search}#${route}`);
+    }
     Promise.resolve(loadTabData(tab)).catch(error => console.error('加载后台标签数据失败：', error));
   };
 
@@ -143,7 +148,6 @@
   async function handleLoginSuccess(newToken) {
     localStorage.setItem('webring_admin_token', newToken);
     document.querySelector('#login-modal')?.classList.remove('open');
-    window.dispatchEvent(new Event('admin:authenticated'));
     void window.loadAdminBrand();
     window.restoreAdminTab();
     toast('登录成功，已恢复上次访问页面');
@@ -167,5 +171,10 @@
   document.querySelector('#review-tab')?.setAttribute('data-tab', 'review'); document.querySelector('#settings-tab')?.setAttribute('data-tab', 'settings'); bindTabs();
   normalizePrimaryNavigation();
   bindTabs();
-  if (token()) setTimeout(() => { window.loadAdminBrand(); window.restoreAdminTab(); }, 0);
+  if (token()) {
+    void window.loadAdminBrand();
+    window.restoreAdminTab();
+  } else {
+    document.querySelector('#login-modal')?.classList.add('open');
+  }
 })();

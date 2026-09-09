@@ -13,8 +13,106 @@ const { sendBacklinkInspectionSummary } = require('./InspectionAlertService');
 
 let backlinkCheckInProgress = false;
 
+const inspectionModes = Object.freeze({
+  manual: Object.freeze({
+    skipRecentTraffic: true,
+    includeDeepDead: true,
+    alwaysSendSummary: true,
+    includeAllResultsInSummary: true
+  }),
+  scheduled: Object.freeze({
+    skipRecentTraffic: true,
+    includeDeepDead: false,
+    alwaysSendSummary: false,
+    includeAllResultsInSummary: false
+  }),
+  single: Object.freeze({
+    skipRecentTraffic: false,
+    includeDeepDead: true,
+    alwaysSendSummary: false,
+    includeAllResultsInSummary: false
+  })
+});
+
 function notifyChanged(options) {
   if (typeof options?.onDataChanged === 'function') options.onDataChanged();
+}
+
+function notifyProgress(options, progress) {
+  if (typeof options?.onProgress !== 'function') return;
+  try { options.onProgress(progress); } catch (error) { console.error('更新反链巡检进度失败：', error?.message || error); }
+}
+
+function classifyBacklinkResult(item = {}) {
+  if (item.traffic_skipped) return 'traffic_skipped';
+  if (item.task_error || item.blocked || item.exempted) return 'task_error';
+  if (item.alert_event === 'backlink_recovered') return 'recovered';
+  if (item.backlink_status === 'valid' && !item.error) return 'normal';
+  if (item.backlink_status === 'protected') return 'protected';
+  if (item.backlink_status === 'lost') {
+    return item.alert_event === 'backlink_lost' ? 'newly_lost' : 'still_lost';
+  }
+  if (item.alert_event === 'backlink_first_unreachable') return 'first_network_failure';
+  if (item.alert_event === 'backlink_dead') return 'reached_dead';
+  if (item.backlink_status === 'unreachable' || item.backlink_status === 'dead') return 'ongoing_network_failure';
+  return 'task_error';
+}
+
+function buildBacklinkReport({ mode = 'scheduled', targets = [], results = [] } = {}) {
+  const counts = {
+    traffic_skipped: 0,
+    normal: 0,
+    protected: 0,
+    newly_lost: 0,
+    still_lost: 0,
+    first_network_failure: 0,
+    ongoing_network_failure: 0,
+    reached_dead: 0,
+    recovered: 0,
+    task_errors: 0
+  };
+  for (const item of results) {
+    const category = classifyBacklinkResult(item);
+    if (category === 'task_error') counts.task_errors += 1;
+    else counts[category] += 1;
+  }
+  return {
+    started: true,
+    mode,
+    target_total: targets.length,
+    completed: results.length,
+    network_checked: results.length - counts.traffic_skipped,
+    ...counts,
+    state_change_count: results.filter(item => Boolean(item?.alert_event)).length,
+    results
+  };
+}
+
+function describeBacklinkResult(item = {}) {
+  if (item.traffic_skipped) return '近24小时存在有效入站流量，按规则跳过网络巡检';
+  if (item.exempted) return '免检站点，未执行巡检';
+  if (item.blocked) return item.reason || '巡检地址被安全策略拦截';
+  if (item.alert_event === 'backlink_recovered') return '已恢复反链';
+  if (item.backlink_status === 'valid') return '反链正常';
+  if (item.backlink_status === 'protected') return '防护页拦截，暂时无法判断';
+  if (item.backlink_status === 'lost') return item.alert_event === 'backlink_lost' ? '确认掉链' : '仍处于掉链状态';
+  if (item.alert_event === 'backlink_first_unreachable') return '首次网络异常（1/3）';
+  if (item.alert_event === 'backlink_dead') return '连续网络失联（3/3）';
+  if (item.backlink_status === 'unreachable' || item.backlink_status === 'dead') {
+    return `持续网络异常（${Number(item.failed_check_count || 0)}/3）`;
+  }
+  return item.error || '巡检任务执行异常';
+}
+
+function enrichBacklinkResult(link, result = {}) {
+  const enriched = {
+    name: link.name,
+    url: link.url,
+    checked_at: new Date().toISOString(),
+    ...result
+  };
+  if (!enriched.result_text) enriched.result_text = describeBacklinkResult(enriched);
+  return enriched;
 }
 
 function throwIfAborted(signal) {
@@ -199,13 +297,6 @@ async function updateBacklinkStatus(link, status, checkedUrl, options = {}) {
     await PartnerModel.recordBacklinkLost(link.id, { signal: options.signal });
     notifyChanged(options);
     const lostCount = Number(link.lost_count || 0) + 1;
-    if (!options.aggregateAlerts && link.backlink_status !== 'lost' && typeof options.sendAdminAlert === 'function') {
-      void options.sendAdminAlert(
-        '🔴 反向友链掉链告警',
-        `> **站点名称：** ${link.name || `#${link.id}`}\n> **站点网址：** ${link.url || checkedUrl}\n> **累计掉链次数：** ${lostCount}\n> **巡检时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`,
-        { eventType: 'backlink_lost' }
-      );
-    }
     return {
       id: link.id,
       backlink_status: 'lost',
@@ -378,72 +469,108 @@ async function recordBacklinkCheckError(link, error, options = {}) {
 async function checkAllLinksBatch(links, myMainDomain, mySiteName, concurrency = 3, options = {}) {
   const poolSize = Math.max(1, Number(concurrency) || 3);
   const taskTimeoutMs = Math.max(1, Number(options.taskTimeoutMs) || 15000);
+  const completedResults = [];
+  const publish = (link, value) => {
+    const result = enrichBacklinkResult(link, value);
+    completedResults.push(result);
+    const progress = buildBacklinkReport({ mode: options.mode, targets: links, results: completedResults });
+    notifyProgress(options, {
+      targetTotal: progress.target_total,
+      completed: progress.completed,
+      trafficSkipped: progress.traffic_skipped,
+      networkChecked: progress.network_checked,
+      normal: progress.normal,
+      abnormal: progress.network_checked - progress.normal - progress.recovered,
+      recovered: progress.recovered
+    });
+    return result;
+  };
   const settled = await runPromisePool(links, poolSize, async (link, _index, signal) => {
     const taskOptions = { ...options, signal };
     try {
       throwIfAborted(signal);
       if (Number(link.is_exempt) === 1) {
-        return {
+        return publish(link, {
           id: link.id,
           backlink_status: link.backlink_status || 'valid',
           failed_check_count: 0,
           exempted: true,
           checked_url: null
-        };
+        });
       }
-      if (Number(link.traffic_24h) > 0) {
+      if (options.skipRecentTraffic === true && Number(link.traffic_24h) > 0) {
         throwIfAborted(signal);
         await PartnerModel.markTrafficExempt(link.id, { signal });
         notifyChanged(taskOptions);
-        return {
+        return publish(link, {
           id: link.id,
           backlink_status: 'valid',
+          failed_check_count: 0,
+          lost_count: Number(link.lost_count || 0),
           traffic_24h: Number(link.traffic_24h),
-          exempted: true,
-          checked_url: null
-        };
+          traffic_skipped: true,
+          skipped_reason: 'recent_traffic',
+          checked_url: null,
+          result_text: '近24小时存在有效入站流量，按规则跳过网络巡检'
+        });
       }
-      return await checkSingleBacklink(link, myMainDomain, mySiteName, taskOptions);
+      return publish(link, await checkSingleBacklink(link, myMainDomain, mySiteName, taskOptions));
     } catch (error) {
       const timedOut = isTaskTimeoutAbort(error, signal);
       if (signal?.aborted && !timedOut) throwIfAborted(signal);
       try {
-        return await recordBacklinkCheckError(link, error, taskOptions);
+        return publish(link, await recordBacklinkCheckError(link, error, taskOptions));
       } catch (persistError) {
-        return {
+        return publish(link, {
           id: link.id,
           backlink_status: 'unreachable',
           checked_url: link.backlink_url || link.url,
+          task_error: true,
           error: String(persistError?.message || persistError || '巡检任务异常')
-        };
+        });
       }
     }
   }, taskTimeoutMs);
 
   return settled.map((result, index) => result.status === 'fulfilled'
-    ? { name: links[index].name, url: links[index].url, ...result.value }
-    : {
+    ? result.value
+    : enrichBacklinkResult(links[index], {
         id: links[index].id,
-        name: links[index].name,
-        url: links[index].url,
         backlink_status: 'unreachable',
         checked_url: links[index].backlink_url || links[index].url,
+        task_error: true,
         error: String(result.reason?.message || result.reason || '巡检任务异常')
-      });
+      }));
 }
 
 async function checkAllBacklinks(options = {}) {
   if (backlinkCheckInProgress) return { started: false, reason: '巡检任务正在执行' };
   backlinkCheckInProgress = true;
   try {
+    const mode = options.mode === 'manual' ? 'manual' : 'scheduled';
+    const modeOptions = inspectionModes[mode];
+    const taskOptions = {
+      ...modeOptions,
+      ...options,
+      mode
+    };
     const myMainDomain = parseHostname(await SystemModel.configValue('site_url'));
     const mySiteName = await SystemModel.configValue('site_name');
     if (!myMainDomain) throw new Error('本站地址配置无效，无法进行反链巡检');
-    const links = await PartnerModel.listBacklinkInspectionTargets();
-    const results = await checkAllLinksBatch(links, myMainDomain, mySiteName, 3, options);
-    const report = { started: true, total: results.length, results };
-    if (options.aggregateAlerts) {
-      report.alert_summary = await sendBacklinkInspectionSummary(report, options.sendAdminAlert, options.alertTaskLabel || '每日反链巡检');
+    const links = mode === 'manual'
+      ? await PartnerModel.listManualBacklinkInspectionTargets()
+      : await PartnerModel.listScheduledBacklinkInspectionTargets();
+    const results = await checkAllLinksBatch(links, myMainDomain, mySiteName, 3, taskOptions);
+    const report = buildBacklinkReport({ mode, targets: links, results });
+    const shouldSendSummary = taskOptions.aggregateAlerts
+      && (taskOptions.alwaysSendSummary === true || report.state_change_count > 0);
+    if (shouldSendSummary) {
+      report.alert_summary = await sendBacklinkInspectionSummary(
+        report,
+        taskOptions.sendAdminAlert,
+        taskOptions.alertTaskLabel || (mode === 'manual' ? '后台手动反链全查' : '每日反链巡检'),
+        { includeAllResults: taskOptions.includeAllResultsInSummary === true }
+      );
     }
     return report;
   } finally {
@@ -460,10 +587,20 @@ async function checkDeepDeadBacklinks(options = {}) {
     const mySiteName = await SystemModel.configValue('site_name');
     if (!myMainDomain) throw new Error('本站地址配置无效，无法进行反链巡检');
     const links = await PartnerModel.listDeepBacklinkRevivalTargets();
-    const results = await checkAllLinksBatch(links, myMainDomain, mySiteName, 3, options);
-    const report = { started: true, total: results.length, results };
-    if (options.aggregateAlerts) {
-      report.alert_summary = await sendBacklinkInspectionSummary(report, options.sendAdminAlert, options.alertTaskLabel || '死站反链深度复活');
+    const taskOptions = {
+      ...inspectionModes.scheduled,
+      ...options,
+      mode: 'deep_revival'
+    };
+    const results = await checkAllLinksBatch(links, myMainDomain, mySiteName, 3, taskOptions);
+    const report = buildBacklinkReport({ mode: 'deep_revival', targets: links, results });
+    if (taskOptions.aggregateAlerts && report.state_change_count > 0) {
+      report.alert_summary = await sendBacklinkInspectionSummary(
+        report,
+        taskOptions.sendAdminAlert,
+        taskOptions.alertTaskLabel || '死站反链深度复活',
+        { includeAllResults: false }
+      );
     }
     return report;
   } finally {
@@ -476,6 +613,7 @@ function isBacklinkCheckInProgress() {
 }
 
 module.exports = {
+  inspectionModes,
   assertSafeBacklinkUrl,
   createPinnedAxiosConfig,
   fetchWithRetry,
@@ -485,5 +623,6 @@ module.exports = {
   checkAllLinksBatch,
   checkAllBacklinks,
   checkDeepDeadBacklinks,
+  buildBacklinkReport,
   isBacklinkCheckInProgress
 };

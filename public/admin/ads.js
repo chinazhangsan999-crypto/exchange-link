@@ -168,6 +168,4 @@
   ensureStyle(); ensureMirrorPanel(); ensureMirrorsNav(); ensureAdsTableStructure(); document.querySelector('#open-ad-modal')?.addEventListener('click', () => openModal());
   window.loadAdminAds = loadAds;
   window.loadAdminMirrors = loadMirrors;
-  window.addEventListener('admin:authenticated', loadAds);
-  window.addEventListener('admin:authenticated', loadMirrors);
 })();

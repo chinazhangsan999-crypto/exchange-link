@@ -37,32 +37,65 @@
     return `<div class="contact-cell" title="${esc(contact)}"><span class="contact-text">${esc(contact)}</span><button class="btn-copy-mini copy-contact" type="button" data-contact="${esc(contact)}" title="一键复制联系方式" aria-label="复制站长联系方式">📋</button></div>`;
   }
 
+  function renderPartnerRow(item) {
+    const approved = Number(item.is_approved) === 1, priority = Number(item.priority || 0);
+    return `<tr data-id="${item.id}"><td class="site-cell"><a class="site-name-link" href="/go?id=${item.id}" target="_blank" rel="noopener" title="${esc(item.name)}">${esc(item.name)}</a><span class="site-domain" title="${esc(item.domain)}">${esc(item.domain)}</span></td><td><span class="category-pill" title="${esc(item.category || '未分类')}">${esc(item.category || '未分类')}</span></td><td>${renderContactCell(item)}</td><td>${inspectionStatus(item)}</td><td class="ping-cell">${renderPingStatusBadge(item)}</td><td class="col-traffic"><div class="traffic-row-primary"><span class="traffic-item item-24h">24h: <strong class="val-blue">${Number(item.score_24h || 0)}</strong></span><span class="traffic-divider">/</span><span class="traffic-item item-out">出: <strong class="val-dark">${Number(item.outflow_24h || 0)}</strong></span></div><div class="traffic-row-secondary"><span class="traffic-item item-total">总: <strong class="val-dark">${Number(item.total_score ?? item.score_total ?? 0)}</strong></span></div></td><td class="col-weight">${priority > 0 ? `<span class="badge-weight-num">${priority}</span>` : '<span class="priority-zero">0</span>'}</td><td><span class="compact-time" title="反链：${esc(time(item.last_checked_at))}">${esc(time(item.last_checked_at))}</span></td><td><div class="action-btn-group"><button class="btn-sm btn-action btn-check backlink-check" data-id="${item.id}">查反链</button><button class="btn-sm btn-action btn-default monitor" data-id="${item.id}" title="查看流量与风控详情">📊 监控</button><button class="btn-sm btn-action btn-default reset-lost" data-id="${item.id}" title="重置反链巡检与连通状态">🔄 重置</button><button class="btn-sm btn-action btn-default edit" data-id="${item.id}">编辑</button><button class="btn-sm btn-action btn-default state" data-id="${item.id}" data-state="${approved ? 0 : 1}">${approved ? '禁用' : '通过'}</button><button class="btn-sm btn-action btn-reject delete" data-id="${item.id}">删除</button></div></td></tr>`;
+  }
+
   function renderRows() {
     const body = document.querySelector('#partner-body'); if (!body) return;
     const direction = sort.direction === 'asc' ? 1 : -1;
     const data = [...rows].sort((a, b) => ((Number(a[sort.key] || 0) - Number(b[sort.key] || 0)) * direction) || Number(a.id) - Number(b.id));
-    body.innerHTML = data.map(item => {
-      const approved = Number(item.is_approved) === 1, priority = Number(item.priority || 0);
-      return `<tr data-id="${item.id}"><td class="site-cell"><a class="site-name-link" href="/go?id=${item.id}" target="_blank" rel="noopener" title="${esc(item.name)}">${esc(item.name)}</a><span class="site-domain" title="${esc(item.domain)}">${esc(item.domain)}</span></td><td><span class="category-pill" title="${esc(item.category || '未分类')}">${esc(item.category || '未分类')}</span></td><td>${renderContactCell(item)}</td><td>${inspectionStatus(item)}</td><td class="ping-cell">${renderPingStatusBadge(item)}</td><td class="col-traffic"><div class="traffic-row-primary"><span class="traffic-item item-24h">24h: <strong class="val-blue">${Number(item.score_24h || 0)}</strong></span><span class="traffic-divider">/</span><span class="traffic-item item-out">出: <strong class="val-dark">${Number(item.outflow_24h || 0)}</strong></span></div><div class="traffic-row-secondary"><span class="traffic-item item-total">总: <strong class="val-dark">${Number(item.total_score ?? item.score_total ?? 0)}</strong></span></div></td><td class="col-weight">${priority > 0 ? `<span class="badge-weight-num">${priority}</span>` : '<span class="priority-zero">0</span>'}</td><td><span class="compact-time" title="反链：${esc(time(item.last_checked_at))}">${esc(time(item.last_checked_at))}</span></td><td><div class="action-btn-group"><button class="btn-sm btn-action btn-check backlink-check" data-id="${item.id}">查反链</button><button class="btn-sm btn-action btn-default monitor" data-id="${item.id}" title="查看流量与风控详情">📊 监控</button><button class="btn-sm btn-action btn-default reset-lost" data-id="${item.id}" title="重置累计掉链次数">🔄 重置</button><button class="btn-sm btn-action btn-default edit" data-id="${item.id}">编辑</button><button class="btn-sm btn-action btn-default state" data-id="${item.id}" data-state="${approved ? 0 : 1}">${approved ? '禁用' : '通过'}</button><button class="btn-sm btn-action btn-reject delete" data-id="${item.id}">删除</button></div></td></tr>`;
-    }).join('') || '<tr><td class="empty-row" colspan="9">没有匹配的友链</td></tr>';
-    body.querySelectorAll('.backlink-check').forEach(button => button.onclick = () => checkOne(button));
-    body.querySelectorAll('.monitor').forEach(button => button.onclick = () => {
-      if (typeof window.openPartnerMonitor === 'function') return window.openPartnerMonitor(button.dataset.id);
-      toast('风控组件加载失败，请刷新页面后重试');
+    body.innerHTML = data.map(renderPartnerRow).join('') || '<tr><td class="empty-row" colspan="9">没有匹配的友链</td></tr>';
+  }
+
+  function replacePartnerRow(item) {
+    const current = document.querySelector(`#partner-body tr[data-id="${Number(item.id)}"]`);
+    if (!current) return renderRows();
+    current.outerHTML = renderPartnerRow(item);
+  }
+
+  function installPartnerActionDelegation() {
+    const body = document.querySelector('#partner-body');
+    if (!body || body.dataset.actionsBound === '1') return;
+    body.dataset.actionsBound = '1';
+    body.addEventListener('click', event => {
+      const button = event.target.closest('button[data-id]');
+      if (!button || !body.contains(button)) return;
+      if (button.classList.contains('backlink-check')) void checkOne(button);
+      else if (button.classList.contains('monitor')) {
+        if (typeof window.openPartnerMonitor === 'function') window.openPartnerMonitor(button.dataset.id);
+        else toast('风控组件加载失败，请刷新页面后重试');
+      } else if (button.classList.contains('reset-lost')) void resetCheckStatus(button);
+      else if (button.classList.contains('state')) void changeState(button);
+      else if (button.classList.contains('delete')) void removeLink(button);
+      else if (button.classList.contains('copy-contact')) void copyContact(button);
     });
-    body.querySelectorAll('.reset-lost').forEach(button => {
-      button.title = '重置反链巡检与连通状态';
-      button.onclick = () => resetCheckStatus(button);
-    });
-    body.querySelectorAll('.state').forEach(button => button.onclick = () => changeState(button));
-    body.querySelectorAll('.delete').forEach(button => button.onclick = () => removeLink(button));
-    body.querySelectorAll('.copy-contact').forEach(button => button.onclick = () => copyContact(button));
   }
 
   async function copyContact(button) { const value = button.dataset.contact || ''; try { if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value); else { const input = document.createElement('input'); input.value = value; document.body.append(input); input.select(); document.execCommand('copy'); input.remove(); } const old = button.textContent; button.textContent = '✓'; setTimeout(() => { button.textContent = old; }, 1200); toast('联系方式已复制'); } catch { toast('复制失败，请手动复制'); } }
 
   async function loadPartners() { if (!token()) return; try { const query = document.querySelector('#partner-q')?.value || ''; rows = await request('/api/admin/partners?q=' + encodeURIComponent(query)); renderRows(); } catch (error) { toast(error.message); } }
-  async function checkOne(button) { try { button.disabled = true; button.textContent = '巡检中'; await request(`/api/admin/links/${button.dataset.id}/check`, { method: 'POST' }); toast('反链巡检完成'); await loadPartners(); } catch (error) { toast(error.message); } finally { button.disabled = false; button.textContent = '查反链'; } }
+  async function checkOne(button) {
+    try {
+      button.disabled = true;
+      button.textContent = '巡检中';
+      const updated = await request(`/api/admin/links/${button.dataset.id}/check`, { method: 'POST' });
+      const item = rows.find(row => Number(row.id) === Number(button.dataset.id));
+      if (item) {
+        Object.assign(item, updated, { last_checked_at: updated.checked_at || item.last_checked_at });
+        replacePartnerRow(item);
+      }
+      toast(updated.result_text || '反链巡检完成');
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      if (button.isConnected) {
+        button.disabled = false;
+        button.textContent = '查反链';
+      }
+    }
+  }
   async function resetCheckStatus(button) {
     if (!confirm('确定要重置该网站的巡检状态吗？')) return;
     const originalText = button.textContent;
@@ -71,57 +104,49 @@
       button.textContent = '重置中...';
       const updated = await request(`/api/admin/partners/${button.dataset.id}/reset-check`, { method: 'POST' });
       const item = rows.find(row => Number(row.id) === Number(button.dataset.id));
-      if (item) Object.assign(item, updated);
-      const tableRow = button.closest('tr');
-      if (tableRow) {
-        tableRow.children[3].innerHTML = inspectionStatus(item || updated);
-        tableRow.children[4].innerHTML = renderPingStatusBadge(item || updated);
-        tableRow.children[7].innerHTML = '<span class="compact-time" title="尚未执行反链巡检">—</span>';
+      if (item) {
+        Object.assign(item, updated);
+        replacePartnerRow(item);
       }
       toast('巡检状态已重置');
     } catch (error) {
       toast(error.message || '重置失败，请稍后重试');
     } finally {
-      button.disabled = false;
-      button.textContent = originalText;
+      if (button.isConnected) {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
     }
   }
-  async function changeState(button) { try { await request(`/api/admin/partners/${button.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ is_approved: Number(button.dataset.state) }) }); toast(Number(button.dataset.state) ? '已审核通过' : '已禁用友链'); await loadPartners(); window.overview?.(); } catch (error) { toast(error.message); } }
-  async function removeLink(button) { if (!confirm('确定删除这条友链及其入站记录吗？')) return; try { await request(`/api/admin/partners/${button.dataset.id}`, { method: 'DELETE' }); toast('友链已删除'); await loadPartners(); window.overview?.(); } catch (error) { toast(error.message); } }
+  async function changeState(button) { try { await request(`/api/admin/partners/${button.dataset.id}`, { method: 'PATCH', body: JSON.stringify({ is_approved: Number(button.dataset.state) }) }); toast(Number(button.dataset.state) ? '已审核通过' : '已禁用友链'); await loadPartners(); window.loadDashboardStats?.(); } catch (error) { toast(error.message); } }
+  async function removeLink(button) { if (!confirm('确定删除这条友链及其入站记录吗？')) return; try { await request(`/api/admin/partners/${button.dataset.id}`, { method: 'DELETE' }); toast('友链已删除'); await loadPartners(); window.loadDashboardStats?.(); } catch (error) { toast(error.message); } }
   function installSort() { document.querySelectorAll('#partners .sort-header').forEach(header => header.onclick = () => { const key = header.dataset.sort; sort = { key, direction: sort.key === key && sort.direction === 'desc' ? 'asc' : 'desc' }; document.querySelectorAll('#partners .sort-header').forEach(item => { item.classList.toggle('active', item === header); item.textContent = `${item.textContent.replace(/[↕↑↓]/g, '').trim()} ${item === header ? (sort.direction === 'desc' ? '↓' : '↑') : '↕'}`; }); renderRows(); }); }
-  async function runBatchTask(button, taskName, routeForId, classifyResult = () => true, labels = ['成功', '失败']) {
+  async function startInspectionJob(button, taskName, startUrl, type) {
     if (button.dataset.running === '1') return;
     const batchButtons = [...document.querySelectorAll('#partners .batch-check-group button')];
     const originalText = button.textContent;
-    const targets = rows.filter(item => Number(item.is_approved) === 1
-      && Number.isSafeInteger(Number(item.id)) && Number(item.id) > 0);
-    let completed = 0, passed = 0, failed = 0;
     try {
       button.dataset.running = '1';
       batchButtons.forEach(item => { item.disabled = true; });
-      if (!targets.length) return toast('当前列表暂无可检测的已审核友链');
-      button.textContent = `${taskName} (0/${targets.length})...`;
-
-      // 每批最多 3 个请求；单项异常由 allSettled 隔离，不会中断后续批次。
-      for (let index = 0; index < targets.length; index += 3) {
-        const batch = targets.slice(index, index + 3);
-        await Promise.allSettled(batch.map(async item => {
-          try {
-            const result = await request(routeForId(item.id), { method: 'POST' });
-            if (classifyResult(result)) passed += 1;
-            else failed += 1;
-          } catch {
-            failed += 1;
-          } finally {
-            completed += 1;
-            button.textContent = `${taskName} (${completed}/${targets.length})...`;
-            button.title = `进度 ${completed}/${targets.length}；${labels[0]} ${passed}，${labels[1]} ${failed}`;
-          }
-        }));
+      let job = await request(startUrl, { method: 'POST' });
+      while (job.status === 'running') {
+        const suffix = type === 'backlink' ? `，流量跳过${Number(job.trafficSkipped || 0)}` : '';
+        button.textContent = `${taskName}（${Number(job.completed || 0)}/${Number(job.targetTotal || 0)}${suffix}）...`;
+        await new Promise(resolve => setTimeout(resolve, 900));
+        job = await request(`/api/admin/inspection-jobs/${encodeURIComponent(job.jobId)}`);
       }
-
-      toast(`${taskName}完成：${labels[0]} ${passed}，${labels[1]} ${failed}`);
+      if (job.status === 'failed') throw new Error(job.error || `${taskName}失败`);
+      const summary = job.summary || {};
+      if (type === 'backlink') {
+        const abnormal = Number(summary.network_checked || 0) - Number(summary.normal || 0) - Number(summary.recovered || 0);
+        toast(`${taskName}完成：纳入${Number(summary.target_total || 0)}，流量跳过${Number(summary.traffic_skipped || 0)}，实际检测${Number(summary.network_checked || 0)}，异常${Math.max(0, abnormal)}，恢复${Number(summary.recovered || 0)}`);
+      } else {
+        const abnormal = Number(summary.first_failure || 0) + Number(summary.ongoing_failure || 0) + Number(summary.reached_dead || 0) + Number(summary.task_errors || 0);
+        toast(`${taskName}完成：探活${Number(summary.target_total || 0)}，正常${Number(summary.normal || 0)}，异常${abnormal}，恢复${Number(summary.recovered || 0)}`);
+      }
       await loadPartners();
+    } catch (error) {
+      toast(error.message || `${taskName}失败`);
     } finally {
       delete button.dataset.running;
       batchButtons.forEach(item => { item.disabled = false; });
@@ -162,20 +187,10 @@
 
     backlinkButton.textContent = '🔍 反链全查';
     backlinkButton.title = '一键批量检查所有友链是否仍挂载本站链接';
-    backlinkButton.onclick = () => runBatchTask(
-      backlinkButton,
-      '反链全查',
-      id => `/api/admin/links/${id}/check`
-    );
+    backlinkButton.onclick = () => startInspectionJob(backlinkButton, '反链全查', '/api/admin/links/check-all', 'backlink');
     healthButton.textContent = '⚡ 链群健康体检';
     healthButton.title = '一键批量检测所有友链的网站存活状态';
-    healthButton.onclick = () => runBatchTask(
-      healthButton,
-      '链群健康体检',
-      id => `/api/admin/links/${id}/ping`,
-      result => Boolean(result?.healthy),
-      ['正常', '异常']
-    );
+    healthButton.onclick = () => startInspectionJob(healthButton, '链群健康体检', '/api/admin/links/ping-all', 'ping');
   }
   function installCreateExemptionField() {
     const form = document.querySelector('#add-form');
@@ -225,9 +240,12 @@
   }
   function ensureTableStructure() { const table = document.querySelector('#partners table'); if (!table) return; table.className = 'admin-table partner-table'; table.querySelector('colgroup')?.remove(); table.insertAdjacentHTML('afterbegin', '<colgroup><col class="partner-col-site"><col class="partner-col-category"><col class="partner-col-contact"><col class="partner-col-backlink"><col class="partner-col-ping"><col class="partner-col-traffic"><col class="partner-col-priority"><col class="partner-col-checked"><col class="partner-col-actions"></colgroup>'); table.querySelector('thead').innerHTML = '<tr><th>网站 / 域名</th><th>分类</th><th class="contact-header">站长联系方式</th><th>巡检状态</th><th class="ping-header">连通状态</th><th class="sort-header" data-sort="score_24h">带量 ↕</th><th class="sort-header" data-sort="priority">权重 ↕</th><th>最近巡检</th><th>操作</th></tr>'; }
   function loadStyles() { if (!document.querySelector('link[href^="/admin/tables.css"]')) { const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/admin/tables.css?v=20260831-1'; document.head.append(link); } if (!document.querySelector('link[href^="/admin/table-fixes.css"]')) { const fixes = document.createElement('link'); fixes.rel = 'stylesheet'; fixes.href = '/admin/table-fixes.css?v=20260831-1'; document.head.append(fixes); } if (!document.querySelector('link[href^="/admin/traffic-cell.css"]')) { const traffic = document.createElement('link'); traffic.rel = 'stylesheet'; traffic.href = '/admin/traffic-cell.css?v=20260902-1'; document.head.append(traffic); } }
-  loadStyles(); ensureTableStructure(); installSort(); installToolbar(); installCreateExemptionField(); installCreatePingExemptionField(); installEditExemptionField(); window.loadPartners = loadPartners;
-  document.querySelector('#partner-q')?.addEventListener('input', () => { clearTimeout(window.__partnerSearchTimer); window.__partnerSearchTimer = setTimeout(loadPartners, 180); });
-  window.addEventListener('admin:authenticated', loadPartners); setTimeout(() => { if (token()) loadPartners(); }, 450);
+  loadStyles(); ensureTableStructure(); installSort(); installToolbar(); installPartnerActionDelegation(); installCreateExemptionField(); installCreatePingExemptionField(); installEditExemptionField(); window.loadPartners = loadPartners;
+  const partnerSearch = document.querySelector('#partner-q');
+  if (partnerSearch) {
+    partnerSearch.oninput = null;
+    partnerSearch.addEventListener('input', () => { clearTimeout(window.__partnerSearchTimer); window.__partnerSearchTimer = setTimeout(loadPartners, 180); });
+  }
 })();
 
 /** CSV 全站矩阵：只负责设置页交互，同步按友链→广告→节点严格串行执行。 */
@@ -396,13 +414,8 @@
       const exportButton = event.target.closest('[data-export-type]');
       if (exportButton) downloadMatrix(exportButton.dataset.exportType, exportButton);
     });
-    loadMatrixSettings();
   }
 
   window.loadMatrixSettings = loadMatrixSettings;
   installMatrixControls();
-  window.addEventListener('admin:authenticated', () => {
-    installMatrixControls();
-    loadMatrixSettings();
-  });
 })();

@@ -54,11 +54,9 @@
   }
   async function setupCategoryFilter() { if (!token()) return; const toolbar = document.querySelector('#partners .toolbar'); if (!toolbar) return; const existing = toolbar.querySelector('#partner-category-filter'); toolbar.querySelectorAll('select,.category-filter-button,.category-quick-filter').forEach(item => { if (item !== existing) item.remove(); }); if (existing) { existing.onchange = () => filterPartnerRows(); return; } try { const categories = await request('/api/admin/categories'); const select = document.createElement('select'); select.id = 'partner-category-filter'; select.className = 'input category-filter-input'; select.setAttribute('aria-label','按分类筛选友链'); select.innerHTML = `<option value="">全部分类</option>${categories.map(item => `<option value="${esc(item.name)}">${esc(item.name)}</option>`).join('')}`; toolbar.prepend(select); select.onchange = () => filterPartnerRows(); } catch (error) { console.error(error); } }
   function filterPartnerRows() { const category = document.querySelector('#partner-category-filter')?.value || ''; document.querySelectorAll('#partner-body tr').forEach(row => { if (row.children.length < 2) return; row.hidden = Boolean(category && row.children[1].textContent.trim() !== category); }); }
-  const observer = new MutationObserver(() => { if (!token()) return; setupCategoryFilter(); filterPartnerRows(); }); observer.observe(document.body, { childList: true, subtree: true });
   // 对外暴露统一初始化入口，供登录成功与切回概览 Tab 时主动刷新。
   window.loadDashboardStats = loadDashboardStats;
   window.loadFraudAlerts = loadDashboardStats;
-  window.initDashboard = async () => { await Promise.all([loadDashboardStats(), setupCategoryFilter()]); };
-  window.addEventListener('admin:authenticated', () => { window.initDashboard().catch(error => console.error('登录后初始化仪表盘失败：', error)); });
-  setTimeout(() => { if (token()) window.initDashboard().catch(error => console.error('仪表盘初始化失败：', error)); }, 300);
+  window.initDashboard = loadDashboardStats;
+  window.setupPartnerCategoryFilter = setupCategoryFilter;
 })();

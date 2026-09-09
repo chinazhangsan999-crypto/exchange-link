@@ -15,15 +15,53 @@ function notifyChanged(options) {
   if (typeof options?.onDataChanged === 'function') options.onDataChanged();
 }
 
-function notifyPingAlert(link, title, content, options) {
-  if (options?.aggregateAlerts || typeof options?.sendAdminAlert !== 'function') return;
-  // 告警通道不可影响探活状态机与数据库写入。
-  const eventType = title.includes('恢复') ? 'ping_recovered' : 'ping_failed';
-  void options.sendAdminAlert(title, content, { eventType });
+function notifyProgress(options, progress) {
+  if (typeof options?.onProgress !== 'function') return;
+  try { options.onProgress(progress); } catch (error) { console.error('更新站点探活进度失败：', error?.message || error); }
 }
 
-function pingAlertContext(link, failedCount, error) {
-  return `> **站点名称：** ${link.name || `#${link.id}`}\n> **站点网址：** ${link.url}\n> **连续失败次数：** ${failedCount}/3\n> **失败原因：** ${String(error?.message || error || '未知网络异常')}\n> **检测时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}`;
+function classifyPingResult(item = {}) {
+  if (item.task_error || item.skipped) return 'task_error';
+  if (item.alert_event === 'ping_recovered') return 'recovered';
+  if (item.alert_event === 'ping_first_failure') return 'first_failure';
+  if (item.alert_event === 'ping_offline') return 'reached_dead';
+  if (Number(item.ping_failed_count || 0) > 0 || item.ping_status === 'unreachable') return 'ongoing_failure';
+  if (item.ping_status === 'ok' && !item.error) return 'normal';
+  return 'task_error';
+}
+
+function buildPingReport({ mode = 'scheduled', targets = [], results = [] } = {}) {
+  const counts = { normal: 0, first_failure: 0, ongoing_failure: 0, reached_dead: 0, recovered: 0, task_errors: 0 };
+  for (const item of results) {
+    const category = classifyPingResult(item);
+    if (category === 'task_error') counts.task_errors += 1;
+    else counts[category] += 1;
+  }
+  return {
+    started: true,
+    mode,
+    target_total: targets.length,
+    completed: results.length,
+    ...counts,
+    state_change_count: results.filter(item => Boolean(item?.alert_event)).length,
+    results
+  };
+}
+
+function describePingResult(item = {}) {
+  if (item.skipped) return item.reason || '连通性免检，未执行探活';
+  if (item.alert_event === 'ping_recovered') return '本轮恢复，已重新展示';
+  if (item.alert_event === 'ping_first_failure') return '首次异常，继续展示并等待下一轮复检';
+  if (item.alert_event === 'ping_offline') return '达到三次失败，已标记失效并从前台隐藏';
+  if (Number(item.ping_failed_count || 0) > 0 || item.ping_status === 'unreachable') return '持续异常，等待后续复检';
+  if (item.ping_status === 'ok' && !item.error) return '连通正常，无需处理';
+  return item.error || '探活任务执行异常';
+}
+
+function enrichPingResult(link, result = {}) {
+  const enriched = { name: link.name, url: link.url, checked_at: new Date().toISOString(), ...result };
+  if (!enriched.result_text) enriched.result_text = describePingResult(enriched);
+  return enriched;
 }
 
 function throwIfAborted(signal) {
@@ -95,16 +133,6 @@ async function persistPingFailure(link, error, options = {}) {
     allowAbortedWrite: timedOut
   });
   notifyChanged(options);
-  if (failedCount === 1) {
-    notifyPingAlert(link, '🟡 站点连通性预警', pingAlertContext(link, failedCount, error), options);
-  } else if (failedCount === 3) {
-    notifyPingAlert(
-      link,
-      '🔴 站点连通失效',
-      `${pingAlertContext(link, failedCount, error)}\n> **处理结果：** 前台已自动隐藏，等待后续探活自动恢复。`,
-      options
-    );
-  }
   return {
     id: link.id,
     ping_status: status,
@@ -184,14 +212,6 @@ async function pingSingleLink(link, options = {}) {
     const recovered = revived || Number(link.ping_failed_count || 0) > 0;
     await PartnerModel.recordPingSuccess(link.id, { signal: options.signal });
     notifyChanged(options);
-    if (recovered) {
-      notifyPingAlert(
-        link,
-        '🟢 站点连通恢复',
-        `> **站点名称：** ${link.name || `#${link.id}`}\n> **站点网址：** ${link.url}\n> **恢复前失败次数：** ${Number(link.ping_failed_count || 0)}/3\n> **恢复时间：** ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n> **处理结果：** 连通状态已恢复正常。`,
-        options
-      );
-    }
     return {
       id: link.id,
       ping_status: 'ok',
@@ -208,34 +228,48 @@ async function pingSingleLink(link, options = {}) {
 async function inspectPingTargets(links, options = {}) {
   const concurrency = Math.max(1, Number(options.concurrency) || 3);
   const taskTimeoutMs = Math.max(1, Number(options.taskTimeoutMs) || 15000);
+  const completedResults = [];
+  const publish = (link, value) => {
+    const result = enrichPingResult(link, value);
+    completedResults.push(result);
+    const progress = buildPingReport({ mode: options.mode, targets: links, results: completedResults });
+    notifyProgress(options, {
+      targetTotal: progress.target_total,
+      completed: progress.completed,
+      normal: progress.normal,
+      abnormal: progress.first_failure + progress.ongoing_failure + progress.reached_dead + progress.task_errors,
+      recovered: progress.recovered
+    });
+    return result;
+  };
   const settled = await runPromisePool(links, concurrency, async (link, _index, signal) => {
     const taskOptions = { ...options, signal };
     try {
-      return await pingSingleLink(link, taskOptions);
+      return publish(link, await pingSingleLink(link, taskOptions));
     } catch (error) {
       const timedOut = isTaskTimeoutAbort(error, signal);
       if (signal?.aborted && !timedOut) throwIfAborted(signal);
       try {
-        return await persistPingFailure(link, error, taskOptions);
+        return publish(link, await persistPingFailure(link, error, taskOptions));
       } catch (persistError) {
-        return {
+        return publish(link, {
           id: link.id,
           ping_status: link.ping_status || 'ok',
+          task_error: true,
           error: String(persistError.message || '探活结果持久化失败')
-        };
+        });
       }
     }
   }, taskTimeoutMs);
 
   return settled.map((result, index) => result.status === 'fulfilled'
-    ? { name: links[index].name, url: links[index].url, ...result.value }
-    : {
+    ? result.value
+    : enrichPingResult(links[index], {
         id: links[index].id,
-        name: links[index].name,
-        url: links[index].url,
         ping_status: links[index].ping_status || 'ok',
+        task_error: true,
         error: String(result.reason?.message || result.reason || '探活任务异常')
-      });
+      }));
 }
 
 /** 动态三并发常规探活；高频失败超过 30 次的长期死站由每日深度任务接管。 */
@@ -243,11 +277,27 @@ async function runFullPingInspection(options = {}) {
   if (pingInspectionInProgress) return { started: false, reason: '连通性探活正在执行' };
   pingInspectionInProgress = true;
   try {
-    const links = await PartnerModel.listPingTargets();
-    const results = await inspectPingTargets(links, options);
-    const report = { started: true, total: links.length, results };
-    if (options.aggregateAlerts) {
-      report.alert_summary = await sendPingInspectionSummary(report, options.sendAdminAlert, options.alertTaskLabel || '站点连通性探活');
+    const mode = options.mode === 'manual' ? 'manual' : 'scheduled';
+    const taskOptions = {
+      alwaysSendSummary: mode === 'manual',
+      includeAllResultsInSummary: mode === 'manual',
+      ...options,
+      mode
+    };
+    const links = mode === 'manual'
+      ? await PartnerModel.listManualPingTargets()
+      : await PartnerModel.listPingTargets();
+    const results = await inspectPingTargets(links, taskOptions);
+    const report = buildPingReport({ mode, targets: links, results });
+    const shouldSendSummary = taskOptions.aggregateAlerts
+      && (taskOptions.alwaysSendSummary === true || report.state_change_count > 0);
+    if (shouldSendSummary) {
+      report.alert_summary = await sendPingInspectionSummary(
+        report,
+        taskOptions.sendAdminAlert,
+        taskOptions.alertTaskLabel || (mode === 'manual' ? '后台手动链群健康体检' : '站点连通性探活'),
+        { includeAllResults: taskOptions.includeAllResultsInSummary === true }
+      );
     }
     return report;
   } finally {
@@ -261,10 +311,16 @@ async function runDeepPingRevival(options = {}) {
   pingInspectionInProgress = true;
   try {
     const links = await PartnerModel.listDeepPingRevivalTargets();
-    const results = await inspectPingTargets(links, options);
-    const report = { started: true, total: links.length, results };
-    if (options.aggregateAlerts) {
-      report.alert_summary = await sendPingInspectionSummary(report, options.sendAdminAlert, options.alertTaskLabel || '死站 Ping 深度复活');
+    const taskOptions = { ...options, mode: 'deep_revival' };
+    const results = await inspectPingTargets(links, taskOptions);
+    const report = buildPingReport({ mode: 'deep_revival', targets: links, results });
+    if (taskOptions.aggregateAlerts && report.state_change_count > 0) {
+      report.alert_summary = await sendPingInspectionSummary(
+        report,
+        taskOptions.sendAdminAlert,
+        taskOptions.alertTaskLabel || '死站 Ping 深度复活',
+        { includeAllResults: false }
+      );
     }
     return report;
   } finally {
@@ -323,5 +379,7 @@ module.exports = {
   pingSingleLink,
   runFullPingInspection,
   runDeepPingRevival,
+  buildPingReport,
+  isPingInspectionInProgress: () => pingInspectionInProgress,
   checkAllMirrors
 };

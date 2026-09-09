@@ -54,8 +54,12 @@ function startJobs() {
 
   backlinkTask = cron.schedule('0 3 * * *', () => {
     runTrackedJob('定时反向友链巡检', () => InspectionService.checkAllBacklinks({
+      mode: 'scheduled',
+      skipRecentTraffic: true,
+      includeDeepDead: false,
       sendAdminAlert,
       aggregateAlerts: true,
+      alwaysSendSummary: false,
       alertTaskLabel: '每日反链巡检',
       onDataChanged: CacheService.clearPublicCache
     }));
@@ -111,9 +115,11 @@ function startJobs() {
 
   const pingTimer = setInterval(() => {
     runTrackedJob('定时站点探活', () => PingService.runFullPingInspection({
+      mode: 'scheduled',
       onDataChanged: CacheService.clearPublicCache,
       sendAdminAlert,
       aggregateAlerts: true,
+      alwaysSendSummary: false,
       alertTaskLabel: '站点连通性探活'
     }));
   }, 2 * 60 * 60 * 1000);
