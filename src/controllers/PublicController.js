@@ -614,7 +614,6 @@ async function applyLink(req, res) {
       ].join('\n'),
       {
         eventType: 'new_partner_apply',
-        copyButtons: contactForAlert ? [{ label: '📋 复制站长联系方式', text: contactForAlert }] : [],
         barkUrl: cleanUrl,
         barkCopy: contactForAlert
       }

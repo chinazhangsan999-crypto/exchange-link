@@ -62,7 +62,6 @@ function partnerAlertOptions(items = []) {
     unique.push({ label: `📋 复制：${String(item?.name || `站点 ${item?.id || ''}`).trim()}`, text: contact });
   }
   return {
-    copyButtons: unique,
     barkUrl: items.map(item => safeHttpUrl(item?.url)).find(Boolean) || '',
     barkCopy: unique.map(button => `${button.label.replace(/^📋 复制：/, '')}：${button.text}`).join('\n')
   };

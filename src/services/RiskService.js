@@ -224,7 +224,6 @@ async function scanAndNotify({ sendAdminAlert } = {}) {
     const contact = String(report.partner.contact || '').replace(/[\r\n\t]+/g, ' ').trim();
     const sent = await sendAdminAlert('🚨 疑似刷量预警', formatRiskAlert(report, reasons), {
       eventType: 'risk_alert',
-      copyButtons: contact ? [{ label: `📋 复制：${report.partner.name}`, text: contact }] : [],
       barkUrl: report.partner.url,
       barkCopy: contact
     });

@@ -50,21 +50,6 @@ function formatContactLine(label, value) {
   return contact ? `${label}：${markdownInlineCode(contact)}` : `${label}：未填写`;
 }
 
-function normalizeCopyButtons(buttons = []) {
-  const normalized = [];
-  const seen = new Set();
-  for (const item of Array.isArray(buttons) ? buttons : []) {
-    const copyText = cleanInlineText(item?.text, TELEGRAM_COPY_TEXT_MAX_LENGTH);
-    if (!copyText || seen.has(copyText)) continue;
-    seen.add(copyText);
-    normalized.push({
-      label: cleanInlineText(item?.label || '📋 复制联系方式', 64) || '📋 复制联系方式',
-      text: copyText
-    });
-  }
-  return normalized;
-}
-
 function splitUtf8Text(value, maxBytes = BARK_BODY_MAX_BYTES) {
   const text = String(value || '');
   if (!text) return [''];
@@ -137,7 +122,7 @@ async function recordDeliverySafely(data) {
   }
 }
 
-async function deliverPrimary(webhookUrl, title, message, options = {}) {
+async function deliverPrimary(webhookUrl, title, message) {
   const parsed = new URL(webhookUrl);
   const provider = providerForUrl(webhookUrl);
   if (!provider) throw Object.assign(new Error('仅支持 Telegram 或企业微信机器人地址'), { code: 'UNSUPPORTED_PROVIDER' });
@@ -152,19 +137,10 @@ async function deliverPrimary(webhookUrl, title, message, options = {}) {
     if (!chatId) throw Object.assign(new Error('Telegram 配置缺少 chat_id'), { code: 'CONFIG' });
     parsed.search = '';
     endpoint = parsed.toString();
-    const copyButtons = normalizeCopyButtons(options.copyButtons);
     telegramPayload = {
       chat_id: chatId,
       text: `*${title}*\n\n${message}`,
-      parse_mode: 'Markdown',
-      ...(copyButtons.length ? {
-        reply_markup: {
-          inline_keyboard: copyButtons.map(button => [{
-            text: button.label,
-            copy_text: { text: button.text }
-          }])
-        }
-      } : {})
+      parse_mode: 'Markdown'
     };
     payload = telegramPayload;
   }
@@ -177,8 +153,7 @@ async function deliverPrimary(webhookUrl, title, message, options = {}) {
     try {
       const fallback = await postWithRetry(endpoint, {
         chat_id: telegramPayload.chat_id,
-        text: `${title}\n\n${message}`,
-        ...(telegramPayload.reply_markup ? { reply_markup: telegramPayload.reply_markup } : {})
+        text: `${title}\n\n${message}`
       },
         { timeoutMs: WEBHOOK_TIMEOUT_MS, retryDelays: RETRY_DELAYS_MS });
       return { provider, ...fallback, attemptCount: initialAttempts + fallback.attemptCount, markdownFallback: true };
@@ -266,12 +241,7 @@ async function sendAdminAlert(title, contentMarkdown, options = {}) {
   const message = config.adminContact
     ? `${baseMessage}${baseMessage ? '\n\n' : ''}${formatContactLine('本站管理员联系方式', config.adminContact)}`
     : baseMessage;
-  const copyButtons = normalizeCopyButtons([
-    ...(Array.isArray(options.copyButtons) ? options.copyButtons : []),
-    ...(config.adminContact ? [{ label: '📋 复制本站管理员联系方式', text: config.adminContact }] : [])
-  ]);
   const barkCopy = cleanInlineText(options.barkCopy, TELEGRAM_COPY_TEXT_MAX_LENGTH)
-    || cleanInlineText(options.copyButtons?.[0]?.text, TELEGRAM_COPY_TEXT_MAX_LENGTH)
     || config.adminContact;
   const primaryProvider = providerForUrl(config.webhookUrl) || 'config';
   let primary;
@@ -281,7 +251,7 @@ async function sendAdminAlert(title, contentMarkdown, options = {}) {
   } else {
     const startedAt = Date.now();
     try {
-      const result = await deliverPrimary(config.webhookUrl, displayTitle, message, { copyButtons });
+      const result = await deliverPrimary(config.webhookUrl, displayTitle, message);
       primary = { ...result, durationMs: Date.now() - startedAt };
       await recordDeliverySafely({ eventType, provider: result.provider, success: true, attemptCount: result.attemptCount,
         statusCode: result.statusCode, durationMs: primary.durationMs });
