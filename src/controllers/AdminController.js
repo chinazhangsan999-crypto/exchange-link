@@ -36,15 +36,12 @@ const ANALYTICS_CONFIG_KEYS = [
   'umami_website_id',
   'cf_analytics_enabled',
   'cf_beacon_token',
-  'clarity_enabled',
-  'clarity_project_id',
   'generic_analytics_enabled',
   'generic_analytics_code'
 ];
 const ANALYTICS_ENABLED_KEYS = new Set([
   'umami_enabled',
   'cf_analytics_enabled',
-  'clarity_enabled',
   'generic_analytics_enabled'
 ]);
 
@@ -269,14 +266,11 @@ async function saveAnalyticsConfig(req, res) {
     if (values.cf_analytics_enabled === '1' && !values.cf_beacon_token) {
       return fail(res, '启用 Cloudflare Web Analytics 前请填写 Beacon Token');
     }
-    if (values.clarity_enabled === '1' && !/^[a-z0-9_-]{4,100}$/i.test(values.clarity_project_id)) {
-      return fail(res, '请输入有效的 Microsoft Clarity Project ID');
-    }
     if (values.generic_analytics_enabled === '1' && !values.generic_analytics_code) {
       return fail(res, '启用通用统计前请粘贴完整的 <script> 统计代码');
     }
 
-    // 始终完整写入五项配置：复选框未勾选时也要可靠保存为 0，避免前端
+    // 始终完整写入支持的统计配置：复选框未勾选时也要可靠保存为 0，避免前端
     // FormData 省略未勾选字段后留下旧状态。
     const entries = ANALYTICS_CONFIG_KEYS.map(key => [key, values[key]]);
     await SystemModel.upsertConfigs(entries);

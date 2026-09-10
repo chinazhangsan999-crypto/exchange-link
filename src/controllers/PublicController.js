@@ -50,8 +50,6 @@ const ANALYTICS_CONFIG_KEYS = [
   'umami_website_id',
   'cf_analytics_enabled',
   'cf_beacon_token',
-  'clarity_enabled',
-  'clarity_project_id',
   'generic_analytics_enabled',
   'generic_analytics_code'
 ];

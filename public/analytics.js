@@ -73,11 +73,6 @@
         });
       }
 
-      const clarityProjectId = String(config.clarity_project_id || '').trim();
-      if (String(config.clarity_enabled) === '1' && /^[a-z0-9_-]{4,100}$/i.test(clarityProjectId)) {
-        appendScript('microsoft-clarity-script', `https://www.clarity.ms/tag/${encodeURIComponent(clarityProjectId)}`);
-      }
-
       if (String(config.generic_analytics_enabled) === '1') {
         appendCustomAnalyticsScripts(config.generic_analytics_code);
       }

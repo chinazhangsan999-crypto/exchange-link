@@ -24,8 +24,6 @@ const CONFIG_DEFAULTS = {
   umami_website_id: '',
   cf_analytics_enabled: '0',
   cf_beacon_token: '',
-  clarity_enabled: '0',
-  clarity_project_id: '',
   generic_analytics_enabled: '0',
   generic_analytics_code: '',
   min_interaction_rate: '0.02',
