@@ -22,6 +22,7 @@ const SourceTokenModel = require('../models/SourceTokenModel');
 const InspectionService = require('../services/InspectionService');
 const PingService = require('../services/PingService');
 const RiskService = require('../services/RiskService');
+const SiteTrafficService = require('../services/SiteTrafficService');
 const CacheService = require('../services/CacheService');
 const WebhookDeliveryModel = require('../models/WebhookDeliveryModel');
 const { sendAdminAlert, sendBarkTestAlert, providerForUrl } = require('../services/AlertService');
@@ -491,13 +492,14 @@ async function getOverview(req, res) {
 
 async function getDashboardStats(req, res) {
   try {
-    const [todayExchange, todayLeader, partnerStats, newPartnerCounts, newPartnerTraffic, partners] = await Promise.all([
+    const [todayExchange, todayLeader, partnerStats, newPartnerCounts, newPartnerTraffic, partners, todaySiteTraffic] = await Promise.all([
       LogModel.getTodayExchange(),
       LogModel.getTodayTrafficLeader(),
       PartnerModel.getOverviewPartnerStats(),
       PartnerModel.getNewPartnerCounts(),
       LogModel.getNewPartnerTraffic(),
-      LogModel.listRiskPartnerMetrics()
+      LogModel.listRiskPartnerMetrics(),
+      SiteTrafficService.getTodaySummary()
     ]);
     const riskCandidates = partners.filter(item => Number(item.score_24h || 0) >= 30);
     const riskResults = await runPromisePool(riskCandidates, 3, candidate => RiskService.analyzePartner(candidate.id, { includeClients: false }), 15000);
@@ -530,11 +532,21 @@ async function getDashboardStats(req, res) {
       new_partners_24h_today_uv: newPartnerTraffic.last24h.value,
       new_partners_7d: newPartnerCounts.last7d.value,
       new_partners_7d_total_uv: newPartnerTraffic.last7d.value,
+      today_site_traffic: todaySiteTraffic,
       suspicious_partners: suspiciousPartners
     });
   } catch (error) {
     console.error('仪表盘统计失败：', error.message);
     return fail(res, '获取仪表盘统计失败', 500);
+  }
+}
+
+async function getSiteTrafficTrend(req, res) {
+  try {
+    return ok(res, await SiteTrafficService.getTrend(String(req.query.range || '7d')));
+  } catch (error) {
+    console.error('全站访客趋势查询失败：', error.message);
+    return fail(res, '获取全站访客趋势失败', 500);
   }
 }
 
@@ -1685,6 +1697,7 @@ module.exports = {
   getReview,
   getOverview,
   getDashboardStats,
+  getSiteTrafficTrend,
   getPartners,
   getPartnerAnalytics,
   createPartner,

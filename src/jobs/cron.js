@@ -6,6 +6,7 @@ const SystemModel = require('../models/SystemModel');
 const InspectionService = require('../services/InspectionService');
 const PingService = require('../services/PingService');
 const RiskService = require('../services/RiskService');
+const SiteTrafficService = require('../services/SiteTrafficService');
 const CacheService = require('../services/CacheService');
 const { sendAdminAlert } = require('../services/AlertService');
 const { abortActivePoolTasks, drainActivePoolTasks } = require('../utils/asyncPool');
@@ -67,6 +68,10 @@ function startJobs() {
 
   databaseMaintenanceTask = cron.schedule('30 3 * * *', () => {
     runTrackedJob('SQLite 无感维护任务', async () => {
+      const siteTrafficCleanup = await SiteTrafficService.cleanupOldData();
+      if (Number(siteTrafficCleanup.deleted || 0) > 0) {
+        console.info(`已清理 ${siteTrafficCleanup.deleted} 条超过 45 天的全站访客小时聚合。`);
+      }
       const result = await SystemModel.runDatabaseMaintenance();
       const checkpoint = result?.checkpoint || {};
       if (Number(checkpoint.busy || 0) > 0) {

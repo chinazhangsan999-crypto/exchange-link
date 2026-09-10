@@ -51,7 +51,7 @@ app.use(observeRequestRisk);
 app.use(publicRouter);
 app.use(adminRouter);
 app.use('/admin', express.static(path.join(publicDirectory, 'admin')));
-app.use('/', PublicController.trackInflow, express.static(publicDirectory));
+app.use('/', PublicController.trackSitePageView, PublicController.trackInflow, express.static(publicDirectory));
 app.use((req, res) => fail(res, '接口不存在', 404));
 
 module.exports = app;

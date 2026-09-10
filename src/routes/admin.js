@@ -27,6 +27,7 @@ router.get('/api/admin/webhook/deliveries', AdminController.listWebhookDeliverie
 router.get('/api/admin/review', AdminController.getReview);
 router.get('/api/admin/overview', AdminController.getOverview);
 router.get('/api/admin/dashboard/stats', AdminController.getDashboardStats);
+router.get('/api/admin/dashboard/site-traffic', AdminController.getSiteTrafficTrend);
 router.get('/api/admin/partners', AdminController.getPartners);
 router.get('/api/admin/partners/:id/analytics', AdminController.getPartnerAnalytics);
 router.post('/api/admin/partners', AdminController.createPartner);

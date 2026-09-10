@@ -11,6 +11,8 @@ const { initializeDatabase } = require('./src/models/SystemModel');
 const { initializeSourceTokenTables, ensureAllPartnersHaveSid } = require('./src/models/SourceTokenModel');
 const { initializeAdsTable } = require('./src/models/AdsModel');
 const { initializeMirrorsTable, syncMirrorsToPartners } = require('./src/models/MirrorModel');
+const { initializeSiteTrafficTable } = require('./src/models/SiteTrafficModel');
+const SiteTrafficService = require('./src/services/SiteTrafficService');
 const { startJobs, stopJobs } = require('./src/jobs/cron');
 
 let httpServer;
@@ -30,6 +32,7 @@ process.on('unhandledRejection', reason => {
 });
 
 initializeDatabase()
+  .then(initializeSiteTrafficTable)
   .then(initializeSourceTokenTables)
   .then(initializeAdsTable)
   .then(initializeMirrorsTable)
@@ -38,6 +41,7 @@ initializeDatabase()
   .then(() => {
     httpServer = app.listen(PORT, () => {
       console.log(`互助友链系统已启动：http://localhost:${PORT}`);
+      SiteTrafficService.start();
       startJobs();
     });
   })
@@ -72,6 +76,11 @@ async function shutdown(signal) {
     ]);
     if (!jobsResult.drained) {
       console.warn(`服务停机时仍有 ${jobsResult.pending} 个后台任务未在限时内完成。`);
+    }
+    try {
+      await SiteTrafficService.stopAndFlush();
+    } catch (error) {
+      console.warn('服务停机时刷新全站访客统计失败：', error.message);
     }
     // 所有 HTTP 连接已关闭、未来任务已取消调度后，才拒绝新的写入并排空当前事务。
     dbWriteCoordinator.beginShutdown();

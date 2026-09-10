@@ -38,6 +38,7 @@ const SystemModel = require('../models/SystemModel');
 const AdModel = require('../models/AdsModel');
 const MirrorModel = require('../models/MirrorModel');
 const CacheService = require('../services/CacheService');
+const SiteTrafficService = require('../services/SiteTrafficService');
 const { sendAdminAlert, formatAlertLink, formatContactLine } = require('../services/AlertService');
 
 const CLAIM_TTL_SECONDS = 15 * 60;
@@ -266,6 +267,48 @@ async function preVerifyInflowTraffic(req, res, next) {
     }
   } catch (error) {
     console.error('[流量排查] 暂存入站来源失败：', error.message);
+  }
+  return next();
+}
+
+const SITE_TRAFFIC_EXCLUDED_PATH = /^(?:\/admin(?:\/|$)|\/api(?:\/|$)|\/go\/?$|\/verify(?:\.html)?\/?$)/i;
+const SITE_TRAFFIC_ASSET_PATH = /\.(?:css|js|mjs|png|jpe?g|gif|webp|svg|ico|woff2?|ttf|map|json|xml|txt|webmanifest)$/i;
+const SITE_TRAFFIC_BOT_UA = /(?:bot|spider|crawl|slurp|headless|phantom|lighthouse|pagespeed|curl|wget|python|requests|postman|httpclient|scrapy|uptime|monitoring)/i;
+
+/**
+ * 独立记录成功打开的公开 HTML 页面。这里只向内存缓冲加一，不等待 SQLite；
+ * 失败、后台、接口、验证页、静态资源、预取及明确机器人均不计入。
+ */
+function trackSitePageView(req, res, next) {
+  try {
+    const pathname = String(req.path || '/');
+    const userAgent = String(req.get('user-agent') || '').trim();
+    const fetchDestination = String(req.get('sec-fetch-dest') || '').toLowerCase();
+    const purpose = `${req.get('purpose') || ''} ${req.get('sec-purpose') || ''} ${req.get('x-moz') || ''}`.toLowerCase();
+    const eligible = req.method === 'GET'
+      && !SITE_TRAFFIC_EXCLUDED_PATH.test(pathname)
+      && !SITE_TRAFFIC_ASSET_PATH.test(pathname)
+      && (!fetchDestination || fetchDestination === 'document')
+      && !/(?:prefetch|prerender)/.test(purpose)
+      && Boolean(userAgent)
+      && !SITE_TRAFFIC_BOT_UA.test(userAgent);
+    if (!eligible) return next();
+
+    const visitorId = ensureVisitorIdentity(req, res);
+    const normalizedIp = getClientIp(req);
+    const acceptsHtml = String(req.get('accept') || '').toLowerCase().includes('text/html');
+    res.once('finish', () => {
+      try {
+        const successful = res.statusCode === 200 || res.statusCode === 304;
+        const contentType = String(res.getHeader('content-type') || '').toLowerCase();
+        if (!successful || (!contentType.includes('text/html') && !(res.statusCode === 304 && acceptsHtml))) return;
+        SiteTrafficService.recordPageView({ visitorId, normalizedIp, occurredAt: new Date() });
+      } catch (error) {
+        console.warn('[全站访客统计] 页面访问记录失败：', error.message);
+      }
+    });
+  } catch (error) {
+    console.warn('[全站访客统计] 页面识别失败：', error.message);
   }
   return next();
 }
@@ -957,6 +1000,7 @@ async function go(req, res) {
 
 module.exports = {
   preVerifyInflowTraffic,
+  trackSitePageView,
   trackInflow,
   health,
   headRoot,
