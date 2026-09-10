@@ -175,7 +175,7 @@
         <div class="evidence-grid">
           <section><b>完整客户端信息</b><p>UA：${escapeHtml(item.raw_user_agent || '历史数据未采集')}</p><p>平台：${escapeHtml(item.client_platform || '历史数据未采集')} · 分辨率：${escapeHtml(item.screen_resolution || '未采集')} · 语言：${escapeHtml(item.client_language || '未采集')}</p></section>
           <section><b>来源证据</b><p>识别方式：${escapeHtml(source)}</p><p>Referer：${escapeHtml(item.referer || '空 Referer')}</p><p>本客户端空 Referer：${Number(item.empty_referer_count || 0)} 次</p></section>
-          <section><b>行为证据</b><p>首次：${escapeHtml(formatTime(item.first_seen))}</p><p>最近：${escapeHtml(formatTime(item.timestamp))}</p><p>中位间隔：${item.median_interval_seconds == null ? '样本不足' : durationText(item.median_interval_seconds)} · 1 分钟峰值：${Number(item.max_events_1m || 0)} 次 · 5 分钟峰值：${Number(item.max_events_5m || 0)} 次</p></section>
+          <section><b>行为证据</b><p>首次：${escapeHtml(formatTime(item.first_seen))}</p><p>最近：${escapeHtml(formatTime(item.timestamp))}</p><p>中位间隔：${item.median_interval_seconds == null ? '样本不足' : durationText(item.median_interval_seconds)} · 10 秒峰值：${Number(item.max_events_10s || 0)} 次 · 20 秒峰值：${Number(item.max_events_20s || 0)} 次</p></section>
           <section><b>互动与关联</b><p>有效会话互动：${Number(item.interacted_sessions || 0)}/${Number(item.sessions || 0)}（${interactionRate}%）· 出站点击：${Number(item.interaction_clicks || 0)}</p><p>首次互动延迟：${item.first_interaction_seconds == null ? '无互动' : durationText(item.first_interaction_seconds)}</p><p>匿名访客涉及 ${Number(item.ip_count || 1)} 个 IP；同 IP 涉及 ${Number(item.ip_visitor_count || 1)} 个匿名访客；同环境涉及 ${Number(item.environment_ip_count || 0)} 个 IP</p></section>
         </div>
         <div class="recent-times"><b>最近访问（北京时间）</b>${recent}</div>
@@ -200,7 +200,7 @@
         <td><strong>${escapeHtml(item.source_domain || '空 Referer')}</strong><small>${escapeHtml(source)}</small></td>
         <td><strong>${Number(item.ip_count || 1)} UV / ${Number(item.requests || 0)} PV</strong><small>当前 IP ${Number(item.ip_requests || 0)} PV · ${Number(item.ip_ratio || 0).toFixed(1)}%</small></td>
         <td><strong>${Number(item.interacted_sessions || 0)}/${Number(item.sessions || 0)} 会话</strong><small>${Number(item.interaction_clicks || 0)} 次出站点击</small></td>
-        <td><strong>跨度 ${durationText(item.duration_seconds)}</strong><small>中位间隔 ${item.median_interval_seconds == null ? '样本不足' : durationText(item.median_interval_seconds)} · 1min ${Number(item.max_events_1m || 0)} 次</small></td>
+        <td><strong>跨度 ${durationText(item.duration_seconds)}</strong><small>中位间隔 ${item.median_interval_seconds == null ? '样本不足' : durationText(item.median_interval_seconds)} · 10秒峰值 ${Number(item.max_events_10s || 0)} 次</small></td>
         <td>${riskTag(item)}<small>${escapeHtml(reasons.slice(0, 2).join('；') || '无明显异常')}${reasons.length > 2 ? `；另 ${reasons.length - 2} 项` : ''}</small></td>
         <td><strong>${escapeHtml(formatTime(item.timestamp))}</strong><button type="button" class="client-detail-button" data-client-detail="${index}" aria-expanded="false">展开证据</button></td>
       </tr>${clientEvidence(item)}`;

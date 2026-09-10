@@ -204,8 +204,10 @@ function buildClientAuditRows(events, interactions, pv, thresholds) {
       duration_seconds: timestamps.length > 1 ? Math.round((timestamps[timestamps.length - 1] - timestamps[0]) / 1000) : 0,
       min_interval_seconds: intervals.length ? Math.round(Math.min(...intervals)) : null,
       median_interval_seconds: intervals.length ? Math.round(median(intervals)) : null,
-      max_events_1m: maxEventsInWindow(timestamps, 60 * 1000),
-      max_events_5m: maxEventsInWindow(timestamps, 5 * 60 * 1000),
+      // 导航站访问通常在数秒内完成，使用短窗口观察瞬时脚本爆发，
+      // 避免 1 分钟/5 分钟窗口把真实的快速点击行为稀释掉。
+      max_events_10s: maxEventsInWindow(timestamps, 10 * 1000),
+      max_events_20s: maxEventsInWindow(timestamps, 20 * 1000),
       recent_times: ordered.slice(0, 10).map(item => item.timestamp),
       referer: String(latest.referer || ''),
       source_domain: String(latest.observed_domain || refererHostname(latest.referer) || ''),
