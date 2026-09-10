@@ -29,6 +29,7 @@ router.get('/api/admin/overview', AdminController.getOverview);
 router.get('/api/admin/dashboard/stats', AdminController.getDashboardStats);
 router.get('/api/admin/dashboard/site-traffic', AdminController.getSiteTrafficTrend);
 router.get('/api/admin/partners', AdminController.getPartners);
+router.get('/api/admin/partners/:id/analytics/clients', AdminController.getPartnerAnalyticsClients);
 router.get('/api/admin/partners/:id/analytics', AdminController.getPartnerAnalytics);
 router.post('/api/admin/partners', AdminController.createPartner);
 router.put('/api/admin/partners/:id', AdminController.updatePartner);

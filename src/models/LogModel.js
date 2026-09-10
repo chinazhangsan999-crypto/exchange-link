@@ -401,9 +401,45 @@ async function getPartnerAnalytics(partnerId, { includeClients = true, clientEve
   };
 }
 
-async function searchInboundLogs(query = '') {
+function normalizePagination(page, pageSize = 100) {
+  const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const safePageSize = Math.max(1, Math.min(100, Number.parseInt(pageSize, 10) || 100));
+  return { page: safePage, pageSize: safePageSize, offset: (safePage - 1) * safePageSize };
+}
+
+function paginationResult(items, total, page, pageSize) {
+  const totalItems = Math.max(0, Number(total) || 0);
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const safePage = Math.min(page, totalPages);
+  return {
+    items,
+    pagination: {
+      page: safePage,
+      pageSize,
+      total: totalItems,
+      totalPages,
+      from: totalItems ? (safePage - 1) * pageSize + 1 : 0,
+      to: totalItems ? Math.min(safePage * pageSize, totalItems) : 0,
+      hasPrevious: safePage > 1,
+      hasNext: safePage < totalPages
+    }
+  };
+}
+
+async function searchInboundLogs(query = '', { page = 1, pageSize = 100 } = {}) {
   const keyword = String(query || '').trim();
-  return all(`SELECT l.id, l.link_id AS partner_id, l.client_ip AS ip, l.user_agent,
+  const paging = normalizePagination(page, pageSize);
+  const whereSql = keyword ? 'WHERE l.client_ip LIKE ? OR p.name LIKE ? OR p.domain LIKE ?' : '';
+  const filterParams = keyword ? [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`] : [];
+  const totalRow = await get(`SELECT COUNT(*) AS total
+    FROM inbound_logs l
+    JOIN partners p ON p.id = l.link_id
+    ${whereSql}`, filterParams);
+  const total = Number(totalRow?.total || 0);
+  const totalPages = Math.max(1, Math.ceil(total / paging.pageSize));
+  const effectivePage = Math.min(paging.page, totalPages);
+  const offset = (effectivePage - 1) * paging.pageSize;
+  const items = await all(`SELECT l.id, l.link_id AS partner_id, l.client_ip AS ip, l.user_agent,
     l.referer, l.observed_domain, l.attribution_method, l.created_at AS timestamp,
     p.name AS partner_name, p.domain,
     CASE WHEN EXISTS (
@@ -414,24 +450,36 @@ async function searchInboundLogs(query = '') {
     ) THEN 0 ELSE 1 END AS newly_counted
     FROM inbound_logs l
     JOIN partners p ON p.id = l.link_id
-    ${keyword ? 'WHERE l.client_ip LIKE ? OR p.name LIKE ? OR p.domain LIKE ?' : ''}
-    ORDER BY l.created_at DESC
-    LIMIT 200`, keyword ? [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`] : []);
+    ${whereSql}
+    ORDER BY l.created_at DESC, l.id DESC
+    LIMIT ? OFFSET ?`, [...filterParams, paging.pageSize, offset]);
+  return paginationResult(items, total, effectivePage, paging.pageSize);
 }
 
-async function searchRejectedInboundLogs(query = '') {
+async function searchRejectedInboundLogs(query = '', { page = 1, pageSize = 100 } = {}) {
   const keyword = String(query || '').trim();
-  const params = keyword ? [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`] : [];
-  return all(`SELECT r.id, r.client_ip AS ip, r.user_agent, r.referer, r.observed_domain,
+  const paging = normalizePagination(page, pageSize);
+  const whereSql = keyword ? `WHERE r.client_ip LIKE ? OR COALESCE(p.name, '') LIKE ? OR COALESCE(p.domain, '') LIKE ?
+      OR r.observed_domain LIKE ? OR r.reason_text LIKE ?` : '';
+  const filterParams = keyword ? [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`] : [];
+  const totalRow = await get(`SELECT COUNT(*) AS total
+    FROM inbound_rejection_logs r
+    LEFT JOIN partners p ON p.id = r.partner_id
+    ${whereSql}`, filterParams);
+  const total = Number(totalRow?.total || 0);
+  const totalPages = Math.max(1, Math.ceil(total / paging.pageSize));
+  const effectivePage = Math.min(paging.page, totalPages);
+  const offset = (effectivePage - 1) * paging.pageSize;
+  const items = await all(`SELECT r.id, r.client_ip AS ip, r.user_agent, r.referer, r.observed_domain,
     r.partner_id, r.source_token_id, r.attribution_method, r.visitor_type,
     r.stage, r.reason_code, r.reason_text, r.request_path, r.occurrence_count,
     r.first_seen_at, r.last_seen_at AS timestamp, p.name AS partner_name, p.domain
     FROM inbound_rejection_logs r
     LEFT JOIN partners p ON p.id = r.partner_id
-    ${keyword ? `WHERE r.client_ip LIKE ? OR COALESCE(p.name, '') LIKE ? OR COALESCE(p.domain, '') LIKE ?
-      OR r.observed_domain LIKE ? OR r.reason_text LIKE ?` : ''}
+    ${whereSql}
     ORDER BY r.last_seen_at DESC, r.id DESC
-    LIMIT 200`, params);
+    LIMIT ? OFFSET ?`, [...filterParams, paging.pageSize, offset]);
+  return paginationResult(items, total, effectivePage, paging.pageSize);
 }
 
 module.exports = {

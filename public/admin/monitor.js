@@ -11,7 +11,16 @@
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[character]));
-  const state = { currentId: null, requestSequence: 0, clients: [], clientFilter: 'all', clientQuery: '' };
+  const state = {
+    currentId: null,
+    requestSequence: 0,
+    clients: [],
+    clientFilter: 'all',
+    clientQuery: '',
+    clientPage: 1,
+    clientRequestSequence: 0,
+    clientController: null
+  };
 
   function toast(message) {
     const element = document.querySelector('#toast');
@@ -36,6 +45,7 @@
   }
 
   function closeDialog() {
+    state.clientController?.abort();
     document.querySelector('#analytics-modal')?.classList.remove('open');
   }
 
@@ -207,32 +217,81 @@
     }).join('');
   }
 
-  function applyClientFilters() {
-    const filter = state.clientFilter;
-    const query = state.clientQuery.toLowerCase();
-    document.querySelectorAll('#client-audit-body .client-audit-row').forEach(row => {
-      const filterMatch = filter === 'all' || row.dataset[filter] === '1';
-      const queryMatch = !query || row.dataset.search.includes(query);
-      row.hidden = !(filterMatch && queryMatch);
-      if (row.hidden) {
-        const detail = document.querySelector(`#client-audit-body [data-detail-index="${row.dataset.clientIndex}"]`);
-        if (detail) detail.hidden = true;
-      }
-    });
-    const visible = document.querySelectorAll('#client-audit-body .client-audit-row:not([hidden])').length;
+  function renderClientPagination(pagination) {
+    const container = document.querySelector('#client-pagination');
+    if (!container) return;
+    const meta = pagination || { page: 1, totalPages: 1, total: 0, from: 0, to: 0 };
+    container.dataset.page = String(meta.page || 1);
+    container.dataset.totalPages = String(meta.totalPages || 1);
+    container.innerHTML = `
+      <div class="pagination-summary" role="status" aria-live="polite">
+        共 <strong>${Number(meta.total || 0)}</strong> 个客户端，当前显示 ${Number(meta.from || 0)}–${Number(meta.to || 0)}，每页最多 100 条
+      </div>
+      <div class="pagination-actions" aria-label="客户端明细翻页">
+        <button type="button" data-client-page-action="first" ${meta.hasPrevious ? '' : 'disabled'}>首页</button>
+        <button type="button" data-client-page-action="previous" ${meta.hasPrevious ? '' : 'disabled'}>上一页</button>
+        <span>第 <strong>${Number(meta.page || 1)}</strong> / ${Number(meta.totalPages || 1)} 页</span>
+        <button type="button" data-client-page-action="next" ${meta.hasNext ? '' : 'disabled'}>下一页</button>
+        <button type="button" data-client-page-action="last" ${meta.hasNext ? '' : 'disabled'}>末页</button>
+      </div>`;
+  }
+
+  function renderClientPage(payload) {
+    state.clients = payload.items || [];
+    state.clientPage = Number(payload.pagination?.page || 1);
+    const body = document.querySelector('#client-audit-body');
+    if (body) body.innerHTML = clientRows(state.clients);
     const counter = document.querySelector('#client-filter-count');
-    if (counter) counter.textContent = `显示 ${visible} / ${state.clients.length} 个客户端`;
+    if (counter) {
+      const meta = payload.pagination || {};
+      counter.textContent = `筛选结果 ${Number(meta.total || 0)} 个客户端 · 当前 ${Number(meta.from || 0)}–${Number(meta.to || 0)}`;
+    }
+    const note = document.querySelector('#client-data-note');
+    if (note) {
+      note.hidden = !payload.clientEventsTruncated;
+      note.textContent = payload.clientEventsTruncated
+        ? `访问量较大，为保护后台性能，客户端画像基于最近 ${Number(payload.analyzedEventLimit || 5000).toLocaleString('zh-CN')} 条访问生成；顶部 KPI 仍按完整近 24 小时数据计算。`
+        : '';
+    }
+    renderClientPagination(payload.pagination);
+  }
+
+  async function loadClientPage(page = state.clientPage) {
+    if (!state.currentId) return;
+    state.clientController?.abort();
+    state.clientController = new AbortController();
+    const sequence = ++state.clientRequestSequence;
+    const body = document.querySelector('#client-audit-body');
+    if (body) body.innerHTML = '<tr><td colspan="8" class="empty-inflow">正在加载客户端明细…</td></tr>';
+    const params = new URLSearchParams({
+      page: String(Math.max(1, Number(page) || 1)),
+      pageSize: '100',
+      filter: state.clientFilter,
+      q: state.clientQuery
+    });
+    try {
+      const payload = await api(`/api/admin/partners/${state.currentId}/analytics/clients?${params}`, {
+        signal: state.clientController.signal
+      });
+      if (sequence !== state.clientRequestSequence) return;
+      renderClientPage(payload);
+    } catch (error) {
+      if (error.name === 'AbortError' || sequence !== state.clientRequestSequence) return;
+      if (body) body.innerHTML = `<tr><td colspan="8" class="empty-inflow">${escapeHtml(error.message || '客户端明细加载失败')}</td></tr>`;
+    }
   }
 
   function bindClientAudit() {
     document.querySelectorAll('[data-client-filter]').forEach(button => button.addEventListener('click', () => {
       state.clientFilter = button.dataset.clientFilter;
       document.querySelectorAll('[data-client-filter]').forEach(item => item.classList.toggle('active', item === button));
-      applyClientFilters();
+      loadClientPage(1);
     }));
+    let searchTimer;
     document.querySelector('#client-audit-search')?.addEventListener('input', event => {
       state.clientQuery = event.target.value.trim();
-      applyClientFilters();
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => loadClientPage(1), 300);
     });
     document.querySelector('#client-audit-body')?.addEventListener('click', event => {
       const button = event.target.closest('[data-client-detail]');
@@ -243,7 +302,15 @@
       button.setAttribute('aria-expanded', String(!detail.hidden));
       button.textContent = detail.hidden ? '展开证据' : '收起证据';
     });
-    applyClientFilters();
+    document.querySelector('#client-pagination')?.addEventListener('click', event => {
+      const button = event.target.closest('button[data-client-page-action]');
+      if (!button || button.disabled) return;
+      const container = button.closest('#client-pagination');
+      const current = Number(container.dataset.page || 1);
+      const totalPages = Number(container.dataset.totalPages || 1);
+      const actions = { first: 1, previous: current - 1, next: current + 1, last: totalPages };
+      loadClientPage(Math.max(1, Math.min(totalPages, actions[button.dataset.clientPageAction] || current)));
+    });
   }
 
   function renderAnalytics(data) {
@@ -253,10 +320,10 @@
     const hourly = percent(diagnostics.peak_hourly_ratio);
     const emptyReferer = percent(diagnostics.empty_referer_ratio);
     const pvUv = numberText(diagnostics.pv_uv_ratio ?? data.pvUvRatio);
-    const ips = data.inflow_ips || data.all_inflow_ips || [];
-    state.clients = ips;
+    state.clients = [];
     state.clientFilter = 'all';
     state.clientQuery = '';
+    state.clientPage = 1;
 
     document.querySelector('#analytics-name').textContent = `${data.partner.name} · ${data.partner.domain}`;
     document.querySelector('#analytics-content').innerHTML = `
@@ -300,7 +367,7 @@
         </div>
       </section>
       <section class="analytics-table">
-        <div class="client-table-head"><div><h4>客户端明细</h4><p id="client-filter-count" class="hint"></p></div>
+        <div class="client-table-head"><div><h4>客户端明细</h4><p class="hint">客户端明细按近 24 小时访问环境与匿名访客特征聚合。每页最多显示 100 条；搜索与风险筛选会在全部客户端数据中执行，筛选结果支持继续翻页。顶部风控指标使用完整数据计算，不受当前页影响。</p><p id="client-filter-count" class="hint"></p></div>
           <div class="client-filters" role="group" aria-label="客户端风险筛选">
             <button type="button" class="active" data-client-filter="all">全部</button><button type="button" data-client-filter="risk">风险/观察</button>
             <button type="button" data-client-filter="noInteraction">无互动</button><button type="button" data-client-filter="sourceAnomaly">来源异常</button>
@@ -308,11 +375,11 @@
             <input id="client-audit-search" type="search" placeholder="搜索 IP、访客、来源或 UA" autocomplete="off">
           </div>
         </div>
-        ${data.client_events_truncated ? `<p class="client-data-note">为保证后台流畅，仅分析最近 ${Number(data.pv24h || 0) > 2000 ? '2,000 条访问并优先展示 300 个客户端' : '300 个客户端'}；总体 KPI 仍基于完整的近 24 小时数据。</p>` : ''}
+        <p id="client-data-note" class="client-data-note" hidden></p>
         <div class="table-wrap"><table>
           <thead><tr><th>IP / 匿名访客</th><th>客户端环境</th><th>来源校验</th><th>24h 访问</th><th>后续互动</th><th>时间特征</th><th>风险证据</th><th>最近访问 / 操作</th></tr></thead>
-          <tbody id="client-audit-body">${clientRows(ips)}</tbody>
-        </table></div>
+          <tbody id="client-audit-body"><tr><td colspan="8" class="empty-inflow">正在加载客户端明细…</td></tr></tbody>
+        </table></div><div id="client-pagination" class="pagination-bar"></div>
       </section>`;
     bindClientAudit();
   }
@@ -322,6 +389,7 @@
     if (!Number.isInteger(numericId) || numericId <= 0) return toast('站点编号不合法');
     const sequence = ++state.requestSequence;
     state.currentId = numericId;
+    state.clientController?.abort();
     const modal = ensureDialog();
     modal.classList.add('open');
     modal.querySelector('#analytics-content').innerHTML = '<div class="analytics-loading">正在生成智能诊断…</div>';
@@ -331,6 +399,7 @@
       if (sequence !== state.requestSequence) return;
       renderAnalytics(data);
       renderNavigation();
+      await loadClientPage(1);
     } catch (error) {
       if (sequence !== state.requestSequence) return;
       modal.querySelector('#analytics-content').innerHTML = `<div class="analytics-error">${escapeHtml(error.message || '获取监控数据失败')}</div>`;

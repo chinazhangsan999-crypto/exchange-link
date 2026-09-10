@@ -552,7 +552,7 @@ async function getPartners(req, res) {
 async function getPartnerAnalytics(req, res) {
   try {
     // Webhook 定时扫描与后台弹窗复用同一份指标计算，避免诊断口径漂移。
-    const report = await RiskService.analyzePartner(Number(req.params.id));
+    const report = await RiskService.analyzePartner(Number(req.params.id), { includeClients: false });
     if (!report) return fail(res, '友链不存在', 404);
     return ok(res, report);
 
@@ -669,6 +669,22 @@ async function getPartnerAnalytics(req, res) {
   } catch (error) {
     console.error('风控分析失败：', error.message);
     return fail(res, '获取站点分析失败', 500);
+  }
+}
+
+async function getPartnerAnalyticsClients(req, res) {
+  try {
+    const report = await RiskService.analyzePartnerClients(Number(req.params.id), {
+      page: req.query.page,
+      pageSize: 100,
+      query: String(req.query.q || '').trim().slice(0, 200),
+      filter: String(req.query.filter || 'all')
+    });
+    if (!report) return fail(res, '友链不存在', 404);
+    return ok(res, report);
+  } catch (error) {
+    console.error('风控客户端明细查询失败：', error.message);
+    return fail(res, '获取客户端明细失败', 500);
   }
 }
 
@@ -1068,12 +1084,22 @@ async function resetCheckStatus(req, res) {
 }
 
 async function getLogs(req, res) {
-  try { return ok(res, await LogModel.searchInboundLogs(String(req.query.q || '').trim())); }
+  try {
+    return ok(res, await LogModel.searchInboundLogs(String(req.query.q || '').trim().slice(0, 200), {
+      page: req.query.page,
+      pageSize: 100
+    }));
+  }
   catch { return fail(res, '获取入站日志失败', 500); }
 }
 
 async function getRejectedInboundLogs(req, res) {
-  try { return ok(res, await LogModel.searchRejectedInboundLogs(String(req.query.q || '').trim())); }
+  try {
+    return ok(res, await LogModel.searchRejectedInboundLogs(String(req.query.q || '').trim().slice(0, 200), {
+      page: req.query.page,
+      pageSize: 100
+    }));
+  }
   catch (error) {
     console.error('获取未入站用户明细失败：', error);
     return fail(res, '获取未入站用户明细失败', 500);
@@ -1694,6 +1720,7 @@ module.exports = {
   getSiteTrafficTrend,
   getPartners,
   getPartnerAnalytics,
+  getPartnerAnalyticsClients,
   createPartner,
   updatePartner,
   updatePartnerApproval,

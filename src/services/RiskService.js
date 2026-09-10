@@ -321,6 +321,63 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
   };
 }
 
+/**
+ * 风控客户端明细的服务端筛选与分页。
+ * KPI 继续由 analyzePartner() 基于完整 24h 聚合计算；这里只分页返回客户端审计行。
+ */
+async function analyzePartnerClients(partnerId, { page = 1, pageSize = 100, query = '', filter = 'all' } = {}) {
+  const partner = await PartnerModel.findAnalyticsPartner(Number(partnerId));
+  if (!partner) return null;
+  const safePage = Math.max(1, Number.parseInt(page, 10) || 1);
+  const safePageSize = Math.max(1, Math.min(100, Number.parseInt(pageSize, 10) || 100));
+  const safeFilter = ['all', 'risk', 'noInteraction', 'sourceAnomaly', 'periodic', 'environmentAnomaly'].includes(filter)
+    ? filter
+    : 'all';
+  const normalizedQuery = String(query || '').trim().toLowerCase();
+  const [{ summary, clientEvents, clientInteractions, clientEventsTruncated }, thresholds] = await Promise.all([
+    LogModel.getPartnerAnalytics(partner.id, { includeClients: true, clientEventLimit: 5000 }),
+    SystemModel.getRiskControlConfig()
+  ]);
+  const pv = asNumber(summary?.pv);
+  const allRows = buildClientAuditRows(clientEvents, clientInteractions, pv, thresholds);
+  const flagByFilter = {
+    risk: 'risky',
+    noInteraction: 'no_interaction',
+    sourceAnomaly: 'source_anomaly',
+    periodic: 'periodic',
+    environmentAnomaly: 'environment_anomaly'
+  };
+  const filteredRows = allRows.filter(row => {
+    const flag = flagByFilter[safeFilter];
+    if (flag && !row.flags?.[flag]) return false;
+    if (!normalizedQuery) return true;
+    return [
+      row.ip, row.visitor_short, row.client, row.raw_user_agent, row.source_domain,
+      row.referer, ...(row.risk_reasons || [])
+    ].some(value => String(value || '').toLowerCase().includes(normalizedQuery));
+  });
+  const total = filteredRows.length;
+  const totalPages = Math.max(1, Math.ceil(total / safePageSize));
+  const effectivePage = Math.min(safePage, totalPages);
+  const offset = (effectivePage - 1) * safePageSize;
+  return {
+    items: filteredRows.slice(offset, offset + safePageSize),
+    pagination: {
+      page: effectivePage,
+      pageSize: safePageSize,
+      total,
+      totalPages,
+      from: total ? offset + 1 : 0,
+      to: total ? Math.min(offset + safePageSize, total) : 0,
+      hasPrevious: effectivePage > 1,
+      hasNext: effectivePage < totalPages
+    },
+    clientGroupsTotal: allRows.length,
+    clientEventsTruncated: Boolean(clientEventsTruncated),
+    analyzedEventLimit: 5000
+  };
+}
+
 const formatPercent = value => `${(asNumber(value) * 100).toFixed(2)}%`;
 const formatDistribution = items => (items || []).slice(0, 10).map(item => `${item.name} ${Number(item.ratio || 0).toFixed(1)}%`).join('、') || '暂无数据';
 
@@ -406,4 +463,4 @@ async function scanAndNotify({ sendAdminAlert } = {}) {
   }
 }
 
-module.exports = { analyzePartner, dashboardRiskReasons, buildRiskAssessment, scanAndNotify };
+module.exports = { analyzePartner, analyzePartnerClients, dashboardRiskReasons, buildRiskAssessment, scanAndNotify };
