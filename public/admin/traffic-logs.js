@@ -1,4 +1,4 @@
-/** 后台有效带量与未入站用户明细：服务端筛选后分页，每页 100 条。 */
+/** 后台有效带量与未通过校验请求明细：服务端筛选后分页，每页 100 条。 */
 (() => {
   const PAGE_SIZE = 100;
   const token = () => localStorage.getItem('webring_admin_token') || '';
@@ -35,6 +35,22 @@
     sid_resolution: 'SID 解析', source_resolution: '来源识别', claim_issue: '凭证签发',
     heartbeat: '有效心跳', fingerprint: '浏览器环境', database_write: '最终写入'
   };
+  const networkLabels = {
+    residential: '住宅宽带', mobile: '移动网络', business: '企业/专线',
+    education: '教育/机构', government: '政府网络', hosting: '云主机',
+    cdn: 'CDN/边缘网络', unknown: '未知'
+  };
+
+  function ipProfile(item) {
+    const status = String(item.ip_lookup_status || 'pending');
+    const type = String(item.ip_network_type || 'unknown');
+    const label = status === 'resolved' ? (networkLabels[type] || '未知')
+      : status === 'pending' ? '识别中' : '未知';
+    const location = [item.ip_country_name, item.ip_region, item.ip_city].filter(Boolean).join(' · ');
+    const organization = [item.ip_asn ? `AS${Number(item.ip_asn)}` : '', item.ip_asn_org || item.ip_isp].filter(Boolean).join(' ');
+    const risks = [Number(item.ip_is_proxy) === 1 ? '代理' : '', Number(item.ip_is_vpn) === 1 ? 'VPN' : '', Number(item.ip_is_tor) === 1 ? 'Tor' : ''].filter(Boolean);
+    return `<div class="ip-profile"><span class="ip-value">${esc(item.ip || '—')}</span><span class="ip-type ip-type-${esc(type)}">${esc(label)}</span>${location || organization ? `<small>${esc([location, organization].filter(Boolean).join(' / '))}</small>` : ''}${risks.length ? `<small class="ip-risk-hint">${esc(risks.join(' · '))}</small>` : ''}</div>`;
+  }
 
   function compactClient(userAgent) {
     const ua = String(userAgent || '');
@@ -98,7 +114,7 @@
         <td>${esc(time(item.timestamp))}</td>
         <td><b>${esc(item.partner_name)}</b><span class="domain">${esc(item.domain)}</span></td>
         <td>${esc(attributionLabels[item.attribution_method] || item.attribution_method || '未知')}</td>
-        <td>${esc(item.ip)}</td>
+        <td>${ipProfile(item)}</td>
         <td><span class="tag"${Number(item.newly_counted) ? '' : ' style="background:#f3f4f6;color:#64748b"'}>${Number(item.newly_counted) ? '新增 1 UV' : '24h 重复，仅 PV'}</span></td>
         <td title="${esc(item.user_agent)}">${esc(compactClient(item.user_agent))}</td>
       </tr>`).join('') || '<tr><td colspan="6" class="hint">暂无有效带量明细</td></tr>';
@@ -119,19 +135,27 @@
     state.controller?.abort();
     state.controller = new AbortController();
     const sequence = ++state.sequence;
-    body.innerHTML = '<tr><td colspan="6" class="hint">正在加载未入站明细…</td></tr>';
+    body.innerHTML = '<tr><td colspan="6" class="hint">正在加载未通过校验明细…</td></tr>';
     try {
       const payload = normalizePayload(await request(`/api/admin/rejected-inbound-logs?page=${state.page}&pageSize=${PAGE_SIZE}&q=${encodeURIComponent(state.query)}`, state.controller.signal));
       if (sequence !== state.sequence) return;
       state.page = Number(payload.pagination.page || 1);
-      body.innerHTML = payload.items.map(item => `<tr>
+      body.innerHTML = payload.items.map(item => {
+        const suppressed = item.classification === 'suppressed';
+        const resolved = item.resolution_status === 'resolved_by_valid_visit';
+        const outcome = suppressed ? '重复请求已抑制' : (item.visitor_type === 'ordinary_direct' ? '普通直访观察' : '校验未通过');
+        const followup = resolved
+          ? '<span class="domain" style="color:#218657">✓ 后续凭证已成功入站并按规则计分</span>'
+          : '<span class="domain">未发现后续有效心跳</span>';
+        return `<tr>
         <td>${esc(time(item.timestamp))}</td>
-        <td><span class="tag ${item.visitor_type === 'ordinary_direct' ? '' : 'off'}">${item.visitor_type === 'ordinary_direct' ? '普通直访' : '入站校验未通过'}</span></td>
+        <td><span class="tag ${suppressed || item.visitor_type === 'ordinary_direct' ? '' : 'off'}">${outcome}</span></td>
         <td>${sourceText(item)}</td>
-        <td>${esc(item.ip)}</td>
-        <td><b>${esc(stageLabels[item.stage] || item.stage || '未知阶段')}</b><span class="domain">${esc(item.reason_text || item.reason_code || '未通过入站校验')}</span></td>
+        <td>${ipProfile(item)}</td>
+        <td><b>${esc(stageLabels[item.stage] || item.stage || '未知阶段')}</b><span class="domain">${esc(item.reason_text || item.reason_code || '未通过入站校验')}</span>${followup}</td>
         <td title="${esc(item.user_agent)}">${esc(compactClient(item.user_agent))}<span class="domain">近10分钟合并：${Number(item.occurrence_count || 1)} 次</span></td>
-      </tr>`).join('') || '<tr><td colspan="6" class="hint">暂无未入站用户记录</td></tr>';
+      </tr>`;
+      }).join('') || '<tr><td colspan="6" class="hint">暂无未通过校验记录</td></tr>';
       renderPagination('rejected-log-pagination', payload.pagination, 'rejected');
     } catch (error) {
       if (error.name === 'AbortError' || sequence !== state.sequence) return;

@@ -1,0 +1,8 @@
+[Unit]
+Description=Monitor Star Ring Navigation HTTP health
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/webring-health-monitor

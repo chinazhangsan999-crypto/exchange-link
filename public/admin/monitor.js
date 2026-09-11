@@ -3,7 +3,7 @@
   if (!document.querySelector('link[href^="/admin/monitor.css"]')) {
     const stylesheet = document.createElement('link');
     stylesheet.rel = 'stylesheet';
-    stylesheet.href = '/admin/monitor.css?v=20260910-wide-client-audit';
+    stylesheet.href = '/admin/monitor.css?v=20260911-ip-profile';
     document.head.append(stylesheet);
   }
 
@@ -174,6 +174,22 @@
     return '<span class="client-risk normal">🟢 暂无明显异常</span>';
   }
 
+  const networkLabels = {
+    residential: '住宅宽带', mobile: '移动网络', business: '企业/专线',
+    education: '教育/机构', government: '政府网络', hosting: '云主机',
+    cdn: 'CDN/边缘网络', unknown: '未知'
+  };
+
+  function ipProfileHtml(item) {
+    const status = String(item.ip_lookup_status || 'pending');
+    const type = String(item.ip_network_type || 'unknown');
+    const label = status === 'resolved' ? (networkLabels[type] || '未知')
+      : status === 'pending' ? '识别中' : '未知';
+    const location = [item.ip_country_name, item.ip_region, item.ip_city].filter(Boolean).join(' · ');
+    const organization = [item.ip_asn ? `AS${Number(item.ip_asn)}` : '', item.ip_asn_org || item.ip_isp].filter(Boolean).join(' ');
+    return `<span class="ip-type ip-type-${escapeHtml(type)}">${escapeHtml(label)}</span>${location || organization ? `<small>${escapeHtml([location, organization].filter(Boolean).join(' / '))}</small>` : ''}`;
+  }
+
   function clientEvidence(item) {
     const flags = item.flags || {};
     const reasons = item.risk_reasons || [];
@@ -203,9 +219,11 @@
       const source = sourceLabels[item.attribution_method] || item.attribution_method || '历史数据未记录';
       const identity = item.visitor_short ? `访客 …${item.visitor_short}` : '历史记录（按 IP 聚合）';
       const environment = item.environment_short ? `环境 …${item.environment_short}` : '环境摘要未采集';
-      const searchText = [item.ip, item.visitor_short, item.client, item.raw_user_agent, item.source_domain, item.referer, reasons.join(' ')].join(' ').toLowerCase();
+      const searchText = [item.ip, item.ip_network_type, item.ip_country_name, item.ip_region, item.ip_city,
+        item.ip_asn_org, item.ip_isp, item.visitor_short, item.client, item.raw_user_agent,
+        item.source_domain, item.referer, reasons.join(' ')].join(' ').toLowerCase();
       return `<tr class="client-audit-row" data-client-index="${index}" data-risk="${flags.risky ? 1 : 0}" data-no-interaction="${flags.no_interaction ? 1 : 0}" data-source-anomaly="${flags.source_anomaly ? 1 : 0}" data-periodic="${flags.periodic ? 1 : 0}" data-environment-anomaly="${flags.environment_anomaly ? 1 : 0}" data-search="${escapeHtml(searchText)}">
-        <td><strong>${escapeHtml(item.ip || '未知 IP')}</strong><small>${escapeHtml(identity)}</small></td>
+        <td><strong>${escapeHtml(item.ip || '未知 IP')}</strong>${ipProfileHtml(item)}<small>${escapeHtml(identity)}</small></td>
         <td><span class="env-tag model-tag" title="${escapeHtml(item.raw_user_agent || item.client)}">${escapeHtml(item.client || item.device_model || '未知客户端')}</span><small>${escapeHtml(environment)}</small></td>
         <td><strong>${escapeHtml(item.source_domain || '空 Referer')}</strong><small>${escapeHtml(source)}</small></td>
         <td><strong>${Number(item.ip_count || 1)} UV / ${Number(item.requests || 0)} PV</strong><small>当前 IP ${Number(item.ip_requests || 0)} PV · ${Number(item.ip_ratio || 0).toFixed(1)}%</small></td>
@@ -377,7 +395,7 @@
         </div>
         <p id="client-data-note" class="client-data-note" hidden></p>
         <div class="table-wrap"><table>
-          <thead><tr><th>IP / 匿名访客</th><th>客户端环境</th><th>来源校验</th><th>24h 访问</th><th>后续互动</th><th>时间特征</th><th>风险证据</th><th>最近访问 / 操作</th></tr></thead>
+          <thead><tr><th>IP / 网络类型 / 匿名访客</th><th>客户端环境</th><th>来源校验</th><th>24h 访问</th><th>后续互动</th><th>时间特征</th><th>风险证据</th><th>最近访问 / 操作</th></tr></thead>
           <tbody id="client-audit-body"><tr><td colspan="8" class="empty-inflow">正在加载客户端明细…</td></tr></tbody>
         </table></div><div id="client-pagination" class="pagination-bar"></div>
       </section>`;

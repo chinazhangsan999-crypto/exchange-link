@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webring.local/protocol/v1/success.schema.json",
+  "title": "统一成功响应",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "ok", "code", "message", "data"],
+  "properties": {
+    "protocol": { "const": "1.0" },
+    "ok": { "const": true },
+    "code": { "type": "integer", "minimum": 200, "maximum": 299 },
+    "message": { "type": "string" },
+    "data": {}
+  }
+}

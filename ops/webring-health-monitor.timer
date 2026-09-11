@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Star Ring Navigation health monitor every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+RandomizedDelaySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

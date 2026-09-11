@@ -30,3 +30,8 @@ Thumbs.db
 .idea/
 .vscode/
 .github_known_hosts
+
+# Local agent skills and recoverable deployment backups
+.agents/
+skills-lock.json
+backups/

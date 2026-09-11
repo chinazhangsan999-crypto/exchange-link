@@ -54,3 +54,5 @@ html[data-theme='dark'] .traffic-row-secondary .val-dark { color: #e2e8f0; }
   font-weight: 700;
   line-height: 1;
 }
+
+.ip-profile{display:flex;min-width:150px;flex-wrap:wrap;align-items:center;gap:5px}.ip-profile .ip-value{color:#253250;font-weight:700}.ip-profile small{display:block;width:100%;color:#7a8499;font-size:10px;line-height:1.4}.ip-type{display:inline-flex;width:max-content;padding:3px 6px;border-radius:999px;background:#eef1f6;color:#59647a;font-size:10px;font-weight:700;line-height:1.2;white-space:nowrap}.ip-type-residential{background:#e9f8ef;color:#218657}.ip-type-mobile{background:#eaf2ff;color:#3157bf}.ip-type-business,.ip-type-education,.ip-type-government{background:#f1ebff;color:#7048a8}.ip-type-hosting,.ip-type-cdn{background:#fff0e1;color:#a45a13}.ip-risk-hint{color:#b45309!important}

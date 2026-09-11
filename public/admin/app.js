@@ -246,7 +246,7 @@
     }, true);
   }
   function ensureTableStructure() { const table = document.querySelector('#partners table'); if (!table) return; table.className = 'admin-table partner-table'; table.querySelector('colgroup')?.remove(); table.insertAdjacentHTML('afterbegin', '<colgroup><col class="partner-col-site"><col class="partner-col-category"><col class="partner-col-contact"><col class="partner-col-backlink"><col class="partner-col-ping"><col class="partner-col-traffic"><col class="partner-col-priority"><col class="partner-col-checked"><col class="partner-col-actions"></colgroup>'); table.querySelector('thead').innerHTML = '<tr><th>网站 / 域名</th><th>分类</th><th class="contact-header">站长联系方式</th><th>巡检状态</th><th class="ping-header">连通状态</th><th class="sort-header" data-sort="score_24h">带量 ↕</th><th class="sort-header" data-sort="priority">权重 ↕</th><th>最近巡检</th><th>操作</th></tr>'; }
-  function loadStyles() { if (!document.querySelector('link[href^="/admin/tables.css"]')) { const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/admin/tables.css?v=20260831-1'; document.head.append(link); } if (!document.querySelector('link[href^="/admin/table-fixes.css"]')) { const fixes = document.createElement('link'); fixes.rel = 'stylesheet'; fixes.href = '/admin/table-fixes.css?v=20260831-1'; document.head.append(fixes); } if (!document.querySelector('link[href^="/admin/traffic-cell.css"]')) { const traffic = document.createElement('link'); traffic.rel = 'stylesheet'; traffic.href = '/admin/traffic-cell.css?v=20260902-1'; document.head.append(traffic); } }
+  function loadStyles() { if (!document.querySelector('link[href^="/admin/tables.css"]')) { const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/admin/tables.css?v=20260831-1'; document.head.append(link); } if (!document.querySelector('link[href^="/admin/table-fixes.css"]')) { const fixes = document.createElement('link'); fixes.rel = 'stylesheet'; fixes.href = '/admin/table-fixes.css?v=20260831-1'; document.head.append(fixes); } if (!document.querySelector('link[href^="/admin/traffic-cell.css"]')) { const traffic = document.createElement('link'); traffic.rel = 'stylesheet'; traffic.href = '/admin/traffic-cell.css?v=20260911-ip-profile'; document.head.append(traffic); } }
   loadStyles(); ensureTableStructure(); installSort(); installToolbar(); installPartnerActionDelegation(); installCreateExemptionField(); installCreatePingExemptionField(); installEditExemptionField(); window.loadPartners = loadPartners;
   const partnerSearch = document.querySelector('#partner-q');
   if (partnerSearch) {
@@ -310,7 +310,7 @@
     event.preventDefault();
     const payload = {};
     ['csv_url_partners', 'csv_url_ads', 'csv_url_mirrors'].forEach(key => {
-      payload[key] = form().elements[key].value.trim();
+      if (form().elements[key]) payload[key] = form().elements[key].value.trim();
     });
     try {
       lockControls(true);
@@ -409,13 +409,15 @@
     form().dataset.bound = '1';
     form().addEventListener('submit', saveMatrixSettings);
     document.querySelector('#sync-matrix-all')?.addEventListener('click', event => {
-      runMatrixSync(['partners', 'ads', 'mirrors'], event.currentTarget);
+      runMatrixSync(window.controlCenterManaged ? ['partners', 'ads'] : ['partners', 'ads', 'mirrors'], event.currentTarget);
     });
     form().addEventListener('click', event => {
       const syncButton = event.target.closest('[data-sync-type]');
       if (syncButton) {
         const type = syncButton.dataset.syncType;
-        runMatrixSync(type === 'all' ? ['partners', 'ads', 'mirrors'] : [type], syncButton);
+        runMatrixSync(type === 'all'
+          ? (window.controlCenterManaged ? ['partners', 'ads'] : ['partners', 'ads', 'mirrors'])
+          : [type], syncButton);
         return;
       }
       const exportButton = event.target.closest('[data-export-type]');

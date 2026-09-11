@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR=/home/niaiwo/app
+ENV_FILE=/home/niaiwo/.config/webring/production.env
+STATE_DIR=/var/lib/webring-ops
+STATE_FILE="$STATE_DIR/health-state"
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
+
+failures=0
+state=normal
+last_alert=0
+if [[ -f "$STATE_FILE" ]]; then
+  read -r failures state last_alert < "$STATE_FILE" || true
+fi
+
+now=$(date +%s)
+if curl --fail --silent --show-error --max-time 8 http://127.0.0.1:3001/api/health >/dev/null; then
+  if [[ "$state" == failed ]]; then
+    set -a; . "$ENV_FILE"; set +a
+    runuser -u niaiwo -- node "$APP_DIR/scripts/send-ops-alert.js" '🟢 导航站服务已恢复' "恢复时间：$(TZ=Asia/Shanghai date '+%F %T')" || true
+  fi
+  failures=0
+  state=normal
+else
+  failures=$((failures + 1))
+  if (( failures >= 3 )) && { [[ "$state" != failed ]] || (( now - last_alert >= 1800 )); }; then
+    set -a; . "$ENV_FILE"; set +a
+    runuser -u niaiwo -- node "$APP_DIR/scripts/send-ops-alert.js" '🔴 导航站健康检查失败' "连续失败：${failures} 次\n检测时间：$(TZ=Asia/Shanghai date '+%F %T')" || true
+    state=failed
+    last_alert=$now
+  fi
+fi
+
+printf '%s %s %s\n' "$failures" "$state" "$last_alert" > "$STATE_FILE"

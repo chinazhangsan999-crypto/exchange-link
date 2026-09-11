@@ -40,7 +40,11 @@ async function initializeAdsTable() {
     ['platform', "TEXT NOT NULL DEFAULT 'all'"],
     ['ad_code', "TEXT DEFAULT ''"],
     ['description', "TEXT DEFAULT ''"],
-    ['updated_at', 'DATETIME DEFAULT NULL']
+    ['updated_at', 'DATETIME DEFAULT NULL'],
+    ['managed_by', "TEXT NOT NULL DEFAULT 'local'"],
+    ['central_id', 'TEXT DEFAULT NULL'],
+    ['namespace', "TEXT NOT NULL DEFAULT ''"],
+    ['integrity_sha256', "TEXT NOT NULL DEFAULT ''"]
   ];
   for (const [name, definition] of additions) {
     if (!names.has(name)) await run(`ALTER TABLE ads ADD COLUMN ${name} ${definition}`);
@@ -68,6 +72,9 @@ async function initializeAdsTable() {
   await run("UPDATE ads SET platform = 'all' WHERE platform IS NULL OR platform NOT IN ('all', 'pc', 'ios', 'non_ios', 'android', 'harmony')");
   await run("UPDATE ads SET platform = 'all' WHERE ad_type = 'code'");
   await run("UPDATE ads SET ad_code = COALESCE(ad_code, ''), description = COALESCE(description, '')");
+  await run("UPDATE ads SET managed_by = 'local' WHERE managed_by IS NULL OR managed_by = ''");
+  await run("UPDATE ads SET namespace = 'local:' || id WHERE namespace IS NULL OR namespace = ''");
+  await run('CREATE UNIQUE INDEX IF NOT EXISTS idx_ads_central_id ON ads(central_id) WHERE central_id IS NOT NULL');
   await run("UPDATE ads SET ad_code = '' WHERE ad_type = 'normal'");
   await run("UPDATE ads SET image_url = '', target_url = '' WHERE ad_type = 'code'");
   await run('CREATE INDEX IF NOT EXISTS idx_ads_active_position_sort ON ads(status, ad_position, sort_order DESC, id ASC)');
@@ -98,23 +105,42 @@ async function initializeAdsTable() {
 
 function selectColumns() {
   return `id, title, ad_type, ad_position, platform, ad_code, target_url, image_url,
-    sort_order, status, description, created_at, updated_at`;
+    sort_order, status, description, managed_by, central_id, namespace, integrity_sha256,
+    created_at, updated_at`;
 }
 
 function listAds() {
   return all(`SELECT ${selectColumns()} FROM ads ORDER BY sort_order DESC, id ASC`);
 }
 
+function listLocalAds() {
+  return all(`SELECT ${selectColumns()} FROM ads WHERE managed_by <> 'central' ORDER BY sort_order DESC, id ASC`);
+}
+
 function getAdById(id) {
   return get(`SELECT ${selectColumns()} FROM ads WHERE id = ?`, [id]);
 }
 
-function getActiveAds() {
-  return all(`SELECT id, title, ad_type, ad_position, platform, ad_code, target_url, image_url,
-      sort_order, description
+async function getActiveAds() {
+  const ads = await all(`SELECT id, title, ad_type, ad_position, platform, ad_code, target_url, image_url,
+      sort_order, description, managed_by
     FROM ads
     WHERE status = 1
     ORDER BY sort_order DESC, id ASC`);
+  const settings = await all("SELECT key, value FROM site_configs WHERE key LIKE 'central_ad_policy:%'");
+  const policies = new Map(settings.map(item => [item.key.replace('central_ad_policy:', ''), item.value]));
+  const output = [];
+  for (const position of ACTIVE_POSITIONS) {
+    const items = ads.filter(item => item.ad_position === position);
+    const central = items.filter(item => item.managed_by === 'central');
+    const local = items.filter(item => item.managed_by !== 'central');
+    const policy = policies.get(position) || 'central_first';
+    if (policy === 'central_only') output.push(...central);
+    else if (policy === 'local_only') output.push(...local);
+    else if (policy === 'mixed') output.push(...items);
+    else output.push(...central, ...local);
+  }
+  return output;
 }
 
 function getActiveCodeAdsByIds(ids) {
@@ -196,7 +222,7 @@ function syncAdsFromCsv(items) {
     let updated = 0;
     for (const item of items) {
       const existing = await txGet(
-        'SELECT id FROM ads WHERE ad_position = ? AND title = ? LIMIT 1',
+        "SELECT id FROM ads WHERE managed_by <> 'central' AND ad_position = ? AND title = ? LIMIT 1",
         [item.adPosition, item.title]
       );
       if (existing) {
@@ -234,7 +260,7 @@ function setAdStatus(id, status) {
 /** 广告 CSV 是完整事实源；校验在事务开启前完成，事务内全量替换。 */
 function replaceAdsFromCsv(items) {
   return withTransaction(async ({ run: txRun }) => {
-    await txRun('DELETE FROM ads');
+    await txRun("DELETE FROM ads WHERE managed_by <> 'central'");
     for (const item of items) {
       await txRun(`INSERT INTO ads(
           type, title, description, ad_type, ad_position, platform, ad_code,
@@ -252,6 +278,7 @@ function listAdsForExport() {
   return all(`SELECT ad_type, ad_position, title, description, ad_code, image_url,
       target_url, sort_order, status
     FROM ads
+    WHERE managed_by <> 'central'
     ORDER BY sort_order DESC, id ASC`);
 }
 
@@ -264,6 +291,7 @@ module.exports = {
   RUNTIME_STATUSES,
   initializeAdsTable,
   listAds,
+  listLocalAds,
   getAdById,
   getActiveAds,
   getActiveCodeAdsByIds,

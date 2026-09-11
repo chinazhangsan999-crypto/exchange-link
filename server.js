@@ -12,7 +12,10 @@ const { initializeSourceTokenTables, ensureAllPartnersHaveSid } = require('./src
 const { initializeAdsTable } = require('./src/models/AdsModel');
 const { initializeMirrorsTable, syncMirrorsToPartners } = require('./src/models/MirrorModel');
 const { initializeSiteTrafficTable } = require('./src/models/SiteTrafficModel');
+const { initializeIpProfileTable } = require('./src/models/IpProfileModel');
 const SiteTrafficService = require('./src/services/SiteTrafficService');
+const IpIntelligenceService = require('./src/services/IpIntelligenceService');
+const ControlCenterAgentService = require('./src/services/ControlCenterAgentService');
 const { startJobs, stopJobs } = require('./src/jobs/cron');
 
 let httpServer;
@@ -33,15 +36,19 @@ process.on('unhandledRejection', reason => {
 
 initializeDatabase()
   .then(initializeSiteTrafficTable)
+  .then(initializeIpProfileTable)
   .then(initializeSourceTokenTables)
   .then(initializeAdsTable)
   .then(initializeMirrorsTable)
+  .then(ControlCenterAgentService.initialize)
   .then(syncMirrorsToPartners)
   .then(ensureAllPartnersHaveSid)
   .then(() => {
     httpServer = app.listen(PORT, () => {
       console.log(`互助友链系统已启动：http://localhost:${PORT}`);
       SiteTrafficService.start();
+      IpIntelligenceService.start();
+      ControlCenterAgentService.start();
       startJobs();
     });
   })
@@ -82,6 +89,8 @@ async function shutdown(signal) {
     } catch (error) {
       console.warn('服务停机时刷新全站访客统计失败：', error.message);
     }
+    ControlCenterAgentService.stop();
+    await IpIntelligenceService.stop();
     // 所有 HTTP 连接已关闭、未来任务已取消调度后，才拒绝新的写入并排空当前事务。
     dbWriteCoordinator.beginShutdown();
     const writeQueueResult = await dbWriteCoordinator.drain({ timeoutMs: 15000 });

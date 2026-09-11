@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR=/home/niaiwo/app
+BACKUP_DIR=/home/niaiwo/backups/webring
+ENV_FILE=/home/niaiwo/.config/webring/production.env
+STAMP=$(TZ=Asia/Shanghai date '+%Y%m%d-%H%M%S')
+TEMP_FILE="$BACKUP_DIR/.webring-$STAMP.db.tmp"
+FINAL_FILE="$BACKUP_DIR/webring-$STAMP.db"
+
+notify_failure() {
+  rm -f "$TEMP_FILE"
+  if [[ -f "$ENV_FILE" ]]; then
+    set -a
+    . "$ENV_FILE"
+    set +a
+    node "$APP_DIR/scripts/send-ops-alert.js" '🔴 SQLite 备份失败' "备份时间：$(TZ=Asia/Shanghai date '+%F %T')" || true
+  fi
+}
+trap notify_failure ERR
+
+mkdir -p "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+node "$APP_DIR/scripts/backup-sqlite.js" "$APP_DIR/webring.db" "$TEMP_FILE" >/dev/null
+node - "$TEMP_FILE" "$APP_DIR" <<'NODE'
+const [file, app] = process.argv.slice(2);
+const sqlite3 = require(`${app}/node_modules/sqlite3`).verbose();
+const db = new sqlite3.Database(file, sqlite3.OPEN_READONLY);
+db.get('PRAGMA integrity_check', (error, row) => {
+  db.close();
+  if (error || row?.integrity_check !== 'ok') {
+    console.error(error?.message || 'SQLite integrity_check 未通过');
+    process.exitCode = 1;
+  }
+});
+NODE
+mv "$TEMP_FILE" "$FINAL_FILE"
+sha256sum "$FINAL_FILE" > "$FINAL_FILE.sha256"
+find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'webring-*.db' -o -name 'webring-*.db.sha256' \) -mtime +14 -delete
+trap - ERR

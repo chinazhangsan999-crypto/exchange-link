@@ -65,7 +65,10 @@
     const tabs = document.querySelector('.tabs');
     if (!tabs) return;
     let mirrorLink = tabs.querySelector('[data-tab="mirrors"]');
-    if (!mirrorLink) {
+    if (window.controlCenterManaged) {
+      mirrorLink?.remove();
+      mirrorLink = null;
+    } else if (!mirrorLink) {
       mirrorLink = document.createElement('button');
       mirrorLink.type = 'button';
       mirrorLink.dataset.tab = 'mirrors';
@@ -171,12 +174,87 @@
   bindTabs();
   // review.js 在本文件之前创建审核/设置标签；赋予其路由标识并重新统一绑定。
   document.querySelector('#review-tab')?.setAttribute('data-tab', 'review'); document.querySelector('#settings-tab')?.setAttribute('data-tab', 'settings'); bindTabs();
-  normalizePrimaryNavigation();
-  bindTabs();
-  if (token()) {
-    void window.loadAdminBrand();
-    window.restoreAdminTab();
-  } else {
-    document.querySelector('#login-modal')?.classList.add('open');
+  async function controlCenterStatus() {
+    try {
+      const response = await fetch('/api/admin/control-center/status', { credentials: 'same-origin' });
+      const payload = await response.json();
+      return payload?.data || { enabled: false };
+    } catch { return { enabled: false }; }
   }
+
+  async function consumeControlCenterSso() {
+    const match = /^#control-sso=([^&]+)$/.exec(window.location.hash);
+    if (!match) return false;
+    history.replaceState(null, '', `${location.pathname}${location.search}`);
+    let code;
+    try { code = decodeURIComponent(match[1]); }
+    catch { throw new Error('统一登录交换码格式不合法'); }
+    const response = await fetch('/api/admin/control-center/session', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ code })
+    });
+    const payload = await response.json().catch(() => null);
+    const newToken = payload?.data?.token;
+    if (!response.ok || !newToken) throw new Error(payload?.message || payload?.msg || '统一登录交换失败，请返回总后台重试');
+    localStorage.setItem('webring_admin_token', newToken);
+    localStorage.setItem('webring_login_source', 'control_center');
+    return true;
+  }
+
+  function applyCentralManagementUi(status) {
+    window.controlCenterManaged = status.enabled === true;
+    if (!window.controlCenterManaged) return;
+    try {
+      const current = token();
+      const encoded = current ? current.split('.')[1].replace(/-/g, '+').replace(/_/g, '/') : '';
+      const payload = encoded ? JSON.parse(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '='))) : null;
+      if (payload?.source !== 'control_center') localStorage.removeItem('webring_admin_token');
+    } catch { localStorage.removeItem('webring_admin_token'); }
+    document.querySelector('.tabs [data-tab="mirrors"]')?.remove();
+    document.querySelector('#matrix-url-form [name="csv_url_mirrors"]')?.closest('label')?.remove();
+    document.querySelectorAll('#matrix-url-form [data-sync-type="mirrors"]').forEach(item => item.remove());
+    if (normalizeTab(window.location.hash.replace(/^#/, '')) === 'mirrors') {
+      history.replaceState(null, '', `${location.pathname}#dashboard`);
+    }
+
+    if (!token()) {
+      const form = document.querySelector('#login-form');
+      if (!form) return;
+      form.replaceChildren();
+      const title = document.createElement('h3');
+      title.textContent = '统一后台登录';
+      const hint = document.createElement('p');
+      hint.className = 'hint login-hint';
+      hint.textContent = '本站已关闭本地账号登录，请从总后台验证后进入。';
+      const actions = document.createElement('div');
+      actions.className = 'dialog-foot';
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'button';
+      button.textContent = '前往总后台';
+      button.onclick = () => window.location.assign(status.controlCenterUrl);
+      actions.append(button);
+      form.append(title, hint, actions);
+    }
+  }
+
+  async function bootstrap() {
+    try { await consumeControlCenterSso(); }
+    catch (error) { toast(error.message || '统一登录失败，请返回总后台重试'); }
+    const status = await controlCenterStatus();
+    applyCentralManagementUi(status);
+    normalizePrimaryNavigation();
+    bindTabs();
+    if (token()) {
+      document.querySelector('#login-modal')?.classList.remove('open');
+      void window.loadAdminBrand();
+      window.restoreAdminTab();
+    } else {
+      document.querySelector('#login-modal')?.classList.add('open');
+    }
+  }
+
+  void bootstrap();
 })();

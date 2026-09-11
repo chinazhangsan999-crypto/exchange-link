@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webring.local/protocol/v1/heartbeat-request.schema.json",
+  "title": "站点 Agent 心跳请求",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol_version", "agent_version", "applied_revision", "capabilities", "metadata"],
+  "properties": {
+    "protocol_version": { "const": "1.0" },
+    "agent_version": { "type": "string", "minLength": 1, "maxLength": 80 },
+    "applied_revision": { "type": "string", "pattern": "^$|^[0-9]+-[0-9]+-[0-9]+$" },
+    "capabilities": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9.-]{1,80}$" } },
+    "metadata": { "type": "object" }
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webring.local/protocol/v1/heartbeat-result.schema.json",
+  "title": "心跳成功结果",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["server_time", "protocol_version", "heartbeat_interval_seconds"],
+  "properties": {
+    "server_time": { "type": "string", "format": "date-time" },
+    "protocol_version": { "const": "1.0" },
+    "heartbeat_interval_seconds": { "type": "integer", "minimum": 10 }
+  }
+}

@@ -182,6 +182,23 @@ function buildClientAuditRows(events, interactions, pv, thresholds) {
       identity_key: group.identityKey,
       visitor_short: group.visitorHash ? group.visitorHash.slice(-8).toUpperCase() : '',
       ip: latestIp,
+      ip_lookup_status: String(latest.ip_lookup_status || 'pending'),
+      ip_network_type: String(latest.ip_network_type || 'unknown'),
+      ip_country_code: String(latest.ip_country_code || ''),
+      ip_country_name: String(latest.ip_country_name || ''),
+      ip_region: String(latest.ip_region || ''),
+      ip_city: String(latest.ip_city || ''),
+      ip_asn: latest.ip_asn == null ? null : Number(latest.ip_asn),
+      ip_asn_org: String(latest.ip_asn_org || ''),
+      ip_isp: String(latest.ip_isp || ''),
+      ip_is_hosting: latest.ip_is_hosting,
+      ip_is_mobile: latest.ip_is_mobile,
+      ip_is_proxy: latest.ip_is_proxy,
+      ip_is_vpn: latest.ip_is_vpn,
+      ip_is_tor: latest.ip_is_tor,
+      ip_is_anycast: latest.ip_is_anycast,
+      ip_confidence: String(latest.ip_confidence || 'unknown'),
+      ip_profile_updated_at: String(latest.ip_profile_updated_at || ''),
       ip_count: group.ips.size,
       ip_visitor_count: ipIdentities.get(latestIp)?.size || 1,
       client: clientName(parsed),
@@ -352,7 +369,8 @@ async function analyzePartnerClients(partnerId, { page = 1, pageSize = 100, quer
     if (flag && !row.flags?.[flag]) return false;
     if (!normalizedQuery) return true;
     return [
-      row.ip, row.visitor_short, row.client, row.raw_user_agent, row.source_domain,
+      row.ip, row.ip_network_type, row.ip_country_name, row.ip_region, row.ip_city,
+      row.ip_asn_org, row.ip_isp, row.visitor_short, row.client, row.raw_user_agent, row.source_domain,
       row.referer, ...(row.risk_reasons || [])
     ].some(value => String(value || '').toLowerCase().includes(normalizedQuery));
   });

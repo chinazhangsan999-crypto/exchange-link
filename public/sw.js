@@ -1,7 +1,7 @@
 /** 星环导航轻量离线缓存：验证和敏感操作永不缓存，普通页面网络优先。 */
-const CACHE_NAME = 'nav-cache-v3-remove-clarity';
+const CACHE_NAME = 'nav-cache-v4-remove-node-switcher';
 const STATIC_ASSETS = [
-  '/', '/index.html', '/script.js?v=20260909-adaptive-verification', '/style.css', '/manifest.json',
+  '/', '/index.html', '/script.js?v=20260910-remove-node-switcher', '/style.css', '/manifest.json',
   '/tooltip.css', '/apply.css', '/apply-category.css', '/no-icons.css',
   '/header-cleanup.css', '/mobile-nav.css', '/enhance.css', '/pwa.css',
   '/icons/icon-192.png', '/icons/icon-512.png'

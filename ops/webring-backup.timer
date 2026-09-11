@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Star Ring Navigation backup daily
+
+[Timer]
+OnCalendar=*-*-* 03:20:00 Asia/Shanghai
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

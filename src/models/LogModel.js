@@ -1,5 +1,6 @@
 const { run, get, all, withTransaction } = require('../config/database');
 const { getLocalDayUtcRange } = require('../utils/time');
+const { PROFILE_COLUMNS } = require('./IpProfileModel');
 
 const LOG_RETENTION_DAYS = 7;
 const LOG_DELETE_BATCH_SIZE = 5000;
@@ -70,11 +71,11 @@ async function archiveExpiredClaims() {
     const archived = await transaction.run(`INSERT INTO inbound_rejection_logs(
       client_ip, visitor_hash, user_agent, referer, observed_domain, partner_id,
       source_token_id, attribution_method, visitor_type, stage, reason_code, reason_text,
-      request_path, first_seen_at, last_seen_at, created_at
+      request_path, attempt_id, classification, first_seen_at, last_seen_at, created_at
     ) SELECT ip, visitor_hash, user_agent, COALESCE(referer, ''), COALESCE(observed_domain, ''), partner_id,
       source_token_id, COALESCE(attribution_method, ''), 'source_validation', 'heartbeat',
       'heartbeat_expired', '15分钟内未完成有效心跳', COALESCE(request_path, '/'),
-      created_at, expires_at, expires_at
+      COALESCE(attempt_id, ''), 'rejected', created_at, expires_at, expires_at
       FROM inflow_claim_tokens
       WHERE claimed_at IS NULL AND expires_at < datetime('now')`);
     const removed = await transaction.run("DELETE FROM inflow_claim_tokens WHERE expires_at < datetime('now')");
@@ -96,14 +97,15 @@ async function createClaimToken({
   observedDomain = '',
   userAgent = '',
   visitorHash = '',
-  requestPath = '/'
+  requestPath = '/',
+  attemptId = ''
 }) {
   return withTransaction(async transaction => {
     return transaction.run(`INSERT INTO inflow_claim_tokens(
       token_hash, partner_id, ip, expires_at, started_at_ms, referer,
       source_token_id, sid_partner_id, domain_partner_id, attribution_method, observed_domain,
-      user_agent, visitor_hash, request_path
-    ) VALUES (?, ?, ?, datetime('now', ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      user_agent, visitor_hash, request_path, attempt_id
+    ) VALUES (?, ?, ?, datetime('now', ?), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
       tokenHash,
       partnerId,
       ip,
@@ -117,7 +119,8 @@ async function createClaimToken({
       String(observedDomain || '').slice(0, 253),
       String(userAgent || '').slice(0, 500),
       String(visitorHash || '').slice(0, 64),
-      String(requestPath || '/').slice(0, 500)
+      String(requestPath || '/').slice(0, 500),
+      String(attemptId || '').slice(0, 64)
     ]);
   }, { priority: 'traffic', label: 'create inflow claim', durability: 'normal' });
 }
@@ -139,7 +142,9 @@ async function recordRejectedInbound(event = {}) {
     attributionMethod: String(event.attributionMethod || '').slice(0, 64),
     visitorType: String(event.visitorType || 'source_validation').slice(0, 64),
     reasonText: String(event.reasonText || '未通过入站校验').replace(/[\r\n\t]+/g, ' ').slice(0, 300),
-    requestPath: String(event.requestPath || '/').slice(0, 500)
+    requestPath: String(event.requestPath || '/').slice(0, 500),
+    attemptId: String(event.attemptId || '').slice(0, 64),
+    classification: event.classification === 'suppressed' ? 'suppressed' : 'rejected'
   };
   return withTransaction(async transaction => {
     const existing = await transaction.get(`SELECT id FROM inbound_rejection_logs
@@ -153,17 +158,20 @@ async function recordRejectedInbound(event = {}) {
     if (existing) {
       return transaction.run(`UPDATE inbound_rejection_logs
         SET occurrence_count = occurrence_count + 1, last_seen_at = CURRENT_TIMESTAMP,
-          client_ip = ?, user_agent = ?, referer = ?, observed_domain = ?, reason_text = ?
-        WHERE id = ?`, [clientIp, values.userAgent, values.referer, values.observedDomain, values.reasonText, existing.id]);
+          client_ip = ?, user_agent = ?, referer = ?, observed_domain = ?, reason_text = ?,
+          attempt_id = ?, classification = ?, resolution_status = 'unresolved',
+          resolved_at = NULL, resolved_visit_id = NULL
+        WHERE id = ?`, [clientIp, values.userAgent, values.referer, values.observedDomain,
+        values.reasonText, values.attemptId, values.classification, existing.id]);
     }
     return transaction.run(`INSERT INTO inbound_rejection_logs(
       client_ip, visitor_hash, user_agent, referer, observed_domain, partner_id,
       source_token_id, attribution_method, visitor_type, stage, reason_code, reason_text,
-      request_path
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      request_path, attempt_id, classification
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
       clientIp, values.visitorHash, values.userAgent, values.referer, values.observedDomain,
       partnerId, values.sourceTokenId, values.attributionMethod, values.visitorType,
-      stage, reasonCode, values.reasonText, values.requestPath
+      stage, reasonCode, values.reasonText, values.requestPath, values.attemptId, values.classification
     ]);
   }, { priority: 'traffic', label: 'record rejected inbound', durability: 'normal' });
 }
@@ -197,9 +205,9 @@ async function processTrackPing({
     await transaction.run(`INSERT INTO inbound_logs(
       link_id, client_ip, user_agent, referer, visit_id,
       source_token_id, sid_partner_id, domain_partner_id, attribution_method, observed_domain,
-      visitor_hash, client_fingerprint, screen_resolution, client_language, client_platform,
+      visitor_hash, client_fingerprint, screen_resolution, client_language, client_platform, attempt_id,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`, [
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`, [
       claim.partner_id,
       clientIp,
       userAgent,
@@ -214,8 +222,17 @@ async function processTrackPing({
       String(clientFingerprint || '').slice(0, 64),
       String(screenResolution || '').slice(0, 32),
       String(clientLanguage || '').slice(0, 32),
-      String(clientPlatform || '').slice(0, 80)
+      String(clientPlatform || '').slice(0, 80),
+      String(claim.attempt_id || '').slice(0, 64)
     ]);
+
+    // 入口冷却只是抑制同一访客的重复页面请求；如果已有凭证随后成功，保留审计记录但标记为已解决。
+    await transaction.run(`UPDATE inbound_rejection_logs
+      SET resolution_status = 'resolved_by_valid_visit', resolved_at = CURRENT_TIMESTAMP,
+        resolved_visit_id = ?
+      WHERE partner_id = ? AND client_ip = ? AND reason_code = 'entry_cooldown'
+        AND classification = 'suppressed' AND resolution_status = 'unresolved'
+        AND last_seen_at >= datetime('now', '-2 minutes')`, [visitId, claim.partner_id, clientIp]);
 
     // SID 使用次数只在通过滑块并完成 3 秒真实心跳后增加；无效或被放弃的落地页不计入。
     if (claim.source_token_id) {
@@ -366,12 +383,15 @@ async function getPartnerAnalytics(partnerId, { includeClients = true, clientEve
         GROUP BY strftime('%Y-%m-%d %H', created_at)
       )`, [partnerId]),
     includeClients
-      ? all(`SELECT id, client_ip AS ip, user_agent, referer, visit_id, attribution_method,
-          observed_domain, visitor_hash, client_fingerprint, screen_resolution,
-          client_language, client_platform, created_at AS timestamp
-        FROM inbound_logs
-        WHERE link_id = ? AND created_at >= datetime('now', '-24 hours')
-        ORDER BY created_at DESC, id DESC
+      ? all(`SELECT inbound.id, inbound.client_ip AS ip, inbound.user_agent, inbound.referer,
+          inbound.visit_id, inbound.attribution_method, inbound.observed_domain,
+          inbound.visitor_hash, inbound.client_fingerprint, inbound.screen_resolution,
+          inbound.client_language, inbound.client_platform, inbound.created_at AS timestamp,
+          ${PROFILE_COLUMNS}
+        FROM inbound_logs inbound
+        LEFT JOIN ip_profiles profile ON profile.ip_key = inbound.client_ip
+        WHERE inbound.link_id = ? AND inbound.created_at >= datetime('now', '-24 hours')
+        ORDER BY inbound.created_at DESC, inbound.id DESC
         LIMIT ?`, [partnerId, safeClientEventLimit])
       : Promise.resolve([]),
     includeClients
@@ -441,7 +461,7 @@ async function searchInboundLogs(query = '', { page = 1, pageSize = 100 } = {}) 
   const offset = (effectivePage - 1) * paging.pageSize;
   const items = await all(`SELECT l.id, l.link_id AS partner_id, l.client_ip AS ip, l.user_agent,
     l.referer, l.observed_domain, l.attribution_method, l.created_at AS timestamp,
-    p.name AS partner_name, p.domain,
+    p.name AS partner_name, p.domain, ${PROFILE_COLUMNS},
     CASE WHEN EXISTS (
       SELECT 1 FROM inbound_logs previous
       WHERE previous.link_id = l.link_id AND previous.client_ip = l.client_ip
@@ -450,6 +470,7 @@ async function searchInboundLogs(query = '', { page = 1, pageSize = 100 } = {}) 
     ) THEN 0 ELSE 1 END AS newly_counted
     FROM inbound_logs l
     JOIN partners p ON p.id = l.link_id
+    LEFT JOIN ip_profiles profile ON profile.ip_key = l.client_ip
     ${whereSql}
     ORDER BY l.created_at DESC, l.id DESC
     LIMIT ? OFFSET ?`, [...filterParams, paging.pageSize, offset]);
@@ -460,8 +481,8 @@ async function searchRejectedInboundLogs(query = '', { page = 1, pageSize = 100 
   const keyword = String(query || '').trim();
   const paging = normalizePagination(page, pageSize);
   const whereSql = keyword ? `WHERE r.client_ip LIKE ? OR COALESCE(p.name, '') LIKE ? OR COALESCE(p.domain, '') LIKE ?
-      OR r.observed_domain LIKE ? OR r.reason_text LIKE ?` : '';
-  const filterParams = keyword ? [`%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`, `%${keyword}%`] : [];
+      OR r.observed_domain LIKE ? OR r.reason_text LIKE ? OR r.classification LIKE ? OR r.resolution_status LIKE ?` : '';
+  const filterParams = keyword ? Array(7).fill(`%${keyword}%`) : [];
   const totalRow = await get(`SELECT COUNT(*) AS total
     FROM inbound_rejection_logs r
     LEFT JOIN partners p ON p.id = r.partner_id
@@ -473,9 +494,32 @@ async function searchRejectedInboundLogs(query = '', { page = 1, pageSize = 100 
   const items = await all(`SELECT r.id, r.client_ip AS ip, r.user_agent, r.referer, r.observed_domain,
     r.partner_id, r.source_token_id, r.attribution_method, r.visitor_type,
     r.stage, r.reason_code, r.reason_text, r.request_path, r.occurrence_count,
-    r.first_seen_at, r.last_seen_at AS timestamp, p.name AS partner_name, p.domain
+    r.attempt_id,
+    CASE WHEN r.reason_code = 'entry_cooldown' THEN 'suppressed' ELSE r.classification END AS classification,
+    CASE WHEN r.reason_code = 'entry_cooldown' AND EXISTS (
+      SELECT 1 FROM inbound_logs valid
+      WHERE valid.link_id = r.partner_id AND valid.client_ip = r.client_ip
+        AND valid.created_at >= datetime(r.first_seen_at, '-1 minute')
+        AND valid.created_at <= datetime(r.last_seen_at, '+2 minutes')
+    ) THEN 'resolved_by_valid_visit' ELSE r.resolution_status END AS resolution_status,
+    COALESCE(r.resolved_at, (
+      SELECT MIN(valid.created_at) FROM inbound_logs valid
+      WHERE valid.link_id = r.partner_id AND valid.client_ip = r.client_ip
+        AND valid.created_at >= datetime(r.first_seen_at, '-1 minute')
+        AND valid.created_at <= datetime(r.last_seen_at, '+2 minutes')
+    )) AS resolved_at,
+    COALESCE(r.resolved_visit_id, (
+      SELECT valid.visit_id FROM inbound_logs valid
+      WHERE valid.link_id = r.partner_id AND valid.client_ip = r.client_ip
+        AND valid.created_at >= datetime(r.first_seen_at, '-1 minute')
+        AND valid.created_at <= datetime(r.last_seen_at, '+2 minutes')
+      ORDER BY valid.created_at ASC, valid.id ASC LIMIT 1
+    )) AS resolved_visit_id,
+    r.first_seen_at, r.last_seen_at AS timestamp, p.name AS partner_name, p.domain,
+    ${PROFILE_COLUMNS}
     FROM inbound_rejection_logs r
     LEFT JOIN partners p ON p.id = r.partner_id
+    LEFT JOIN ip_profiles profile ON profile.ip_key = r.client_ip
     ${whereSql}
     ORDER BY r.last_seen_at DESC, r.id DESC
     LIMIT ? OFFSET ?`, [...filterParams, paging.pageSize, offset]);

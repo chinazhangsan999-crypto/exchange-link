@@ -1,7 +1,7 @@
 'use strict';
 
 const jwt = require('jsonwebtoken');
-const { ADMIN_JWT_SECRET } = require('../config/env');
+const { ADMIN_JWT_SECRET, CONTROL_CENTER_ENABLED } = require('../config/env');
 
 /** JWT 管理身份校验：所有受保护后台接口必须携带 Bearer Token。 */
 function requireAdmin(req, res, next) {
@@ -19,6 +19,9 @@ function requireAdmin(req, res, next) {
 
   if (payload?.role !== 'admin' || payload?.type !== 'admin') {
     return res.status(403).json({ code: 403, msg: '令牌没有管理员权限', data: null });
+  }
+  if (CONTROL_CENTER_ENABLED && payload?.source !== 'control_center') {
+    return res.status(401).json({ code: 401, msg: '请从总后台重新进入本站后台', data: null });
   }
 
   req.admin = payload;

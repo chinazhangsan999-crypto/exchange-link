@@ -8,7 +8,7 @@ const jwt = require('jsonwebtoken');
 const UAParser = require('ua-parser-js');
 const { ZipArchive } = require('archiver');
 const { parse: parseCsv } = require('csv-parse/sync');
-const { ADMIN_JWT_SECRET } = require('../config/env');
+const { ADMIN_JWT_SECRET, CONTROL_CENTER_ENABLED } = require('../config/env');
 const { parseHostname, matchesPartnerDomain, normalizePartnerUrl } = require('../utils/network');
 const { normalizeUrl, normalizeAnalyticsScriptUrl } = require('../utils/url');
 const { buildSourceEntryUrls } = require('../utils/sourceLinks');
@@ -203,6 +203,9 @@ async function analyticsConfig() {
 
 async function login(req, res) {
   try {
+    if (CONTROL_CENTER_ENABLED) {
+      return fail(res, '本站已启用统一后台，请从总后台进入', 403);
+    }
     const username = String(req.body?.username || '').trim();
     const password = String(req.body?.password || '');
     if (!username || !password) return fail(res, '请输入用户名和密码');
@@ -1251,7 +1254,7 @@ function csvStatus(value) {
 }
 
 async function getAds(req, res) {
-  try { return ok(res, await AdModel.listAds()); }
+  try { return ok(res, await (CONTROL_CENTER_ENABLED ? AdModel.listLocalAds() : AdModel.listAds())); }
   catch (error) { console.error('获取广告列表失败：', error); return fail(res, '获取广告列表失败', 500); }
 }
 
@@ -1272,6 +1275,7 @@ async function updateAd(req, res) {
     if (!Number.isSafeInteger(id) || id <= 0) return fail(res, '广告编号不合法');
     const existing = await AdModel.getAdById(id);
     if (!existing) return fail(res, '广告不存在', 404);
+    if (CONTROL_CENTER_ENABLED && existing.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
     const result = await AdModel.updateAd(id, parseAdPayload({ ...existing, ...req.body }));
     CacheService.clearPublicCache();
     return ok(res, { changes: result.changes }, '广告已更新');
@@ -1285,6 +1289,8 @@ async function updateAdStatus(req, res) {
   try {
     const id = Number(req.params.id), status = Number(req.body?.status);
     if (!Number.isSafeInteger(id) || id <= 0 || ![0, 1].includes(status)) return fail(res, '参数不合法');
+    const existing = await AdModel.getAdById(id);
+    if (CONTROL_CENTER_ENABLED && existing?.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
     const result = await AdModel.setAdStatus(id, status);
     if (!result.changes) return fail(res, '广告不存在', 404);
     CacheService.clearPublicCache();
@@ -1297,7 +1303,10 @@ async function updateAdStatus(req, res) {
 
 async function deleteAd(req, res) {
   try {
-    const result = await AdModel.deleteAd(Number(req.params.id));
+    const id = Number(req.params.id);
+    const existing = await AdModel.getAdById(id);
+    if (CONTROL_CENTER_ENABLED && existing?.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
+    const result = await AdModel.deleteAd(id);
     if (!result.changes) return fail(res, '广告不存在', 404);
     CacheService.clearPublicCache();
     return ok(res, null, '广告已删除');
@@ -1368,6 +1377,7 @@ async function getMirrors(req, res) {
 
 async function createMirror(req, res) {
   try {
+    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
     const mirror = parseMirrorPayload(req.body);
     await MirrorModel.createMirror(mirror);
     await syncMirrorPartnersAndCache();
@@ -1380,6 +1390,7 @@ async function createMirror(req, res) {
 
 async function updateMirror(req, res) {
   try {
+    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
     const originalUrl = String(req.params.url || '');
     const existing = await MirrorModel.getMirrorByUrl(originalUrl);
     if (!existing) return fail(res, '节点不存在', 404);
@@ -1396,6 +1407,7 @@ async function updateMirror(req, res) {
 
 async function updateMirrorStatus(req, res) {
   try {
+    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
     const result = await MirrorModel.setMirrorStatus(req.params.url, req.body?.status);
     if (!result.changes) return fail(res, '节点不存在', 404);
     await syncMirrorPartnersAndCache();
@@ -1407,6 +1419,7 @@ async function updateMirrorStatus(req, res) {
 
 async function deleteMirror(req, res) {
   try {
+    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
     const result = await MirrorModel.deleteMirror(req.params.url);
     if (!result.changes) return fail(res, '节点不存在', 404);
     await syncMirrorPartnersAndCache();
@@ -1418,6 +1431,7 @@ async function deleteMirror(req, res) {
 
 async function syncMirrorsCsv(req, res) {
   try {
+    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
     const rawRows = parseCsvRows(req.body?.csv);
     if (rawRows[0]?.[0] && /^(测速名|speed[_ ]?name)$/i.test(rawRows[0][0])) rawRows.shift();
     if (!rawRows.length) return fail(res, 'CSV 内容为空');
@@ -1571,6 +1585,7 @@ async function syncAdsMatrix(req, res) {
 
 async function syncMirrorsMatrix(req, res) {
   try {
+    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
     const [sourceRows, siteUrl] = await Promise.all([
       fetchMatrixCsv('csv_url_mirrors', 'mirrors'),
       SystemModel.configValue('site_url')

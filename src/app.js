@@ -10,6 +10,7 @@ const { securityHeaders } = require('./middlewares/security');
 const { observeRequestRisk } = require('./middlewares/rateLimit');
 const { publicRouter, adminRouter } = require('./routes');
 const PublicController = require('./controllers/PublicController');
+const ControlCenterAgentService = require('./services/ControlCenterAgentService');
 const { fail } = require('./utils/http');
 
 const app = express();
@@ -48,6 +49,8 @@ app.use(session({
 app.use(PublicController.preVerifyInflowTraffic);
 app.use(observeRequestRisk);
 
+// 必须早于原后台路由挂载，否则 /api/admin 的统一鉴权会拦截一次性 SSO 票据兑换。
+app.use('/api/admin/control-center', ControlCenterAgentService.router);
 app.use(publicRouter);
 app.use(adminRouter);
 app.use('/admin', express.static(path.join(publicDirectory, 'admin')));

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webring.local/protocol/v1/sso-redeem-request.schema.json",
+  "title": "一次性 SSO 票据兑换请求",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ticket"],
+  "properties": {
+    "ticket": { "type": "string", "pattern": "^[A-Za-z0-9_-]{32,128}$" }
+  }
+}

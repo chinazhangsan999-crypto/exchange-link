@@ -171,6 +171,7 @@ async function initializeDatabase() {
     domain_partner_id INTEGER DEFAULT NULL, attribution_method TEXT DEFAULT 'domain_only',
     observed_domain TEXT DEFAULT '', visitor_hash TEXT DEFAULT '', client_fingerprint TEXT DEFAULT '',
     screen_resolution TEXT DEFAULT '', client_language TEXT DEFAULT '', client_platform TEXT DEFAULT '',
+    attempt_id TEXT DEFAULT '',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(link_id) REFERENCES partners(id) ON DELETE CASCADE
   )`);
@@ -197,7 +198,8 @@ async function initializeDatabase() {
     ['client_fingerprint', "ALTER TABLE inbound_logs ADD COLUMN client_fingerprint TEXT DEFAULT ''"],
     ['screen_resolution', "ALTER TABLE inbound_logs ADD COLUMN screen_resolution TEXT DEFAULT ''"],
     ['client_language', "ALTER TABLE inbound_logs ADD COLUMN client_language TEXT DEFAULT ''"],
-    ['client_platform', "ALTER TABLE inbound_logs ADD COLUMN client_platform TEXT DEFAULT ''"]
+    ['client_platform', "ALTER TABLE inbound_logs ADD COLUMN client_platform TEXT DEFAULT ''"],
+    ['attempt_id', "ALTER TABLE inbound_logs ADD COLUMN attempt_id TEXT DEFAULT ''"]
   ];
   for (const [column, sql] of inboundAttributionMigrations) {
     if (!inboundColumns.some(item => item.name === column)) await run(sql);
@@ -222,15 +224,32 @@ async function initializeDatabase() {
     reason_code TEXT NOT NULL,
     reason_text TEXT DEFAULT '',
     request_path TEXT DEFAULT '/',
+    attempt_id TEXT DEFAULT '',
+    classification TEXT NOT NULL DEFAULT 'rejected',
+    resolution_status TEXT NOT NULL DEFAULT 'unresolved',
+    resolved_at DATETIME DEFAULT NULL,
+    resolved_visit_id TEXT DEFAULT NULL,
     occurrence_count INTEGER NOT NULL DEFAULT 1,
     first_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(partner_id) REFERENCES partners(id) ON DELETE SET NULL
   )`);
+  const rejectionColumns = await all('PRAGMA table_info(inbound_rejection_logs)');
+  const rejectionAuditMigrations = [
+    ['attempt_id', "ALTER TABLE inbound_rejection_logs ADD COLUMN attempt_id TEXT DEFAULT ''"],
+    ['classification', "ALTER TABLE inbound_rejection_logs ADD COLUMN classification TEXT NOT NULL DEFAULT 'rejected'"],
+    ['resolution_status', "ALTER TABLE inbound_rejection_logs ADD COLUMN resolution_status TEXT NOT NULL DEFAULT 'unresolved'"],
+    ['resolved_at', 'ALTER TABLE inbound_rejection_logs ADD COLUMN resolved_at DATETIME DEFAULT NULL'],
+    ['resolved_visit_id', 'ALTER TABLE inbound_rejection_logs ADD COLUMN resolved_visit_id TEXT DEFAULT NULL']
+  ];
+  for (const [column, sql] of rejectionAuditMigrations) {
+    if (!rejectionColumns.some(item => item.name === column)) await run(sql);
+  }
   await run('CREATE INDEX IF NOT EXISTS idx_inbound_rejection_last_seen ON inbound_rejection_logs(last_seen_at DESC)');
   await run('CREATE INDEX IF NOT EXISTS idx_inbound_rejection_lookup ON inbound_rejection_logs(client_ip, reason_code, partner_id, last_seen_at DESC)');
   await run('CREATE INDEX IF NOT EXISTS idx_inbound_rejection_visitor_lookup ON inbound_rejection_logs(visitor_hash, reason_code, partner_id, last_seen_at DESC)');
+  await run('CREATE INDEX IF NOT EXISTS idx_inbound_rejection_resolution ON inbound_rejection_logs(classification, resolution_status, last_seen_at DESC)');
   await run(`CREATE TABLE IF NOT EXISTS inflow_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT, partner_id INTEGER NOT NULL, ip TEXT NOT NULL,
     user_agent TEXT DEFAULT '', fingerprint TEXT DEFAULT '', is_compliant INTEGER DEFAULT 0,
@@ -357,7 +376,8 @@ async function initializeDatabase() {
     ['observed_domain', "ALTER TABLE inflow_claim_tokens ADD COLUMN observed_domain TEXT DEFAULT ''"],
     ['user_agent', "ALTER TABLE inflow_claim_tokens ADD COLUMN user_agent TEXT DEFAULT ''"],
     ['visitor_hash', "ALTER TABLE inflow_claim_tokens ADD COLUMN visitor_hash TEXT DEFAULT ''"],
-    ['request_path', "ALTER TABLE inflow_claim_tokens ADD COLUMN request_path TEXT DEFAULT '/'"]
+    ['request_path', "ALTER TABLE inflow_claim_tokens ADD COLUMN request_path TEXT DEFAULT '/'"],
+    ['attempt_id', "ALTER TABLE inflow_claim_tokens ADD COLUMN attempt_id TEXT DEFAULT ''"]
   ];
   for (const [column, sql] of claimAttributionMigrations) {
     if (!tokenColumns.some(item => item.name === column)) await run(sql);

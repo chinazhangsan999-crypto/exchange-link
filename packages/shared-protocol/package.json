@@ -1,0 +1,7 @@
+{
+  "name": "@webring/shared-protocol",
+  "version": "1.0.0",
+  "private": true,
+  "description": "星环总控与站点 Agent 的共享协议定义",
+  "main": "index.js"
+}

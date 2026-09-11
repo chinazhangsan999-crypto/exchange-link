@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webring.local/protocol/v1/error.schema.json",
+  "title": "统一错误响应",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["protocol", "ok", "code", "error_code", "message"],
+  "properties": {
+    "protocol": { "const": "1.0" },
+    "ok": { "const": false },
+    "code": { "type": "integer", "minimum": 400, "maximum": 599 },
+    "error_code": { "type": "string" },
+    "message": { "type": "string" },
+    "details": {}
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://webring.local/protocol/v1/sso-redeem-result.schema.json",
+  "title": "一次性 SSO 票据兑换结果",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["admin", "local_session_nonce", "expires_in"],
+  "properties": {
+    "admin": {
+      "type": "object",
+      "required": ["id", "username"],
+      "properties": {
+        "id": {
+          "anyOf": [
+            { "type": "integer", "minimum": 1 },
+            { "type": "string", "pattern": "^[1-9][0-9]*$" }
+          ]
+        },
+        "username": { "type": "string", "minLength": 1, "maxLength": 100 }
+      }
+    },
+    "local_session_nonce": { "type": "string", "pattern": "^[A-Za-z0-9_-]{24,128}$" },
+    "expires_in": { "type": "integer", "minimum": 1, "maximum": 600 }
+  }
+}

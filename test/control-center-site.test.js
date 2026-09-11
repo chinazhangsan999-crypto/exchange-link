@@ -1,0 +1,46 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+
+test('总后台接管节点且广告策略不覆盖本地广告数据', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'webring-control-'));
+  process.env.DB_PATH = path.join(directory, 'webring.db');
+  process.env.SESSION_SECRET = 'test-session-secret-0123456789';
+  process.env.ADMIN_JWT_SECRET = 'test-admin-secret-01234567890';
+  process.env.GUEST_JWT_SECRET = 'test-guest-secret-01234567890';
+  process.env.INITIAL_ADMIN_PASSWORD = 'LocalTestPassword123';
+  process.env.CONTROL_CENTER_ENABLED = '1';
+  process.env.CONTROL_CENTER_URL = 'https://control.example.com';
+  process.env.CONTROL_CENTER_SITE_CREDENTIAL = '1.abcdefghijklmnopqrstuvwxyzABCDEF';
+
+  const database = require('../src/config/database');
+  const SystemModel = require('../src/models/SystemModel');
+  const AdModel = require('../src/models/AdModel');
+  const MirrorModel = require('../src/models/MirrorModel');
+  const ControlCenterAgentService = require('../src/services/ControlCenterAgentService');
+
+  try {
+    await SystemModel.initializeDatabase();
+    await AdModel.initializeAdsTable();
+    await MirrorModel.initializeMirrorsTable();
+    await ControlCenterAgentService.initialize();
+
+    await database.run(`INSERT INTO ads(type,title,ad_type,ad_position,platform,target_url,image_url,sort_order,status,managed_by,namespace)
+      VALUES('banner','Local','normal','banner','all','https://local.example','https://local.example/a.png',90,1,'local','local:1')`);
+    await database.run(`INSERT INTO ads(type,title,ad_type,ad_position,platform,target_url,image_url,sort_order,status,managed_by,central_id,namespace)
+      VALUES('banner','Central','normal','banner','all','https://central.example','https://central.example/a.png',10,1,'central','1','central:1')`);
+    await database.run(`INSERT INTO site_configs(key,value) VALUES('central_ad_policy:banner','central_only')
+      ON CONFLICT(key) DO UPDATE SET value='central_only'`);
+
+    assert.deepEqual((await AdModel.getActiveAds()).map(item => item.title), ['Central']);
+    assert.deepEqual((await AdModel.listLocalAds()).map(item => item.title), ['Local']);
+  } finally {
+    ControlCenterAgentService.stop();
+    await database.closeDatabase();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});

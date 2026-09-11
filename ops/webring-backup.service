@@ -1,0 +1,9 @@
+[Unit]
+Description=Backup Star Ring Navigation SQLite database
+After=network.target
+
+[Service]
+Type=oneshot
+User=niaiwo
+Group=niaiwo
+ExecStart=/usr/local/sbin/webring-backup

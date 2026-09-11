@@ -39,6 +39,7 @@ const AdModel = require('../models/AdsModel');
 const MirrorModel = require('../models/MirrorModel');
 const CacheService = require('../services/CacheService');
 const SiteTrafficService = require('../services/SiteTrafficService');
+const IpIntelligenceService = require('../services/IpIntelligenceService');
 const { sendAdminAlert, formatAlertLink, formatContactLine } = require('../services/AlertService');
 
 const CLAIM_TTL_SECONDS = 15 * 60;
@@ -102,7 +103,11 @@ function queueRejectedInbound(req, details = {}) {
     stage: details.stage || 'source',
     reasonCode: details.reasonCode || 'unknown',
     reasonText: details.reasonText || '未通过入站校验',
+    attemptId: details.attemptId,
+    classification: details.classification,
     requestPath: String(req.originalUrl || req.path || '/').slice(0, 500)
+  }).then(() => {
+    IpIntelligenceService.queueIp(clientIp);
   }).catch(error => console.error('[未入站记录失败]：', error.message));
 }
 
@@ -358,6 +363,7 @@ async function trackInflow(req, res, next) {
       return next();
     }
     const now = Date.now();
+    const attemptId = crypto.randomUUID();
     if (isPartnerVisitRateLimited(partner.id, ip)) {
       queueRejectedInbound(req, {
         referer: effectiveReferer,
@@ -365,9 +371,11 @@ async function trackInflow(req, res, next) {
         partnerId: partner.id,
         sourceTokenId: pendingSource?.sourceTokenId,
         attributionMethod: pendingSource?.method || 'domain_only',
+        attemptId,
+        classification: 'suppressed',
         stage: 'claim_issue',
         reasonCode: 'entry_cooldown',
-        reasonText: '同一站点与 IP 处于60秒入口冷却期'
+        reasonText: '重复请求已抑制（不影响此前已领取的有效凭证）'
       });
       return next();
     }
@@ -387,7 +395,8 @@ async function trackInflow(req, res, next) {
       observedDomain,
       userAgent: String(req.get('user-agent') || '').trim(),
       visitorHash: visitorIdentityHash(req),
-      requestPath: String(req.originalUrl || req.path || '/').slice(0, 500)
+      requestPath: String(req.originalUrl || req.path || '/').slice(0, 500),
+      attemptId
     });
     const cookieOptions = {
       maxAge: CLAIM_TTL_SECONDS * 1000,
@@ -549,6 +558,7 @@ async function trackPing(req, res) {
       queueRejectedInbound(req, {
         referer: claim.referer, observedDomain: claim.observed_domain, partnerId: claim.partner_id,
         sourceTokenId: claim.source_token_id, attributionMethod: claim.attribution_method,
+        attemptId: claim.attempt_id,
         stage: 'heartbeat', reasonCode: 'stay_too_short', reasonText: '页面停留时间不足3秒'
       });
       return fail(res, '停留时间不足，暂不计入带量', 429);
@@ -559,6 +569,7 @@ async function trackPing(req, res) {
       queueRejectedInbound(req, {
         referer: claim.referer, observedDomain: claim.observed_domain, partnerId: claim.partner_id,
         sourceTokenId: claim.source_token_id, attributionMethod: claim.attribution_method,
+        attemptId: claim.attempt_id,
         stage: 'heartbeat', reasonCode: 'environment_mismatch', reasonText: 'IP、User-Agent 或访问环境校验未通过'
       });
       return fail(res, '访问环境校验未通过', 403);
@@ -570,6 +581,7 @@ async function trackPing(req, res) {
       queueRejectedInbound(req, {
         referer: claim.referer, observedDomain: claim.observed_domain, partnerId: claim.partner_id,
         sourceTokenId: claim.source_token_id, attributionMethod: claim.attribution_method,
+        attemptId: claim.attempt_id,
         stage: 'fingerprint', reasonCode: 'abnormal_fingerprint', reasonText: '浏览器指纹或自动化环境异常'
       });
       return fail(res, '访问环境校验未通过', 403);
@@ -589,11 +601,13 @@ async function trackPing(req, res) {
       queueRejectedInbound(req, {
         referer: claim.referer, observedDomain: claim.observed_domain, partnerId: claim.partner_id,
         sourceTokenId: claim.source_token_id, attributionMethod: claim.attribution_method,
+        attemptId: claim.attempt_id,
         stage: 'database_write', reasonCode: 'claim_already_used', reasonText: '追踪会话已被使用'
       });
       return fail(res, '追踪会话已使用', 409);
     }
     const { newlyCounted, autoApproved } = transactionResult;
+    IpIntelligenceService.queueIp(clientIp);
     if (newlyCounted || autoApproved) CacheService.clearPublicCache();
     const expiredCookie = { maxAge: 0, httpOnly: true, sameSite: 'lax', secure: IS_PRODUCTION, path: '/' };
     res.cookie('track_session', '', expiredCookie);
