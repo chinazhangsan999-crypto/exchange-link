@@ -75,6 +75,22 @@
   font-weight: 650;
 }
 
+/* 首页精选内容位于搜索与热门榜之间：仅由外层控制区块节奏，
+   避免横幅、图标矩阵与榜单的多层 margin 在桌面端叠加。 */
+.main-content:not(.detail-main-content) .search-area {
+  padding-bottom: 20px;
+}
+
+.main-content:not(.detail-main-content) .s-wrap {
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.main-content:not(.detail-main-content) .s-wrap .s-strip,
+.main-content:not(.detail-main-content) .s-wrap .s-matrix {
+  margin: 0;
+}
+
 /* 服务端已做一次设备过滤；这些规则是浏览器端的第二层防呆。 */
 html[data-client-device='pc'] .device-ios,
 html[data-client-device='pc'] .device-android,
@@ -133,4 +149,9 @@ html[data-theme='dark'] .s-tile {
   .s-strip, .s-matrix { margin: 12px 0; }
   .s-matrix { grid-template-columns: repeat(auto-fill, minmax(64px, 1fr)); gap: 9px; }
   .s-thumb { width: 54px; height: 54px; }
+
+  .main-content:not(.detail-main-content) .s-wrap .s-strip,
+  .main-content:not(.detail-main-content) .s-wrap .s-matrix {
+    margin: 0;
+  }
 }
