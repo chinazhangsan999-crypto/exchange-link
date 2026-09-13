@@ -44,10 +44,10 @@ html[data-theme='dark'] .rank-badge.rank-1{background:linear-gradient(135deg,#f5
 .mirrors-container{flex:1 1 auto;min-height:140px;height:auto;overflow-y:scroll;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:0 4px 6px 0;touch-action:pan-y}
 .publish-footer{margin-top:4px}
 .footer-tip{font-size:11px}
-/* 小屏：标题本身占用 200px 视觉区；镜像列表使用确定的剩余高度，独立纵向滚动。 */
+/* 小屏：标题与上边距合计约为 200 个设备截图像素；镜像列表独立纵向滚动。 */
 @media(max-width:560px){
-  .publish-modal-card{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:200px auto auto minmax(0,1fr);width:calc(100vw - 24px);height:calc(100dvh - 24px);min-height:0;box-sizing:border-box;padding:18px 16px}
-  .publish-header{display:flex;align-items:center;min-width:0;height:200px;padding-right:42px}
+  .publish-modal-card{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:120px auto auto minmax(0,1fr);width:calc(100vw - 24px);height:calc(100dvh - 24px);min-height:0;box-sizing:border-box;padding:14px 16px 18px}
+  .publish-header{display:flex;align-items:center;min-width:0;height:120px;padding-right:42px}
   .publish-header h3{margin:0;font-size:22px;line-height:1.42}
   .publish-info-box .info-row{font-size:12px;gap:5px}.publish-info-box .info-label{font-size:12px}.publish-info-box .info-link,.publish-info-box .info-text{font-size:12px;max-width:none!important;width:auto!important}.publish-info-box .btn-copy{padding:5px 8px;font-size:11px}
   .publish-site-list{display:grid;grid-template-rows:auto minmax(0,1fr);width:100%;min-width:0;box-sizing:border-box;height:auto;min-height:0;margin-top:10px;overflow:hidden}
