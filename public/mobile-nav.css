@@ -4,5 +4,13 @@
 
 @media(max-width:768px){.sidebar .category-nav{flex:1 1 auto;min-height:0;overflow-y:auto!important}}
 
+/* 移动端抽屉只保留分类与主题切换；桌面侧栏的品牌与排名说明不受影响。 */
+@media(max-width:768px){
+  .sidebar>.brand{display:none!important}
+  .sidebar .category-nav{margin-top:0!important}
+  .sidebar .sidebar-footer>div{display:none!important}
+  .sidebar .sidebar-footer{padding-top:14px!important}
+}
+
 /* 短屏优先保证菜单可用面积；标准手机仍保留上下各 200px 的素材安全区。 */
 @media(max-width:768px) and (max-height:720px){.sidebar{top:120px!important;bottom:120px!important}}

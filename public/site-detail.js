@@ -45,15 +45,20 @@
   async function copyText(value, message = '已复制到剪贴板') { if (!value) return; try { await navigator.clipboard.writeText(value); showToast(message); } catch { const field = document.createElement('textarea'); field.value = value; document.body.appendChild(field); field.select(); document.execCommand('copy'); field.remove(); showToast(message); } }
   function validUrl(value) { try { const url = new URL(String(value || '').trim()); return /^https?:$/.test(url.protocol) ? url.href : ''; } catch { return ''; } }
 
-  // 与首页相同：分类来源、排序与样式容器均为 #category-nav。
+  // 与首页相同：只显示至少有一个已展示站点的活跃分类，并沿用后台排序。
   async function loadSidebarCategories() {
     const nav = $('#category-nav');
     try {
-      const response = await fetch('/api/categories', { credentials: 'same-origin' });
+      const response = await fetch('/api/links', { credentials: 'same-origin' });
       const result = await response.json();
-      if (result.code !== 200) throw new Error(result.msg || '获取分类失败');
+      if (result.code !== 200) throw new Error(result.msg || '获取友链数据失败');
+      const sourceLinks = result.data?.links || [];
+      const categoryMap = new Map((result.data?.categories || []).map(category => [category.name, category]));
+      const categories = [...new Set(sourceLinks.map(link => link.category).filter(Boolean))]
+        .map(name => categoryMap.get(name) || { id: `name-${encodeURIComponent(name)}`, name, sort_order: Number.MAX_SAFE_INTEGER })
+        .sort((a, b) => (a.sort_order ?? Number.MAX_SAFE_INTEGER) - (b.sort_order ?? Number.MAX_SAFE_INTEGER) || String(a.name).localeCompare(String(b.name), 'zh-CN'));
       const icons = ['★', '◆', '▣', '✦', '◉', '◈'];
-      nav.innerHTML = (result.data || []).map((category, index) => `
+      nav.innerHTML = categories.map((category, index) => `
         <a href="/#category-${Number(category.id)}" title="${escapeHtml(category.name)}">
           <span class="nav-icon">${icons[index % icons.length]}</span><span>${escapeHtml(category.name)}</span>
         </a>`).join('') || '<span class="nav-loading">暂无分类</span>';
