@@ -322,12 +322,17 @@
     const banners = items.filter(item => item.position === 'banner');
     const icons = items.filter(item => item.position === 'icon');
     if (document.body.classList.contains('site-detail-page')) {
-      const intro = document.querySelector('.intro-card');
+      const detailCard = document.querySelector('.site-header-card');
       const explore = document.querySelector('.explore-section');
+      if (!detailCard || !explore) return;
+      const root = document.createElement('div');
+      root.dataset.showcaseRoot = '1';
+      root.className = 's-wrap';
       const iconRegion = createRegion(icons, 'icon');
       const bannerRegion = createRegion(banners, 'banner');
-      if (iconRegion && intro) intro.insertAdjacentElement('afterend', iconRegion);
-      if (bannerRegion && explore) explore.insertAdjacentElement('afterend', bannerRegion);
+      if (iconRegion) root.append(iconRegion);
+      if (bannerRegion) root.append(bannerRegion);
+      if (root.children.length) explore.parentNode.insertBefore(root, explore);
       return;
     }
     const root = document.createElement('div');

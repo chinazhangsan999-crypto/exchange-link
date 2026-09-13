@@ -91,6 +91,17 @@
   margin: 0;
 }
 
+/* 详情页：普通横幅和图标内容统一位于网站详情与相关推荐之间。 */
+.detail-main-content .s-wrap {
+  gap: 10px;
+  margin: 0;
+}
+
+.detail-main-content .s-wrap .s-strip,
+.detail-main-content .s-wrap .s-matrix {
+  margin: 0;
+}
+
 /* 服务端已做一次设备过滤；这些规则是浏览器端的第二层防呆。 */
 html[data-client-device='pc'] .device-ios,
 html[data-client-device='pc'] .device-android,
