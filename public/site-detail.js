@@ -8,38 +8,7 @@
   let publicConfig = {};
   let currentSiteName = '';
 
-  /** 详情简介卡在任何异步请求发起前同步创建；内容继续使用 textContent 更新。 */
-  function mountDetailProfileCard() {
-    const mount = $('#detailProfileMount');
-    if (!mount) return null;
-    const article = document.createElement('article');
-    article.className = 'detail-card intro-card';
-    const header = document.createElement('div');
-    header.className = 'intro-header';
-    const sparkle = document.createElement('span');
-    sparkle.className = 'sparkle-icon';
-    sparkle.textContent = '✦';
-    const labels = document.createElement('div');
-    const subLabel = document.createElement('div');
-    subLabel.className = 'sub-label';
-    subLabel.textContent = 'WEBSITE PROFILE';
-    const title = document.createElement('h2');
-    title.className = 'main-label';
-    title.textContent = '网站简介';
-    labels.append(subLabel, title);
-    header.append(sparkle, labels);
-    const body = document.createElement('div');
-    body.className = 'intro-body';
-    const description = document.createElement('p');
-    description.id = 'detailDescription';
-    description.textContent = '该站点暂未填写简介。';
-    body.append(description);
-    article.append(header, body);
-    mount.replaceChildren(article);
-    return description;
-  }
-
-  const detailDescription = mountDetailProfileCard();
+  const detailDescription = $('#detailDescription');
 
   function showToast(message) { const toast = $('#detailToast'); toast.textContent = message; toast.classList.add('show'); clearTimeout(showToast.timer); showToast.timer = setTimeout(() => toast.classList.remove('show'), 1700); }
   async function copyText(value, message = '已复制到剪贴板') { if (!value) return; try { await navigator.clipboard.writeText(value); showToast(message); } catch { const field = document.createElement('textarea'); field.value = value; document.body.appendChild(field); field.select(); document.execCommand('copy'); field.remove(); showToast(message); } }
@@ -97,7 +66,7 @@
     currentSiteUrl = site.url || '';
     currentSiteName = site.name || '';
     document.title = `${currentSiteName || '站点'} · 站点详情 · ${publicConfig.site_name || '星环导航'}`;
-    $('#detailCategory').textContent = site.category || '精选推荐'; $('#detailAvatar').textContent = initials(site.name); $('#detailTitle').textContent = site.name || '未命名站点'; $('#detailUrl').textContent = currentSiteUrl; if (detailDescription) detailDescription.textContent = site.description || '该站点暂未填写简介。'; $('#btnVisit').href = `/go?id=${Number(site.id)}`;
+    $('#detailTitle').textContent = site.name || '未命名站点'; if (detailDescription) detailDescription.textContent = site.description || '该站点暂未填写简介。'; $('#btnVisit').href = `/go?id=${Number(site.id)}`;
     renderRecommendations(recommendations || []); $('#detailLoading').hidden = true; $('#detailContent').hidden = false;
   }
   async function loadDetail() { const id = Number(new URLSearchParams(location.search).get('id')); if (!Number.isSafeInteger(id) || id <= 0) throw new Error('站点编号无效'); const response = await fetch(`/api/links/${id}`, { credentials: 'same-origin' }); const result = await response.json(); if (!response.ok || result.code !== 200) throw new Error(result.msg || '站点不存在或暂不可用'); renderSite(result.data.site, result.data.recommendations); }

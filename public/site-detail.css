@@ -36,14 +36,8 @@ html[data-theme='dark'] .site-detail-page .category-nav a { color: #e2e8f0; }
 .site-detail-page .search-area{margin-bottom:12px}
 .site-detail-content{display:flex;flex-direction:column;gap:20px}
 .detail-card{background:var(--bg-card,#fff);border:1px solid var(--border-color,#f1f5f9);border-radius:16px;padding:24px 30px;box-shadow:0 1px 3px rgba(15,23,42,.04)}
-.site-header-card{display:flex;align-items:center;justify-content:space-between;gap:26px}
-.site-card-left{min-width:0;flex:1}
-.category-pill{display:inline-block;margin-bottom:16px;padding:4px 12px;border-radius:7px;color:#3b82f6;background:#eff6ff;font-size:12px;font-weight:650}
-.site-main-info{display:flex;min-width:0;align-items:center;gap:20px}
-.site-avatar{flex:0 0 72px;width:72px;height:72px;display:grid;place-items:center;overflow:hidden;border-radius:16px;color:#fff;background:linear-gradient(135deg,#253043,#475569);font-size:23px;font-weight:800}
-.site-texts{min-width:0}
-.site-texts .site-name{margin:0 0 4px;overflow:hidden;color:var(--text-primary,#0f172a);font-size:26px;font-weight:750;line-height:1.2;text-overflow:ellipsis;white-space:nowrap}
-.site-domain{margin:0 0 16px;overflow:hidden;color:var(--text-secondary,#64748b);font-size:14px;text-overflow:ellipsis;white-space:nowrap}
+.site-header-card{display:block}
+.site-header-card .site-name{margin:0 0 15px;overflow:hidden;color:var(--text-primary,#0f172a);font-size:26px;font-weight:750;line-height:1.2;text-overflow:ellipsis;white-space:nowrap}
 .site-actions{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
 .btn-primary-visit,.btn-secondary-copy{display:inline-flex;align-items:center;justify-content:center;min-height:38px;padding:8px 16px;border-radius:9px;font-size:13px;font-weight:650;cursor:pointer;text-decoration:none;transition:.15s ease}
 .btn-primary-visit{color:#fff;background:#4f46e5;box-shadow:0 5px 12px rgba(79,70,229,.18)}
@@ -51,12 +45,12 @@ html[data-theme='dark'] .site-detail-page .category-nav a { color: #e2e8f0; }
 .btn-secondary-copy{border:1px solid #cbd5e1;color:#334155;background:#fff}
 .btn-secondary-copy:hover{background:#f8fafc}
 .status-verified-badge{padding:6px 11px;border-radius:999px;color:#0f9a68;background:#ecfdf5;font-size:12px;font-weight:650}
+.site-overview-description{margin-top:19px;padding-top:17px;border-top:1px solid var(--border-color,#eef2f7);color:var(--text-secondary,#475569);font-size:14px;line-height:1.75}
+.site-overview-description p{margin:0}
 .intro-header,.explore-header{display:flex;align-items:center;gap:10px;margin-bottom:14px}
 .sparkle-icon{width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#3b82f6;background:#eff6ff}
 .sub-label{color:#94a3b8;font-size:11px;font-weight:700;letter-spacing:.55px}
 .main-label{margin:3px 0 0;color:var(--text-primary,#0f172a);font-size:18px;font-weight:750}
-.intro-body{color:var(--text-secondary,#475569);font-size:14px;line-height:1.75}
-.intro-body p{margin:0}
 .explore-section{margin-top:4px}
 .explore-header{justify-content:space-between}
 .explore-more-link{color:#64748b;font-size:13px;text-decoration:none}
@@ -79,15 +73,13 @@ html[data-theme='dark'] .site-detail-page .category-nav a { color: #e2e8f0; }
 .detail-modal-card h2{margin:5px 0 16px}
 .detail-modal-close{position:absolute;top:13px;right:13px;width:30px;height:30px;border:0;border-radius:50%;color:#64748b;background:#f1f5f9;cursor:pointer}
 html[data-theme='dark'] .detail-card,html[data-theme='dark'] .explore-item,html[data-theme='dark'] .detail-state,html[data-theme='dark'] .detail-modal-card{background:#1e293b}
-html[data-theme='dark'] .category-pill,html[data-theme='dark'] .sparkle-icon{background:#243456}
+html[data-theme='dark'] .sparkle-icon{background:#243456}
 html[data-theme='dark'] .btn-secondary-copy{border-color:#475569;color:#e2e8f0;background:#26364b}
 @media(max-width:768px){.site-detail-page .detail-main-content{padding-bottom:48px}
 .site-detail-page .search-area{margin-bottom:12px}
 .detail-card{padding:20px 16px;border-radius:14px}
-.site-header-card{align-items:flex-start;flex-direction:column;gap:17px}
-.site-main-info{align-items:flex-start;gap:13px}
-.site-avatar{flex-basis:54px;width:54px;height:54px;border-radius:13px;font-size:17px}
-.site-texts .site-name{font-size:21px}
+.site-header-card .site-name{margin-bottom:12px;font-size:21px}
+.site-overview-description{margin-top:16px;padding-top:14px}
 .site-actions{gap:7px}
 .btn-primary-visit,.btn-secondary-copy{min-height:34px;padding:7px 11px;font-size:12px}
 .status-verified-badge{padding:5px 8px;font-size:11px}

@@ -12,3 +12,6 @@
   .header-actions .menu-btn{flex:0 0 auto!important;padding:6px 10px!important}
   .mobile-menu-btn{width:38px!important;height:34px!important;position:static!important}
 }
+
+/* 移动端首屏优先展示搜索与站点内容，隐藏低优先级欢迎语和公告。 */
+@media(max-width:768px){.top-header-bar .top-greeting-text,.announcement-bar{display:none!important}.search-container{padding-top:8px!important;padding-bottom:8px!important;margin-bottom:8px!important}}
