@@ -27,3 +27,21 @@ html[data-theme='dark'] .rank-badge.rank-1{background:linear-gradient(135deg,#f5
 .publish-footer{margin-top:8px}
 .footer-tip{margin:0}
 @media(max-width:560px){.publish-modal-card{max-height:calc(100dvh - 24px)}.publish-primary-action{margin-top:12px}.publish-site-list{margin-top:14px}.mirror-item{padding:9px 10px;column-gap:6px}.mirror-link{font-size:12px}.mirror-copy,.btn-visit{padding:6px 8px}}
+
+/* 防失联指南移动端紧凑布局：信息同行，节点列表在独立区域纵向滚动。 */
+.publish-modal-card{height:min(720px,calc(100dvh - 24px))}
+.publish-header h3{margin-bottom:12px;line-height:1.35}
+.publish-info-box{padding:12px}
+.publish-info-box .info-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:6px;flex-wrap:nowrap;font-size:13px}
+.publish-info-box .info-row+.info-row{margin-top:8px}
+.publish-info-box .info-label{white-space:nowrap}
+.publish-info-box .info-link,.publish-info-box .info-text{grid-column:2;min-width:0;max-width:none;width:auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;word-break:normal}
+.publish-info-box .btn-copy{grid-column:3;margin:0;padding:6px 9px;white-space:nowrap}
+.publish-primary-action{margin-top:10px}
+.btn-enter{min-height:44px;padding:10px 14px;font-size:14px}
+.publish-site-list{min-height:0;margin-top:12px;overflow:hidden}
+.site-list-title{margin-bottom:8px}
+.mirrors-container{flex:1 1 auto;height:0;overflow-y:scroll;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;padding:0 4px 6px 0;touch-action:pan-y}
+.publish-footer{margin-top:4px}
+.footer-tip{font-size:11px}
+@media(max-width:560px){.publish-modal-card{width:92vw;height:calc(100dvh - 24px);padding:18px 16px}.publish-header h3{font-size:18px}.publish-info-box .info-row{font-size:12px;gap:5px}.publish-info-box .info-label{font-size:12px}.publish-info-box .info-link,.publish-info-box .info-text{font-size:12px;max-width:none!important;width:auto!important}.publish-info-box .btn-copy{padding:5px 8px;font-size:11px}.publish-site-list{margin-top:10px}.site-list-title{margin-bottom:6px}.mirror-item{row-gap:5px}.footer-tip{display:none}}
