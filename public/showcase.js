@@ -376,7 +376,7 @@
   }
 
   async function fetchShowcase() {
-    const response = await fetch('/api/showcase', { credentials: 'same-origin' });
+    const response = await window.readApiFetch('/api/showcase');
     const result = await response.json();
     if (!response.ok || result.code !== 200) throw new Error(result.msg || '精选内容加载失败');
     return result.data || {};

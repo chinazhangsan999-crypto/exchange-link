@@ -33,3 +33,27 @@
     return true;
   };
 })();
+
+// 全站 PV 由每个公开页面在加载完成后主动上报；服务端按匿名访客与 IP 聚合到小时桶。
+(() => {
+  const pagePath = window.location.pathname || '/';
+  if (!/^\/(?:$|index\.html$|site-detail\.html$)/.test(pagePath)) return;
+  fetch('/api/track/site-page-view', {
+    method: 'POST', credentials: 'same-origin', keepalive: true,
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pagePath })
+  }).catch(() => {});
+})();
+
+// 有效入站在首页完成 3 秒心跳后才下发当前标签页的归因凭证；后续公开页面主动上报，避免静态文档请求中的 Cookie 差异造成漏记。
+(() => {
+  const token = sessionStorage.getItem('inflow_attribution_token');
+  const pagePath = window.location.pathname || '/';
+  if (!token) return;
+  fetch('/api/track/page-view', {
+    method: 'POST', credentials: 'same-origin', keepalive: true,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, pagePath })
+  }).then(response => {
+    if (response.status === 401) sessionStorage.removeItem('inflow_attribution_token');
+  }).catch(() => {});
+})();

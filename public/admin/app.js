@@ -9,25 +9,31 @@
 
   /** 渲染反链巡检状态；Ping 连通状态在独立列展示。 */
   function inspectionStatus(item) {
-    if (Number(item.is_exempt) === 1) return '<span class="status-pill protected" title="该站点已设置为反链免检">🛡️ 免检/受保护</span>';
+    if (Number(item.is_internal) === 1) return '<span class="status-pill protected" title="内部节点不执行反链巡检">🧩 内部节点</span><small class="status-detail">反链巡检不适用</small>';
+    if (Number(item.is_exempt) === 1) return '<span class="status-pill protected" title="该站点已设置为反链免检">🛡️ 免检/受保护</span><small class="status-detail">反链巡检已跳过</small>';
     const backlink = item.backlink_status || 'pending';
     const failed = Number(item.failed_check_count || 0), lost = Number(item.lost_count || 0);
-    if (backlink === 'lost') return `<span class="status-pill danger" title="未在对方页面找到本站反链">🔴 掉链${lost ? `（${lost}次）` : ''}</span>`;
-    if (backlink === 'pending') return '<span class="status-pill pending" title="尚未执行反向友链巡检">⚪ 待检测</span>';
-    if (backlink === 'protected') return '<span class="status-pill protected" title="对方开启防爬安全盾，请人工抽查">🛡️ 受保护/防爬</span>';
-    if (backlink === 'unreachable' || backlink === 'dead') return `<span class="status-pill warn" title="网络超时、DNS 异常或连续巡检失败">🟡 网络异常 ${failed}/3</span>`;
-    const trafficTitle = Number(item.score_24h || 0) > 0 ? ' title="近24h有真实访问，触发流量免检"' : '';
-    return `<span class="status-pill valid"${trafficTitle} title="反向友链巡检正常">🟢 正常</span>`;
+    const meta = `<small class="status-detail">最近反链：${esc(time(item.last_checked_at))}</small>`;
+    if (backlink === 'lost') return `<span class="status-pill danger" title="未在对方页面找到本站反链">🔴 掉链${lost ? `（${lost}次）` : ''}</span>${meta}`;
+    if (backlink === 'pending') return '<span class="status-pill pending" title="尚未执行反向友链巡检">⚪ 待检测</span><small class="status-detail">最近反链：—</small>';
+    if (backlink === 'protected') return `<span class="status-pill protected" title="对方开启防爬安全盾，请人工抽查">🛡️ 受保护/防爬</span>${meta}`;
+    if (backlink === 'unreachable' || backlink === 'dead') return `<span class="status-pill warn" title="网络超时、DNS 异常或连续巡检失败">🟡 网络异常 ${failed}/3</span>${meta}`;
+    return `<span class="status-pill valid" title="反向友链巡检正常">🟢 正常</span>${meta}`;
   }
 
   /** 独立渲染 Ping 探活状态，便于识别待探活、预警及自动下架。 */
   function renderPingStatusBadge(item) {
     const failed = Number(item.ping_failed_count || 0), status = item.ping_status || 'ok';
-    if (Number(item.ping_exempt) === 1) return '<span class="status-pill protected" title="该站点不执行自动 HEAD/GET 连通性探活">🛡️ Ping 免检</span>';
-    if (!item.last_ping_at) return '<span class="status-pill pending" title="尚未执行 Ping 探活">⚪ 待探活</span>';
-    if (status === 'unreachable' || failed >= 3) return `<span class="status-pill danger" title="连续 ${failed} 次探活失败，前台已自动下架">🔴 失效(${failed}/3)</span>`;
-    if (failed > 0) { const hint = failed === 1 ? '第 1 次探活超时/失败' : '已连续 2 次失败，即将标记失效'; return `<span class="status-pill warn" title="${hint}">🟡 失联 ${failed}/3</span>`; }
-    return `<span class="status-pill valid" title="最近探活：${esc(time(item.last_ping_at))}">🟢 正常</span>`;
+    if (Number(item.is_internal) === 1) {
+      const enabled = Number(item.node_management_status) === 1;
+      return `<span class="status-pill protected" title="内部节点由节点管理统一测速">🧩 节点管理：${enabled ? '已启用' : '已停用'}</span><small class="status-detail">由节点管理测速</small>`;
+    }
+    if (Number(item.ping_exempt) === 1) return '<span class="status-pill protected" title="该站点不执行自动 HEAD/GET 连通性探活">🛡️ Ping 免检</span><small class="status-detail">自动探活已跳过</small>';
+    const meta = `<small class="status-detail">最近探活：${esc(time(item.last_ping_at))}</small>`;
+    if (!item.last_ping_at) return '<span class="status-pill pending" title="尚未执行 Ping 探活">⚪ 待探活</span><small class="status-detail">最近探活：—</small>';
+    if (status === 'unreachable' || failed >= 3) return `<span class="status-pill danger" title="连续 ${failed} 次探活失败，前台已自动下架">🔴 失效(${failed}/3)</span>${meta}`;
+    if (failed > 0) { const hint = failed === 1 ? '第 1 次探活超时/失败' : '已连续 2 次失败，即将标记失效'; return `<span class="status-pill warn" title="${hint}">🟡 失联 ${failed}/3</span>${meta}`; }
+    return `<span class="status-pill valid" title="最近探活：${esc(time(item.last_ping_at))}">🟢 正常</span>${meta}`;
   }
 
   /** 联系方式单元格：内容截断，复制按钮通过事件绑定避免拼接脚本。 */
@@ -39,14 +45,14 @@
 
   function renderPartnerRow(item) {
     const approved = Number(item.is_approved) === 1, priority = Number(item.priority || 0);
-    return `<tr data-id="${item.id}"><td class="site-cell"><a class="site-name-link" href="/go?id=${item.id}" target="_blank" rel="noopener" title="${esc(item.name)}">${esc(item.name)}</a><span class="site-domain" title="${esc(item.domain)}">${esc(item.domain)}</span></td><td><span class="category-pill" title="${esc(item.category || '未分类')}">${esc(item.category || '未分类')}</span></td><td>${renderContactCell(item)}</td><td>${inspectionStatus(item)}</td><td class="ping-cell">${renderPingStatusBadge(item)}</td><td class="col-traffic"><div class="traffic-row-primary"><span class="traffic-item item-24h">24h: <strong class="val-blue">${Number(item.score_24h || 0)}</strong></span><span class="traffic-divider">/</span><span class="traffic-item item-out">出: <strong class="val-dark">${Number(item.outflow_24h || 0)}</strong></span></div><div class="traffic-row-secondary"><span class="traffic-item item-total">总: <strong class="val-dark">${Number(item.total_score ?? item.score_total ?? 0)}</strong></span></div></td><td class="col-weight">${priority > 0 ? `<span class="badge-weight-num">${priority}</span>` : '<span class="priority-zero">0</span>'}</td><td><span class="compact-time" title="反链：${esc(time(item.last_checked_at))}">${esc(time(item.last_checked_at))}</span></td><td><div class="action-btn-group"><button class="btn-sm btn-action btn-check backlink-check" data-id="${item.id}" title="同时检查反链挂载状态和网站连通状态">查反链</button><button class="btn-sm btn-action btn-default monitor" data-id="${item.id}" title="查看流量与风控详情">📊 监控</button><button class="btn-sm btn-action btn-default reset-lost" data-id="${item.id}" title="重置反链巡检与连通状态">🔄 重置</button><button class="btn-sm btn-action btn-default edit" data-id="${item.id}">编辑</button><button class="btn-sm btn-action btn-default state" data-id="${item.id}" data-state="${approved ? 0 : 1}">${approved ? '禁用' : '通过'}</button><button class="btn-sm btn-action btn-reject delete" data-id="${item.id}">删除</button></div></td></tr>`;
+    return `<tr data-id="${item.id}"><td class="site-cell"><a class="site-name-link" href="/go?id=${item.id}" target="_blank" rel="noopener" title="${esc(item.name)}">${esc(item.name)}</a><span class="site-domain" title="${esc(item.domain)}">${esc(item.domain)}</span></td><td><span class="category-pill" title="${esc(item.category || '未分类')}">${esc(item.category || '未分类')}</span></td><td>${renderContactCell(item)}</td><td>${inspectionStatus(item)}</td><td class="ping-cell">${renderPingStatusBadge(item)}</td><td class="col-traffic"><div class="traffic-row-primary"><span class="traffic-item item-24h">24h: <strong class="val-blue">${Number(item.score_24h || 0)}</strong></span><span class="traffic-divider">/</span><span class="traffic-item item-out">出: <strong class="val-dark">${Number(item.outflow_24h || 0)}</strong></span></div><div class="traffic-row-secondary"><span class="traffic-item item-total">总: <strong class="val-dark">${Number(item.total_score ?? item.score_total ?? 0)}</strong></span></div></td><td class="col-weight">${priority > 0 ? `<span class="badge-weight-num">${priority}</span>` : '<span class="priority-zero">0</span>'}</td><td><div class="action-btn-group"><button class="btn-sm btn-action btn-check backlink-check" data-id="${item.id}" title="同时检查反链挂载状态和网站连通状态">查反链</button><button class="btn-sm btn-action btn-default monitor" data-id="${item.id}" title="查看流量与风控详情">📊 监控</button><button class="btn-sm btn-action btn-default reset-lost" data-id="${item.id}" title="重置反链巡检与连通状态">🔄 重置</button><button class="btn-sm btn-action btn-default edit" data-id="${item.id}">编辑</button><button class="btn-sm btn-action btn-default state" data-id="${item.id}" data-state="${approved ? 0 : 1}">${approved ? '禁用' : '通过'}</button><button class="btn-sm btn-action btn-reject delete" data-id="${item.id}">删除</button></div></td></tr>`;
   }
 
   function renderRows() {
     const body = document.querySelector('#partner-body'); if (!body) return;
     const direction = sort.direction === 'asc' ? 1 : -1;
     const data = [...rows].sort((a, b) => ((Number(a[sort.key] || 0) - Number(b[sort.key] || 0)) * direction) || Number(a.id) - Number(b.id));
-    body.innerHTML = data.map(renderPartnerRow).join('') || '<tr><td class="empty-row" colspan="9">没有匹配的友链</td></tr>';
+    body.innerHTML = data.map(renderPartnerRow).join('') || '<tr><td class="empty-row" colspan="8">没有匹配的友链</td></tr>';
   }
 
   function replacePartnerRow(item) {
@@ -149,7 +155,7 @@
         toast(`${taskName}完成：纳入${Number(summary.target_total || 0)}，流量跳过${Number(summary.traffic_skipped || 0)}，实际检测${Number(summary.network_checked || 0)}，异常${Math.max(0, abnormal)}，恢复${Number(summary.recovered || 0)}`);
       } else {
         const abnormal = Number(summary.first_failure || 0) + Number(summary.ongoing_failure || 0) + Number(summary.reached_dead || 0) + Number(summary.task_errors || 0);
-        toast(`${taskName}完成：探活${Number(summary.target_total || 0)}，正常${Number(summary.normal || 0)}，异常${abnormal}，恢复${Number(summary.recovered || 0)}`);
+        toast(`${taskName}完成：外部检测${Number((summary.external_target_total ?? summary.target_total) || 0)}，内部跳过${Number(summary.internal_skipped || 0)}，Ping免检${Number(summary.ping_exempt_skipped || 0)}，成功${Number(summary.normal || 0)}，异常${abnormal}`);
       }
       await loadPartners();
     } catch (error) {
@@ -245,8 +251,8 @@
       }, 0);
     }, true);
   }
-  function ensureTableStructure() { const table = document.querySelector('#partners table'); if (!table) return; table.className = 'admin-table partner-table'; table.querySelector('colgroup')?.remove(); table.insertAdjacentHTML('afterbegin', '<colgroup><col class="partner-col-site"><col class="partner-col-category"><col class="partner-col-contact"><col class="partner-col-backlink"><col class="partner-col-ping"><col class="partner-col-traffic"><col class="partner-col-priority"><col class="partner-col-checked"><col class="partner-col-actions"></colgroup>'); table.querySelector('thead').innerHTML = '<tr><th>网站 / 域名</th><th>分类</th><th class="contact-header">站长联系方式</th><th>巡检状态</th><th class="ping-header">连通状态</th><th class="sort-header" data-sort="score_24h">带量 ↕</th><th class="sort-header" data-sort="priority">权重 ↕</th><th>最近巡检</th><th>操作</th></tr>'; }
-  function loadStyles() { if (!document.querySelector('link[href^="/admin/tables.css"]')) { const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/admin/tables.css?v=20260831-1'; document.head.append(link); } if (!document.querySelector('link[href^="/admin/table-fixes.css"]')) { const fixes = document.createElement('link'); fixes.rel = 'stylesheet'; fixes.href = '/admin/table-fixes.css?v=20260831-1'; document.head.append(fixes); } if (!document.querySelector('link[href^="/admin/traffic-cell.css"]')) { const traffic = document.createElement('link'); traffic.rel = 'stylesheet'; traffic.href = '/admin/traffic-cell.css?v=20260911-ip-profile'; document.head.append(traffic); } }
+  function ensureTableStructure() { const table = document.querySelector('#partners table'); if (!table) return; table.className = 'admin-table partner-table'; table.querySelector('colgroup')?.remove(); table.insertAdjacentHTML('afterbegin', '<colgroup><col class="partner-col-site"><col class="partner-col-category"><col class="partner-col-contact"><col class="partner-col-backlink"><col class="partner-col-ping"><col class="partner-col-traffic"><col class="partner-col-priority"><col class="partner-col-actions"></colgroup>'); table.querySelector('thead').innerHTML = '<tr><th>网站 / 域名</th><th>分类</th><th class="contact-header">站长联系方式</th><th>巡检状态</th><th class="ping-header">连通状态</th><th class="sort-header" data-sort="score_24h">带量 ↕</th><th class="sort-header" data-sort="priority">权重 ↕</th><th>操作</th></tr>'; }
+  function loadStyles() { if (!document.querySelector('link[href^="/admin/tables.css"]')) { const link = document.createElement('link'); link.rel = 'stylesheet'; link.href = '/admin/tables.css?v=20260831-1'; document.head.append(link); } if (!document.querySelector('link[href^="/admin/table-fixes.css"]')) { const fixes = document.createElement('link'); fixes.rel = 'stylesheet'; fixes.href = '/admin/table-fixes.css?v=20260831-1'; document.head.append(fixes); } if (!document.querySelector('link[href^="/admin/traffic-cell.css"]')) { const traffic = document.createElement('link'); traffic.rel = 'stylesheet'; traffic.href = '/admin/traffic-cell.css?v=20260914-ip-profile'; document.head.append(traffic); } }
   loadStyles(); ensureTableStructure(); installSort(); installToolbar(); installPartnerActionDelegation(); installCreateExemptionField(); installCreatePingExemptionField(); installEditExemptionField(); window.loadPartners = loadPartners;
   const partnerSearch = document.querySelector('#partner-q');
   if (partnerSearch) {
@@ -255,7 +261,7 @@
   }
 })();
 
-/** CSV 全站矩阵：只负责设置页交互，同步按友链→广告→节点严格串行执行。 */
+/** 友链 CSV：广告和节点已由总后台接管，导航站只保留友链同步与备份。 */
 (() => {
   const token = () => localStorage.getItem('webring_admin_token') || '';
   const form = () => document.querySelector('#matrix-url-form');
@@ -298,7 +304,7 @@
     if (!form() || !token()) return;
     try {
       const data = await matrixApi('/api/admin/settings');
-      ['csv_url_partners', 'csv_url_ads', 'csv_url_mirrors'].forEach(key => {
+      ['csv_url_partners'].forEach(key => {
         if (form().elements[key]) form().elements[key].value = data[key] || '';
       });
     } catch (error) {
@@ -309,7 +315,7 @@
   async function saveMatrixSettings(event) {
     event.preventDefault();
     const payload = {};
-    ['csv_url_partners', 'csv_url_ads', 'csv_url_mirrors'].forEach(key => {
+    ['csv_url_partners'].forEach(key => {
       if (form().elements[key]) payload[key] = form().elements[key].value.trim();
     });
     try {
@@ -326,11 +332,8 @@
     }
   }
 
-  function syncSummary(type, result) {
-    if (type === 'partners') return `友链新增${result.inserted || 0}条，更新${result.updated || 0}条`;
-    if (type === 'ads') return `广告全覆盖${result.total || 0}条`;
-    const excluded = Number(result.excluded || 0);
-    return `节点全覆盖${result.total || 0}条${excluded ? `，排除本站${excluded}条` : ''}`;
+  function syncSummary(result) {
+    return `友链新增${result.inserted || 0}条，更新${result.updated || 0}条`;
   }
 
   async function runMatrixSync(types, trigger) {
@@ -345,7 +348,7 @@
         if (trigger) trigger.textContent = progress;
         setLog(progress, 'running');
         const result = await matrixApi(`/api/admin/sync/${type}`, { method: 'POST' });
-        results.push(syncSummary(type, result));
+        results.push(syncSummary(result));
       }
       const summary = `[成功] ${results.join('；')}`;
       setLog(summary, 'success');
@@ -361,7 +364,6 @@
     } finally {
       lockControls(false);
       if (trigger) trigger.textContent = originalText;
-      document.querySelectorAll('.matrix-menu[open]').forEach(menu => menu.removeAttribute('open'));
     }
   }
 
@@ -400,7 +402,6 @@
       matrixToast(error.message);
     } finally {
       lockControls(false);
-      document.querySelectorAll('.matrix-menu[open]').forEach(menu => menu.removeAttribute('open'));
     }
   }
 
@@ -408,20 +409,11 @@
     if (!form() || form().dataset.bound === '1') return;
     form().dataset.bound = '1';
     form().addEventListener('submit', saveMatrixSettings);
-    document.querySelector('#sync-matrix-all')?.addEventListener('click', event => {
-      runMatrixSync(window.controlCenterManaged ? ['partners', 'ads'] : ['partners', 'ads', 'mirrors'], event.currentTarget);
+    document.querySelector('#sync-matrix-partners')?.addEventListener('click', event => {
+      runMatrixSync(['partners'], event.currentTarget);
     });
-    form().addEventListener('click', event => {
-      const syncButton = event.target.closest('[data-sync-type]');
-      if (syncButton) {
-        const type = syncButton.dataset.syncType;
-        runMatrixSync(type === 'all'
-          ? (window.controlCenterManaged ? ['partners', 'ads'] : ['partners', 'ads', 'mirrors'])
-          : [type], syncButton);
-        return;
-      }
-      const exportButton = event.target.closest('[data-export-type]');
-      if (exportButton) downloadMatrix(exportButton.dataset.exportType, exportButton);
+    document.querySelector('#download-matrix-partners')?.addEventListener('click', event => {
+      downloadMatrix('partners', event.currentTarget);
     });
   }
 

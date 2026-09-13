@@ -290,6 +290,10 @@ async function saveAnalyticsConfig(req, res) {
 async function getSettings(req, res) {
   try {
     const settings = await SystemModel.getAllConfig();
+    if (CONTROL_CENTER_ENABLED) {
+      delete settings.csv_url_ads;
+      delete settings.csv_url_mirrors;
+    }
     // Device Key 从不回显到浏览器；空值保存时由 saveSettings 保留现有密钥。
     settings.bark_device_key_configured = Boolean(String(settings.bark_device_key || '').trim());
     settings.bark_device_key = '';
@@ -306,6 +310,9 @@ async function getRiskControlSettings(req, res) {
 async function saveSettings(req, res) {
   try {
     const body = req.body || {};
+    if (CONTROL_CENTER_ENABLED && (body.csv_url_ads !== undefined || body.csv_url_mirrors !== undefined)) {
+      return fail(res, '广告与节点已由总后台统一管理，导航站不再接受对应 CSV 配置', 403);
+    }
     const entries = [];
     const currentBarkKey = await SystemModel.configValue('bark_device_key');
     const barkEnabled = body.bark_enabled === undefined
@@ -930,6 +937,15 @@ async function inspectLink(req, res) {
       SystemModel.configValue('site_name')
     ]);
     if (!link) return fail(res, '友链不存在、未审核或已删除', 404);
+    if (Number(link.is_internal) === 1) {
+      return ok(res, {
+        partner_id: link.id,
+        internal: true,
+        skipped: true,
+        backlink: { skipped: true, exempted: true, result_text: '内部节点不执行反链巡检' },
+        connectivity: { skipped: true, internal: true, result_text: '由节点管理测速' }
+      }, '内部节点请在节点管理中查看状态与测速');
+    }
 
     const myMainDomain = parseHostname(siteUrl);
     const [backlinkSettled, pingSettled] = await Promise.allSettled([
@@ -980,6 +996,9 @@ async function checkLinkHealth(req, res) {
     if (!Number.isSafeInteger(id) || id <= 0) return fail(res, '友链编号不合法');
     const link = await PartnerModel.findPingPartner(id);
     if (!link) return fail(res, '友链不存在、未审核或已删除', 404);
+    if (Number(link.is_internal) === 1) {
+      return ok(res, { id: link.id, internal: true, skipped: true, result_text: '由节点管理测速' }, '内部节点请在节点管理中查看状态与测速');
+    }
     const result = await PingService.pingSingleLink(link, {
       signal: controller.signal,
       onDataChanged: CacheService.clearPublicCache,
@@ -1561,6 +1580,7 @@ async function syncPartnersMatrix(req, res) {
 
 async function syncAdsMatrix(req, res) {
   try {
+    if (CONTROL_CENTER_ENABLED) return fail(res, '广告已由总后台统一管理', 403);
     const sourceRows = await fetchMatrixCsv('csv_url_ads', 'ads');
     const items = sourceRows.map(row => parseAdPayload({
       ad_type: csvType(row['广告类型']),
@@ -1655,6 +1675,9 @@ async function exportMatrix(req, res) {
   try {
     const type = String(req.params.type || '').toLowerCase();
     if (!['partners', 'ads', 'mirrors', 'all'].includes(type)) return fail(res, '不支持的导出类型', 404);
+    if (CONTROL_CENTER_ENABLED && type !== 'partners') {
+      return fail(res, '广告与节点已由总后台统一管理，导航站仅提供友链 CSV 备份', 403);
+    }
     const { files, siteName } = await buildMatrixExports();
     const labels = { partners: '友链表', ads: '广告表', mirrors: '节点表' };
     if (type !== 'all') {

@@ -40,16 +40,36 @@
     education: '教育/机构', government: '政府网络', hosting: '云主机',
     cdn: 'CDN/边缘网络', unknown: '未知'
   };
+  const confidenceLabels = { high: '高可信', medium: '自动判断', low: '低可信', unknown: '置信度未知' };
+  const asnLabels = {
+    4134: '中国电信', 4837: '中国联通', 9808: '中国移动', 45102: '阿里云',
+    45090: '腾讯云', 55990: '华为云', 13335: 'Cloudflare（边缘网络）',
+    15169: 'Google', 16509: 'Amazon AWS', 8075: 'Microsoft'
+  };
+
+  function organizationLabel(item) {
+    const asn = Number(item.ip_asn);
+    return item.ip_asn_org_zh || asnLabels[asn] || item.ip_asn_org || '';
+  }
 
   function ipProfile(item) {
     const status = String(item.ip_lookup_status || 'pending');
     const type = String(item.ip_network_type || 'unknown');
-    const label = status === 'resolved' ? (networkLabels[type] || '未知')
+    const label = status === 'resolved' ? (item.ip_network_type_zh || networkLabels[type] || '未知')
       : status === 'pending' ? '识别中' : '未知';
-    const location = [item.ip_country_name, item.ip_region, item.ip_city].filter(Boolean).join(' · ');
-    const organization = [item.ip_asn ? `AS${Number(item.ip_asn)}` : '', item.ip_asn_org || item.ip_isp].filter(Boolean).join(' ');
-    const risks = [Number(item.ip_is_proxy) === 1 ? '代理' : '', Number(item.ip_is_vpn) === 1 ? 'VPN' : '', Number(item.ip_is_tor) === 1 ? 'Tor' : ''].filter(Boolean);
-    return `<div class="ip-profile"><span class="ip-value">${esc(item.ip || '—')}</span><span class="ip-type ip-type-${esc(type)}">${esc(label)}</span>${location || organization ? `<small>${esc([location, organization].filter(Boolean).join(' / '))}</small>` : ''}${risks.length ? `<small class="ip-risk-hint">${esc(risks.join(' · '))}</small>` : ''}</div>`;
+    const confidence = status === 'resolved' && type !== 'unknown'
+      ? (confidenceLabels[item.ip_network_type_confidence] || '自动判断')
+      : '';
+    const location = [item.ip_country_name_zh || item.ip_country_name, item.ip_region_zh || item.ip_region, item.ip_city_zh || item.ip_city].filter(Boolean).join(' · ');
+    const organization = [item.ip_asn ? `AS${Number(item.ip_asn)}` : '', organizationLabel(item)].filter(Boolean).join(' ');
+    const isp = item.ip_isp ? `运营商：${item.ip_isp}` : '';
+    const signals = [
+      Number(item.ip_is_proxy) === 1 ? '代理命中' : '', Number(item.ip_is_vpn) === 1 ? 'VPN命中' : '',
+      Number(item.ip_is_tor) === 1 ? 'Tor出口' : '', Number(item.ip_verified_crawler) === 1 ? `${item.ip_crawler_operator || '官方'}爬虫` : '',
+      Number(item.ip_is_private_relay) === 1 ? 'Apple私密转送' : '', Number(item.ip_is_anycast) === 1 ? '任播网络' : '',
+      Number(item.ip_is_fullbogon) === 1 ? 'Fullbogon' : '', item.ip_special_purpose || ''
+    ].filter(Boolean);
+    return `<div class="ip-profile"><span class="ip-value">${esc(item.ip || '—')}</span><span class="ip-type ip-type-${esc(type)}">${esc(label)}</span>${confidence ? `<span class="ip-confidence ip-confidence-${esc(item.ip_network_type_confidence || 'medium')}">${esc(confidence)}</span>` : ''}${location || organization || isp ? `<small>${esc([location, organization, isp].filter(Boolean).join(' / '))}</small>` : ''}${type === 'unknown' && item.ip_asn ? '<small class="ip-profile-note">ASN 归属可信；网络用途待补充</small>' : ''}${signals.length ? `<small class="ip-signal-list">${signals.map(signal => `<span>${esc(signal)}</span>`).join('')}</small>` : ''}</div>`;
   }
 
   function compactClient(userAgent) {

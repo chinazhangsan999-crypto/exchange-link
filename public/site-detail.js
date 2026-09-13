@@ -18,7 +18,7 @@
   async function loadSidebarCategories() {
     const nav = $('#category-nav');
     try {
-      const response = await fetch('/api/links', { credentials: 'same-origin' });
+      const response = await window.readApiFetch('/api/links');
       const result = await response.json();
       if (result.code !== 200) throw new Error(result.msg || '获取友链数据失败');
       const sourceLinks = result.data?.links || [];
@@ -69,7 +69,7 @@
     $('#detailTitle').textContent = site.name || '未命名站点'; if (detailDescription) detailDescription.textContent = site.description || '该站点暂未填写简介。'; $('#btnVisit').href = `/go?id=${Number(site.id)}`;
     renderRecommendations(recommendations || []); $('#detailLoading').hidden = true; $('#detailContent').hidden = false;
   }
-  async function loadDetail() { const id = Number(new URLSearchParams(location.search).get('id')); if (!Number.isSafeInteger(id) || id <= 0) throw new Error('站点编号无效'); const response = await fetch(`/api/links/${id}`, { credentials: 'same-origin' }); const result = await response.json(); if (!response.ok || result.code !== 200) throw new Error(result.msg || '站点不存在或暂不可用'); renderSite(result.data.site, result.data.recommendations); }
+  async function loadDetail() { const id = Number(new URLSearchParams(location.search).get('id')); if (!Number.isSafeInteger(id) || id <= 0) throw new Error('站点编号无效'); const response = await window.readApiFetch(`/api/links/${id}`); const result = await response.json(); if (!response.ok || result.code !== 200) throw new Error(result.msg || '站点不存在或暂不可用'); renderSite(result.data.site, result.data.recommendations); }
   /** 顶部框架与首页复用同一套节点，只由详情脚本绑定其数据和事件。 */
   async function loadPublicFrame() { const response = await fetch('/api/config/public', { credentials: 'same-origin' }); const result = await response.json(); if (result.code !== 200) return; publicConfig = result.data || {}; const siteName = String(publicConfig.site_name || '星环导航').trim() || '星环导航'; document.querySelectorAll('[data-site-name]').forEach(element => { element.textContent = siteName; }); applySiteLogo(publicConfig); document.querySelectorAll('[data-site-announcement]').forEach(element => { element.textContent = `✦ ${siteName}已收录审核通过的合作站点，排名随近 24 小时带量实时更新。`; }); document.title = currentSiteName ? `${currentSiteName} · 站点详情 · ${siteName}` : `站点详情 · ${siteName}`; const publishUrl = validUrl(publicConfig.publish_url); if (publishUrl) $('#topPublishBtn').href = publishUrl; }
   function searchHome() { const keyword = $('#site-search').value.trim(); location.href = `/${keyword ? `?q=${encodeURIComponent(keyword)}` : ''}`; }

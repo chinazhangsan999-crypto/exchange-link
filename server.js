@@ -12,8 +12,10 @@ const { initializeSourceTokenTables, ensureAllPartnersHaveSid } = require('./src
 const { initializeAdsTable } = require('./src/models/AdsModel');
 const { initializeMirrorsTable, syncMirrorsToPartners } = require('./src/models/MirrorModel');
 const { initializeSiteTrafficTable } = require('./src/models/SiteTrafficModel');
+const { initializePartnerPageViewTable } = require('./src/models/PartnerPageViewModel');
 const { initializeIpProfileTable } = require('./src/models/IpProfileModel');
 const SiteTrafficService = require('./src/services/SiteTrafficService');
+const PartnerPageViewService = require('./src/services/PartnerPageViewService');
 const IpIntelligenceService = require('./src/services/IpIntelligenceService');
 const ControlCenterAgentService = require('./src/services/ControlCenterAgentService');
 const { startJobs, stopJobs } = require('./src/jobs/cron');
@@ -36,6 +38,7 @@ process.on('unhandledRejection', reason => {
 
 initializeDatabase()
   .then(initializeSiteTrafficTable)
+  .then(initializePartnerPageViewTable)
   .then(initializeIpProfileTable)
   .then(initializeSourceTokenTables)
   .then(initializeAdsTable)
@@ -47,6 +50,7 @@ initializeDatabase()
     httpServer = app.listen(PORT, () => {
       console.log(`互助友链系统已启动：http://localhost:${PORT}`);
       SiteTrafficService.start();
+      PartnerPageViewService.start();
       IpIntelligenceService.start();
       ControlCenterAgentService.start();
       startJobs();
@@ -88,6 +92,11 @@ async function shutdown(signal) {
       await SiteTrafficService.stopAndFlush();
     } catch (error) {
       console.warn('服务停机时刷新全站访客统计失败：', error.message);
+    }
+    try {
+      await PartnerPageViewService.stopAndFlush();
+    } catch (error) {
+      console.warn('服务停机时刷新入站后站内浏览统计失败：', error.message);
     }
     ControlCenterAgentService.stop();
     await IpIntelligenceService.stop();

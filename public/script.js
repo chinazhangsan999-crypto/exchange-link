@@ -13,12 +13,92 @@ function renderSidebar(){const icons=['★','◆','▣','✦','◉','◈'];categ
 /** 根据搜索字词同步刷新热门卡片和所有分类网格。 */
 function renderLinks(){const keyword=searchInput.value.trim().toLowerCase(),matches=link=>`${link.name} ${link.domain} ${link.category}`.toLowerCase().includes(keyword),visibleLinks=links.filter(matches),visibleHotLinks=hotLinks.filter(matches);popularGrid.innerHTML=visibleHotLinks.map((link,index)=>card(link,index+1)).join('')||'<p class="empty">未找到匹配的热门站点</p>';linksContainer.innerHTML=categories.map(category=>{const categoryLinks=visibleLinks.filter(link=>link.category===category.name);return `<section id="category-${category.id}" class="category-section ${categoryLinks.length?'':'is-hidden'}"><div class="section-heading"><span class="heading-icon">◆</span><h2>${escapeHtml(category.name)}</h2><span class="category-total">${categoryLinks.length} 个站点</span></div><div class="cards-grid site-grid category-grid">${categoryLinks.map(link=>card(link)).join('')}</div></section>`}).join('')||'<p class="empty">暂无已审核站点</p>'}
 /** 请求后端友链接口，并在失败时提供中文提示。 */
-async function loadLinks(){try{const response=await fetch('/api/links'),result=await response.json();if(result.code!==200)throw Error(result.msg||'获取友链数据失败');links=result.data.links||[];hotLinks=result.data.hotList||[];categories=collectCategories(result.data.categories,links);renderSidebar();renderLinks()}catch(error){categoryNav.innerHTML='<span class="nav-loading">分类加载失败</span>';popularGrid.innerHTML='<p class="empty">加载失败，请刷新页面后重试。</p>'}}
+async function loadLinks(){try{const response=await window.readApiFetch('/api/links'),result=await response.json();if(result.code!==200)throw Error(result.msg||'获取友链数据失败');links=result.data.links||[];hotLinks=result.data.hotList||[];categories=collectCategories(result.data.categories,links);renderSidebar();renderLinks()}catch(error){categoryNav.innerHTML='<span class="nav-loading">分类加载失败</span>';popularGrid.innerHTML='<p class="empty">加载失败，请刷新页面后重试。</p>'}}
 searchInput.addEventListener('input',renderLinks);searchButton.addEventListener('click',renderLinks);searchInput.addEventListener('keydown',event=>{if(event.key==='Enter')renderLinks()});loadLinks();
 /** 延迟心跳：页面停留满三秒或三秒后首次交互，才由后端消费一次性追踪会话并写入带量。 */
 let hasUserInteraction=false;
 function fingerprint(){return{webdriver:navigator.webdriver===true,abnormalScreen:screen.width===0||screen.height===0,missingLanguage:!navigator.language,hasUserInteraction,resolution:`${screen.width}x${screen.height}`,language:navigator.language||'',platform:navigator.platform||''}}
-(()=>{let reported=false;const startTime=Date.now();function onUserActivity(){hasUserInteraction=true;triggerReport('interaction')}function triggerReport(reason){if(reported||Date.now()-startTime<3000)return;reported=true;window.removeEventListener('scroll',onUserActivity);window.removeEventListener('click',onUserActivity);const data=JSON.stringify({action:'ping',trigger:reason,fingerprint:fingerprint()});try{if(navigator.sendBeacon){const blob=new Blob([data],{type:'application/json'});navigator.sendBeacon('/api/track/ping',blob)}else fetch('/api/track/ping',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:data}).catch(()=>{})}catch(error){/* 心跳失败不影响页面浏览。 */}}window.addEventListener('scroll',onUserActivity,{passive:true,once:true});window.addEventListener('click',onUserActivity,{once:true});setTimeout(()=>triggerReport('timer_3s'),3100)})();
+(()=>{
+  let reported=false;
+  let heartbeatPromise=null;
+  let heartbeatSettled=false;
+  const startTime=Date.now();
+  const minimumStayMs=3000;
+
+  function waitFor(milliseconds){
+    return new Promise(resolve=>setTimeout(resolve,milliseconds));
+  }
+
+  function onUserActivity(){
+    hasUserInteraction=true;
+    void triggerReport('interaction');
+  }
+
+  function triggerReport(reason){
+    if(heartbeatPromise)return heartbeatPromise;
+    if(reported||Date.now()-startTime<minimumStayMs)return Promise.resolve(false);
+    reported=true;
+    window.removeEventListener('scroll',onUserActivity);
+    window.removeEventListener('click',onUserActivity);
+    const data=JSON.stringify({action:'ping',trigger:reason,fingerprint:fingerprint()});
+    try{
+      heartbeatPromise=fetch('/api/track/ping',{
+        method:'POST',
+        credentials:'same-origin',
+        keepalive:true,
+        headers:{'Content-Type':'application/json'},
+        body:data
+      })
+        .then(async response=>{
+          if(!response.ok)return false;
+          const result=await response.json().catch(()=>null);
+          const attributionToken=String(result?.data?.attributionToken||'');
+          if(attributionToken){
+            sessionStorage.setItem('inflow_attribution_token',attributionToken);
+            // 入口页在有效心跳确认后立即记为第一条站内浏览；后续刷新和跨页访问由 common.js 各记一次。
+            fetch('/api/track/page-view',{
+              method:'POST',credentials:'same-origin',keepalive:true,
+              headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({token:attributionToken,pagePath:window.location.pathname||'/'})
+            }).then(pageResponse=>{
+              if(pageResponse.status===401)sessionStorage.removeItem('inflow_attribution_token');
+            }).catch(()=>{});
+          }
+          return true;
+        })
+        .catch(()=>false)
+        .finally(()=>{heartbeatSettled=true;});
+      return heartbeatPromise;
+    }catch(error){
+      heartbeatSettled=true;
+      return Promise.resolve(false);
+    }
+  }
+
+  function getInternalDetailDestination(event){
+    if(event.defaultPrevented||event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return '';
+    const link=event.target.closest?.('a[href]');
+    if(!link||link.target&&link.target!=='_self')return '';
+    try{
+      const destination=new URL(link.href,window.location.href);
+      return destination.origin===window.location.origin&&destination.pathname==='/site-detail.html'?destination.href:'';
+    }catch(error){
+      return '';
+    }
+  }
+
+  document.addEventListener('click',event=>{
+    const destination=getInternalDetailDestination(event);
+    if(!destination||heartbeatSettled||Date.now()-startTime<minimumStayMs)return;
+    event.preventDefault();
+    const report=heartbeatPromise||triggerReport('internal_navigation');
+    Promise.race([report,waitFor(1200)]).finally(()=>window.location.assign(destination));
+  },true);
+
+  window.addEventListener('scroll',onUserActivity,{passive:true,once:true});
+  window.addEventListener('click',onUserActivity,{once:true});
+  setTimeout(()=>{void triggerReport('timer_3s');},3100);
+})();
 /** 窄屏分类抽屉：菜单、遮罩、分类链接与 ESC 均可关闭。 */
 const mobileMenuBtn=document.querySelector('#mobileMenuBtn'),sidebarOverlay=document.querySelector('#sidebarOverlay'),sidebar=document.querySelector('.sidebar');
 function closeMobileSidebar(){sidebar.classList.remove('open');sidebarOverlay.classList.remove('active');mobileMenuBtn.setAttribute('aria-expanded','false')}

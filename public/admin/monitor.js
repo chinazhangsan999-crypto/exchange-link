@@ -3,7 +3,7 @@
   if (!document.querySelector('link[href^="/admin/monitor.css"]')) {
     const stylesheet = document.createElement('link');
     stylesheet.rel = 'stylesheet';
-    stylesheet.href = '/admin/monitor.css?v=20260911-ip-profile';
+    stylesheet.href = '/admin/monitor.css?v=20260914-ip-profile';
     document.head.append(stylesheet);
   }
 
@@ -179,15 +179,36 @@
     education: '教育/机构', government: '政府网络', hosting: '云主机',
     cdn: 'CDN/边缘网络', unknown: '未知'
   };
+  const confidenceLabels = { high: '高可信', medium: '自动判断', low: '低可信', unknown: '置信度未知' };
+  const asnLabels = {
+    4134: '中国电信', 4837: '中国联通', 9808: '中国移动', 45102: '阿里云',
+    45090: '腾讯云', 55990: '华为云', 13335: 'Cloudflare（边缘网络）',
+    15169: 'Google', 16509: 'Amazon AWS', 8075: 'Microsoft'
+  };
+
+  function organizationLabel(item) {
+    const asn = Number(item.ip_asn);
+    return item.ip_asn_org_zh || asnLabels[asn] || item.ip_asn_org || '';
+  }
 
   function ipProfileHtml(item) {
     const status = String(item.ip_lookup_status || 'pending');
     const type = String(item.ip_network_type || 'unknown');
-    const label = status === 'resolved' ? (networkLabels[type] || '未知')
+    const label = status === 'resolved' ? (item.ip_network_type_zh || networkLabels[type] || '未知')
       : status === 'pending' ? '识别中' : '未知';
-    const location = [item.ip_country_name, item.ip_region, item.ip_city].filter(Boolean).join(' · ');
-    const organization = [item.ip_asn ? `AS${Number(item.ip_asn)}` : '', item.ip_asn_org || item.ip_isp].filter(Boolean).join(' ');
-    return `<span class="ip-type ip-type-${escapeHtml(type)}">${escapeHtml(label)}</span>${location || organization ? `<small>${escapeHtml([location, organization].filter(Boolean).join(' / '))}</small>` : ''}`;
+    const confidence = status === 'resolved' && type !== 'unknown'
+      ? (confidenceLabels[item.ip_network_type_confidence] || '自动判断')
+      : '';
+    const location = [item.ip_country_name_zh || item.ip_country_name, item.ip_region_zh || item.ip_region, item.ip_city_zh || item.ip_city].filter(Boolean).join(' · ');
+    const organization = [item.ip_asn ? `AS${Number(item.ip_asn)}` : '', organizationLabel(item)].filter(Boolean).join(' ');
+    const isp = item.ip_isp ? `运营商：${item.ip_isp}` : '';
+    const signals = [
+      Number(item.ip_is_proxy) === 1 ? '代理命中' : '', Number(item.ip_is_vpn) === 1 ? 'VPN命中' : '',
+      Number(item.ip_is_tor) === 1 ? 'Tor出口' : '', Number(item.ip_verified_crawler) === 1 ? `${item.ip_crawler_operator || '官方'}爬虫` : '',
+      Number(item.ip_is_private_relay) === 1 ? 'Apple私密转送' : '', Number(item.ip_is_anycast) === 1 ? '任播网络' : '',
+      Number(item.ip_is_fullbogon) === 1 ? 'Fullbogon' : '', item.ip_special_purpose || ''
+    ].filter(Boolean);
+    return `<span class="ip-type ip-type-${escapeHtml(type)}">${escapeHtml(label)}</span>${confidence ? `<span class="ip-confidence ip-confidence-${escapeHtml(item.ip_network_type_confidence || 'medium')}">${escapeHtml(confidence)}</span>` : ''}${location || organization || isp ? `<small>${escapeHtml([location, organization, isp].filter(Boolean).join(' / '))}</small>` : ''}${signals.length ? `<small class="ip-signal-list">${signals.map(signal => `<span>${escapeHtml(signal)}</span>`).join('')}</small>` : ''}`;
   }
 
   function clientEvidence(item) {
@@ -196,10 +217,11 @@
     const source = sourceLabels[item.attribution_method] || item.attribution_method || '历史数据未记录';
     const recent = (item.recent_times || []).map(time => `<span>${escapeHtml(formatTime(time))}</span>`).join('') || '<span>暂无</span>';
     const interactionRate = item.sessions ? (Number(item.interacted_sessions || 0) / Number(item.sessions) * 100).toFixed(1) : '0.0';
-    return `<tr class="client-evidence-row" data-detail-index="${item._index}" hidden><td colspan="8">
+    return `<tr class="client-evidence-row" data-detail-index="${item._index}" hidden><td colspan="9">
       <div class="client-evidence">
         <div class="evidence-grid">
           <section><b>完整客户端信息</b><p>UA：${escapeHtml(item.raw_user_agent || '历史数据未采集')}</p><p>平台：${escapeHtml(item.client_platform || '历史数据未采集')} · 分辨率：${escapeHtml(item.screen_resolution || '未采集')} · 语言：${escapeHtml(item.client_language || '未采集')}</p></section>
+          <section><b>IP 网络画像</b><p>网络类型：${escapeHtml(item.ip_network_type_zh || networkLabels[item.ip_network_type] || '类型未知')} · 置信度：${escapeHtml(confidenceLabels[item.ip_confidence] || item.ip_confidence_zh || '未知')}</p><p>位置：${escapeHtml([item.ip_country_name_zh || item.ip_country_name, item.ip_region_zh || item.ip_region, item.ip_city_zh || item.ip_city].filter(Boolean).join(' · ') || '暂无')}</p><p>ASN 归属：${escapeHtml([item.ip_asn ? `AS${Number(item.ip_asn)}` : '', organizationLabel(item)].filter(Boolean).join(' ') || '暂无')}</p><p>运营商：${escapeHtml(item.ip_isp || '数据源未提供')} · 时区：${escapeHtml(item.ip_timezone_zh || item.ip_timezone || '暂无')} · 更新：${escapeHtml(formatTime(item.ip_profile_updated_at))}</p><p>说明：仅用于人工审核辅助，不包含中心系统的 ASN 裁决过程。</p></section>
           <section><b>来源证据</b><p>识别方式：${escapeHtml(source)}</p><p>Referer：${escapeHtml(item.referer || '空 Referer')}</p><p>本客户端空 Referer：${Number(item.empty_referer_count || 0)} 次</p></section>
           <section><b>行为证据</b><p>首次：${escapeHtml(formatTime(item.first_seen))}</p><p>最近：${escapeHtml(formatTime(item.timestamp))}</p><p>中位间隔：${item.median_interval_seconds == null ? '样本不足' : durationText(item.median_interval_seconds)} · 10 秒峰值：${Number(item.max_events_10s || 0)} 次 · 20 秒峰值：${Number(item.max_events_20s || 0)} 次</p></section>
           <section><b>互动与关联</b><p>有效会话互动：${Number(item.interacted_sessions || 0)}/${Number(item.sessions || 0)}（${interactionRate}%）· 出站点击：${Number(item.interaction_clicks || 0)}</p><p>首次互动延迟：${item.first_interaction_seconds == null ? '无互动' : durationText(item.first_interaction_seconds)}</p><p>匿名访客涉及 ${Number(item.ip_count || 1)} 个 IP；同 IP 涉及 ${Number(item.ip_visitor_count || 1)} 个匿名访客；同环境涉及 ${Number(item.environment_ip_count || 0)} 个 IP</p></section>
@@ -211,7 +233,7 @@
   }
 
   function clientRows(items) {
-    if (!items.length) return '<tr><td colspan="8" class="empty-inflow">暂无近 24 小时入站数据</td></tr>';
+    if (!items.length) return '<tr><td colspan="9" class="empty-inflow">暂无近 24 小时入站数据</td></tr>';
     return items.map((raw, index) => {
       const item = { ...raw, _index: index };
       const flags = item.flags || {};
@@ -219,14 +241,17 @@
       const source = sourceLabels[item.attribution_method] || item.attribution_method || '历史数据未记录';
       const identity = item.visitor_short ? `访客 …${item.visitor_short}` : '历史记录（按 IP 聚合）';
       const environment = item.environment_short ? `环境 …${item.environment_short}` : '环境摘要未采集';
-      const searchText = [item.ip, item.ip_network_type, item.ip_country_name, item.ip_region, item.ip_city,
-        item.ip_asn_org, item.ip_isp, item.visitor_short, item.client, item.raw_user_agent,
+      const searchText = [item.ip, item.ip_network_type, item.ip_network_type_zh, item.ip_country_name, item.ip_region, item.ip_city,
+        item.ip_asn_org, item.ip_asn_org_zh, item.ip_isp, item.ip_confidence, item.ip_confidence_zh,
+        item.ip_crawler_operator, item.ip_crawler_type, item.ip_private_relay_region, item.ip_special_purpose,
+        item.visitor_short, item.client, item.raw_user_agent,
         item.source_domain, item.referer, reasons.join(' ')].join(' ').toLowerCase();
       return `<tr class="client-audit-row" data-client-index="${index}" data-risk="${flags.risky ? 1 : 0}" data-no-interaction="${flags.no_interaction ? 1 : 0}" data-source-anomaly="${flags.source_anomaly ? 1 : 0}" data-periodic="${flags.periodic ? 1 : 0}" data-environment-anomaly="${flags.environment_anomaly ? 1 : 0}" data-search="${escapeHtml(searchText)}">
         <td><strong>${escapeHtml(item.ip || '未知 IP')}</strong>${ipProfileHtml(item)}<small>${escapeHtml(identity)}</small></td>
         <td><span class="env-tag model-tag" title="${escapeHtml(item.raw_user_agent || item.client)}">${escapeHtml(item.client || item.device_model || '未知客户端')}</span><small>${escapeHtml(environment)}</small></td>
         <td><strong>${escapeHtml(item.source_domain || '空 Referer')}</strong><small>${escapeHtml(source)}</small></td>
-        <td><strong>${Number(item.ip_count || 1)} UV / ${Number(item.requests || 0)} PV</strong><small>当前 IP ${Number(item.ip_requests || 0)} PV · ${Number(item.ip_ratio || 0).toFixed(1)}%</small></td>
+        <td><strong>${Number(item.ip_count || 1)} UV / ${Number(item.requests || 0)} 有效会话</strong><small>当前 IP ${Number(item.ip_requests || 0)} 个有效会话 · ${Number(item.ip_ratio || 0).toFixed(1)}%</small></td>
+        <td><strong>${Number(item.post_entry_page_pv || 0)} PV</strong><small>${Number(item.post_entry_page_sessions || 0)}/${Number(item.sessions || 0)} 有效会话有后续浏览</small></td>
         <td><strong>${Number(item.interacted_sessions || 0)}/${Number(item.sessions || 0)} 会话</strong><small>${Number(item.interaction_clicks || 0)} 次出站点击</small></td>
         <td><strong>跨度 ${durationText(item.duration_seconds)}</strong><small>中位间隔 ${item.median_interval_seconds == null ? '样本不足' : durationText(item.median_interval_seconds)} · 10秒峰值 ${Number(item.max_events_10s || 0)} 次</small></td>
         <td>${riskTag(item)}<small>${escapeHtml(reasons.slice(0, 2).join('；') || '无明显异常')}${reasons.length > 2 ? `；另 ${reasons.length - 2} 项` : ''}</small></td>
@@ -280,7 +305,7 @@
     state.clientController = new AbortController();
     const sequence = ++state.clientRequestSequence;
     const body = document.querySelector('#client-audit-body');
-    if (body) body.innerHTML = '<tr><td colspan="8" class="empty-inflow">正在加载客户端明细…</td></tr>';
+    if (body) body.innerHTML = '<tr><td colspan="9" class="empty-inflow">正在加载客户端明细…</td></tr>';
     const params = new URLSearchParams({
       page: String(Math.max(1, Number(page) || 1)),
       pageSize: '100',
@@ -295,7 +320,7 @@
       renderClientPage(payload);
     } catch (error) {
       if (error.name === 'AbortError' || sequence !== state.clientRequestSequence) return;
-      if (body) body.innerHTML = `<tr><td colspan="8" class="empty-inflow">${escapeHtml(error.message || '客户端明细加载失败')}</td></tr>`;
+      if (body) body.innerHTML = `<tr><td colspan="9" class="empty-inflow">${escapeHtml(error.message || '客户端明细加载失败')}</td></tr>`;
     }
   }
 
@@ -349,16 +374,16 @@
         <h4>核心 KPI 与智能诊断</h4>
         <div class="diagnostic-grid">
           <article class="diagnostic-card">
-            <p>近 24h 入站概况</p><strong>UV：${Number(data.uv24h || 0)} · PV：${Number(data.pv24h || 0)}</strong>
-            <span class="tag healthy">🟢 近 24 小时数据概览</span>
+            <p>近 24h 有效入站</p><strong>UV：${Number(data.uv24h || 0)} · 有效入站会话：${Number(data.pv24h || 0)}</strong>
+            <span class="tag healthy">🟢 已通过来源识别与延迟心跳</span>
           </article>
           <article class="diagnostic-card">
             <p>行为时间特征</p><strong>1小时峰值UV占比：${hourly}</strong>
             ${statusTag(diagnostics.time_burst, `🟡 异常并发: 集中爆发达 ${hourly}`, `访问时段分布健康：${hourly}`, true)}
           </article>
           <article class="diagnostic-card">
-            <p>基础刷新率</p><strong>PV/UV 比值：${pvUv}</strong>
-            ${statusTag(diagnostics.pv_uv_anomaly, `🔴 PV/UV严重异常 (比值: ${pvUv})`, `刷新率健康：${pvUv}`)}
+            <p>入站后浏览深度（30min）</p><strong>PV/UV 比值：${pvUv}</strong>
+            ${statusTag(diagnostics.pv_uv_anomaly, `🔴 入站后浏览PV/UV异常 (比值: ${pvUv})`, `入站后浏览深度正常：${pvUv}`)}
           </article>
           <article class="diagnostic-card">
             <p>死水交互率（近24h数据）</p><strong>${deadWaterInteraction}</strong>
@@ -395,8 +420,8 @@
         </div>
         <p id="client-data-note" class="client-data-note" hidden></p>
         <div class="table-wrap"><table>
-          <thead><tr><th>IP / 网络类型 / 匿名访客</th><th>客户端环境</th><th>来源校验</th><th>24h 访问</th><th>后续互动</th><th>时间特征</th><th>风险证据</th><th>最近访问 / 操作</th></tr></thead>
-          <tbody id="client-audit-body"><tr><td colspan="8" class="empty-inflow">正在加载客户端明细…</td></tr></tbody>
+          <thead><tr><th>IP / 网络类型 / 匿名访客</th><th>客户端环境</th><th>来源校验</th><th>24h 有效入站</th><th>入站后站内浏览<br>PV（30min）</th><th>后续互动</th><th>时间特征</th><th>风险证据</th><th>最近访问 / 操作</th></tr></thead>
+          <tbody id="client-audit-body"><tr><td colspan="9" class="empty-inflow">正在加载客户端明细…</td></tr></tbody>
         </table></div><div id="client-pagination" class="pagination-bar"></div>
       </section>`;
     bindClientAudit();

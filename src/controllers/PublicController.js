@@ -31,6 +31,7 @@ const {
   getVerificationNonce,
   consumeVerificationNonce
 } = require('../middlewares/rateLimit');
+const { issueReadAccessToken } = require('../middlewares/readAccess');
 const PartnerModel = require('../models/PartnerModel');
 const SourceTokenModel = require('../models/SourceTokenModel');
 const LogModel = require('../models/LogModel');
@@ -39,6 +40,9 @@ const AdModel = require('../models/AdsModel');
 const MirrorModel = require('../models/MirrorModel');
 const CacheService = require('../services/CacheService');
 const SiteTrafficService = require('../services/SiteTrafficService');
+const PartnerPageViewService = require('../services/PartnerPageViewService');
+const InflowAttributionService = require('../services/InflowAttributionService');
+const VisitorRiskService = require('../services/VisitorRiskService');
 const IpIntelligenceService = require('../services/IpIntelligenceService');
 const { sendAdminAlert, formatAlertLink, formatContactLine } = require('../services/AlertService');
 
@@ -113,9 +117,24 @@ function queueRejectedInbound(req, details = {}) {
 
 function readAttributionVisit(req) {
   const token = decodeURIComponent(getCookie(req, ATTRIBUTION_COOKIE) || '');
-  if (!token) return null;
+  if (token) {
+    try {
+      const payload = jwt.verify(token, GUEST_JWT_SECRET);
+      if (payload?.type === 'inflow-attribution'
+        && typeof payload.visitId === 'string'
+        && Number.isSafeInteger(Number(payload.sourcePartnerId))) {
+        return { visitId: payload.visitId, sourcePartnerId: Number(payload.sourcePartnerId) };
+      }
+    } catch {
+      // Cookie 可能被代理、缓存或旧浏览器策略影响；继续使用同访客的短期服务端备份。
+    }
+  }
+  return InflowAttributionService.recall(req.visitorId || '');
+}
+
+function readAttributionToken(token) {
   try {
-    const payload = jwt.verify(token, GUEST_JWT_SECRET);
+    const payload = jwt.verify(String(token || ''), GUEST_JWT_SECRET, { algorithms: ['HS256'] });
     if (payload?.type !== 'inflow-attribution'
       || typeof payload.visitId !== 'string'
       || !Number.isSafeInteger(Number(payload.sourcePartnerId))) return null;
@@ -296,24 +315,40 @@ function trackSitePageView(req, res, next) {
       && Boolean(userAgent)
       && !SITE_TRAFFIC_BOT_UA.test(userAgent);
     if (!eligible) return next();
-
-    const visitorId = ensureVisitorIdentity(req, res);
-    const normalizedIp = getClientIp(req);
-    const acceptsHtml = String(req.get('accept') || '').toLowerCase().includes('text/html');
-    res.once('finish', () => {
-      try {
-        const successful = res.statusCode === 200 || res.statusCode === 304;
-        const contentType = String(res.getHeader('content-type') || '').toLowerCase();
-        if (!successful || (!contentType.includes('text/html') && !(res.statusCode === 304 && acceptsHtml))) return;
-        SiteTrafficService.recordPageView({ visitorId, normalizedIp, occurredAt: new Date() });
-      } catch (error) {
-        console.warn('[全站访客统计] 页面访问记录失败：', error.message);
-      }
-    });
+    // 这里只签发稳定的匿名访客标识；PV 由页面加载后的专用接口记录，避免静态文档
+    // 生命周期、缓存或代理差异导致 finish 事件漏记。
+    ensureVisitorIdentity(req, res);
   } catch (error) {
     console.warn('[全站访客统计] 页面识别失败：', error.message);
   }
   return next();
+}
+
+function recordSitePageView(req, res) {
+  const pagePath = String(req.body?.pagePath || '');
+  if (!/^\/(?:$|index\.html$|site-detail\.html$)/.test(pagePath)) {
+    return fail(res, '页面地址不支持统计', 400);
+  }
+  const visitorId = ensureVisitorIdentity(req, res);
+  const normalizedIp = getClientIp(req);
+  if (!normalizedIp) return fail(res, '无法识别客户端 IP', 400);
+  SiteTrafficService.recordPageView({ visitorId, normalizedIp, occurredAt: new Date() });
+  return res.status(204).end();
+}
+
+function recordPostEntryPageView(req, res) {
+  const attribution = readAttributionToken(req.body?.token);
+  const pagePath = String(req.body?.pagePath || '');
+  if (!attribution) return fail(res, '入站归因已失效', 401);
+  if (!/^\/(?:$|index\.html$|site-detail\.html$|publish\.html$)/.test(pagePath)) {
+    return fail(res, '页面地址不支持统计', 400);
+  }
+  PartnerPageViewService.recordPageView({
+    partnerId: attribution.sourcePartnerId,
+    visitId: attribution.visitId,
+    occurredAt: new Date()
+  });
+  return res.status(204).end();
 }
 
 /** 首页静态文件中间件：签发延迟心跳使用的短期认领凭证。 */
@@ -447,6 +482,32 @@ function initVerification(req, res) {
   });
   const token = `${rawData}.${sign}`;
   return res.json({ code: 200, msg: '验证令牌已生成', data: { token, expiresIn: 60 }, success: true, token });
+}
+
+function getReadBootstrap(req, res) {
+  const visitorId = ensureVisitorIdentity(req, res);
+  VisitorRiskService.recordBootstrapSignals(visitorId, {
+    fetchSite: req.get('sec-fetch-site'),
+    fetchMode: req.get('sec-fetch-mode'),
+    fetchDest: req.get('sec-fetch-dest'),
+    origin: req.get('origin'),
+    referer: req.get('referer'),
+    expectedOrigin: `${req.protocol}://${req.get('host')}`
+  });
+  return ok(res, issueReadAccessToken(req, res), '读取凭证已生成');
+}
+
+function recordTrapdoor(req, res) {
+  const visitorId = ensureVisitorIdentity(req, res);
+  const record = VisitorRiskService.recordTrapdoor(visitorId, {
+    userAgent: req.get('user-agent'),
+    path: req.originalUrl || req.path
+  });
+  if (TRAFFIC_DEBUG && record) {
+    console.warn(`[访客风险] 隐藏探针命中：visitor=${visitorId.slice(0, 8)}… score=${record.score} hits=${record.trapHits}`);
+  }
+  res.set('Cache-Control', 'private, no-store');
+  return res.status(204).end();
 }
 
 function checkVerification(req, res) {
@@ -607,6 +668,14 @@ async function trackPing(req, res) {
       return fail(res, '追踪会话已使用', 409);
     }
     const { newlyCounted, autoApproved } = transactionResult;
+    const attribution = { visitId, sourcePartnerId: Number(claim.partner_id) };
+    PartnerPageViewService.recordConfirmedEntry({
+      partnerId: attribution.sourcePartnerId,
+      visitId: attribution.visitId,
+      occurredAt: new Date()
+    });
+    // Cookie 是跨重启的第一归属凭证；该短期备份仅补偿部分浏览器/代理未回传 Cookie 的情况。
+    InflowAttributionService.remember(ensureVisitorIdentity(req, res), attribution);
     IpIntelligenceService.queueIp(clientIp);
     if (newlyCounted || autoApproved) CacheService.clearPublicCache();
     const expiredCookie = { maxAge: 0, httpOnly: true, sameSite: 'lax', secure: IS_PRODUCTION, path: '/' };
@@ -614,7 +683,7 @@ async function trackPing(req, res) {
     res.cookie('inflow_claim', '', expiredCookie);
     // 只保存签名的随机会话标识与来源友链 ID，不含 IP/UA；30 分钟后自动失效。
     const attributionToken = jwt.sign(
-      { type: 'inflow-attribution', visitId, sourcePartnerId: claim.partner_id },
+      { type: 'inflow-attribution', visitId: attribution.visitId, sourcePartnerId: attribution.sourcePartnerId },
       GUEST_JWT_SECRET,
       { expiresIn: ATTRIBUTION_TTL_SECONDS }
     );
@@ -627,7 +696,7 @@ async function trackPing(req, res) {
     });
     return ok(
       res,
-      { newlyCounted, autoApproved },
+      { newlyCounted, autoApproved, attributionToken },
       autoApproved ? '累计独立访客达到阈值，友链已自动审核通过'
         : newlyCounted ? '有效入站已计入积分' : '本周期已计分，本次仅记录访问行为'
     );
@@ -1013,11 +1082,15 @@ async function go(req, res) {
 module.exports = {
   preVerifyInflowTraffic,
   trackSitePageView,
+  recordSitePageView,
+  recordPostEntryPageView,
   trackInflow,
   health,
   headRoot,
   favicon,
   initVerification,
+  getReadBootstrap,
+  recordTrapdoor,
   checkVerification,
   getAnalyticsConfig,
   getInflowToken,

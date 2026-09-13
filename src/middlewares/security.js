@@ -7,6 +7,9 @@ function securityHeaders(req, res, next) {
   );
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
+  // 全站仅面向直接访问与友链流量，不允许搜索引擎建立索引。
+  // 使用响应头覆盖 HTML、静态文件及 API，避免只依赖 robots.txt。
+  res.setHeader('X-Robots-Tag', 'noindex, nofollow');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
   return next();

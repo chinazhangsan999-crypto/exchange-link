@@ -7,6 +7,7 @@ const SystemModel = require('../models/SystemModel');
 const RiskAlertModel = require('../models/RiskAlertModel');
 const { runPromisePool } = require('../utils/asyncPool');
 const { formatAlertLink, formatContactLine } = require('./AlertService');
+const { hashVisit } = require('./PartnerPageViewService');
 
 const asNumber = value => Number(value || 0);
 const ratio = (numerator, denominator, digits = 4) => denominator ? Number((numerator / denominator).toFixed(digits)) : 0;
@@ -101,12 +102,13 @@ function refererHostname(value) {
   catch { return ''; }
 }
 
-function buildClientAuditRows(events, interactions, pv, thresholds) {
+function buildClientAuditRows(events, interactions, pv, thresholds, pageViewsByVisit = []) {
   const groups = new Map();
   const ipCounts = new Map();
   const ipIdentities = new Map();
   const fingerprintIps = new Map();
   const interactionMap = new Map((interactions || []).map(item => [String(item.visit_id || ''), item]));
+  const pageViewMap = new Map((pageViewsByVisit || []).map(item => [String(item.visit_hash || ''), asNumber(item.post_entry_page_pv)]));
 
   for (const event of events || []) {
     const ip = String(event.ip || '未知 IP');
@@ -143,7 +145,12 @@ function buildClientAuditRows(events, interactions, pv, thresholds) {
     let interactedSessions = 0;
     let interactionClicks = 0;
     let firstInteractionSeconds = null;
+    let postEntryPagePv = 0;
+    let postEntryPageSessions = 0;
     for (const visitId of visitIds) {
+      const pageViews = pageViewMap.get(hashVisit(visitId)) || 0;
+      postEntryPagePv += pageViews;
+      if (pageViews > 0) postEntryPageSessions += 1;
       const interaction = interactionMap.get(visitId);
       if (!interaction) continue;
       interactedSessions += 1;
@@ -184,12 +191,14 @@ function buildClientAuditRows(events, interactions, pv, thresholds) {
       ip: latestIp,
       ip_lookup_status: String(latest.ip_lookup_status || 'pending'),
       ip_network_type: String(latest.ip_network_type || 'unknown'),
+      ip_network_type_zh: String(latest.ip_network_type_zh || ''),
       ip_country_code: String(latest.ip_country_code || ''),
       ip_country_name: String(latest.ip_country_name || ''),
       ip_region: String(latest.ip_region || ''),
       ip_city: String(latest.ip_city || ''),
       ip_asn: latest.ip_asn == null ? null : Number(latest.ip_asn),
       ip_asn_org: String(latest.ip_asn_org || ''),
+      ip_asn_org_zh: String(latest.ip_asn_org_zh || ''),
       ip_isp: String(latest.ip_isp || ''),
       ip_is_hosting: latest.ip_is_hosting,
       ip_is_mobile: latest.ip_is_mobile,
@@ -197,7 +206,15 @@ function buildClientAuditRows(events, interactions, pv, thresholds) {
       ip_is_vpn: latest.ip_is_vpn,
       ip_is_tor: latest.ip_is_tor,
       ip_is_anycast: latest.ip_is_anycast,
+      ip_special_purpose: String(latest.ip_special_purpose || ''),
+      ip_is_fullbogon: latest.ip_is_fullbogon,
+      ip_verified_crawler: latest.ip_verified_crawler,
+      ip_crawler_operator: String(latest.ip_crawler_operator || ''),
+      ip_crawler_type: String(latest.ip_crawler_type || ''),
+      ip_is_private_relay: latest.ip_is_private_relay,
+      ip_private_relay_region: String(latest.ip_private_relay_region || ''),
       ip_confidence: String(latest.ip_confidence || 'unknown'),
+      ip_confidence_zh: String(latest.ip_confidence_zh || ''),
       ip_profile_updated_at: String(latest.ip_profile_updated_at || ''),
       ip_count: group.ips.size,
       ip_visitor_count: ipIdentities.get(latestIp)?.size || 1,
@@ -236,6 +253,8 @@ function buildClientAuditRows(events, interactions, pv, thresholds) {
       interacted_sessions: interactedSessions,
       interaction_clicks: interactionClicks,
       first_interaction_seconds: firstInteractionSeconds,
+      post_entry_page_pv: postEntryPagePv,
+      post_entry_page_sessions: postEntryPageSessions,
       risk_level: riskLevel,
       risk_reasons: [...strongReasons, ...observationReasons],
       flags: {
@@ -259,7 +278,7 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
   const partner = await PartnerModel.findAnalyticsPartner(Number(partnerId));
   if (!partner) return null;
   const [{
-    summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak,
+    summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak, partnerPageViews, partnerPageViewVisits,
     clientEvents, clientInteractions, clientEventsTruncated
   }, thresholds] = await Promise.all([
     LogModel.getPartnerAnalytics(partner.id, { includeClients }),
@@ -282,7 +301,7 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
   }
 
   const allClientRows = includeClients
-    ? buildClientAuditRows(clientEvents, clientInteractions, pv, thresholds)
+    ? buildClientAuditRows(clientEvents, clientInteractions, pv, thresholds, partnerPageViewVisits)
     : [];
   // 风控弹窗只保留最值得优先审核的 300 个客户端，避免异常流量导致浏览器一次渲染数千行。
   const clientRows = allClientRows.slice(0, 300);
@@ -292,9 +311,12 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
   const attributedInteractedVisits = asNumber(attributedInteraction?.interacted_visits);
   const attributedVisits = asNumber(attributedInteraction?.attributed_inbound_visits);
   const peakHourlyUv = asNumber(hourlyPeak?.peak_hourly_uv);
+  const attributedPagePv = asNumber(partnerPageViews?.post_entry_page_pv);
+  const attributedPageSessions = asNumber(partnerPageViews?.attributed_sessions);
+  const attributedContinuedSessions = asNumber(partnerPageViews?.continued_sessions);
   const maxIpRequests = requestRows.reduce((max, row) => Math.max(max, asNumber(row.requests)), 0);
   const emptyRefererCount = asNumber(summary.empty_referer_count);
-  const pvUvRatio = ratio(pv, uv, 2);
+  const pvUvRatio = ratio(attributedPagePv, uv, 2);
   const deadWaterInteractionRate = ratio(deadWaterInteractedUv, deadWaterInboundUv);
   // 仅统计同一签名访问会话在 30 分钟内的后续出站，不再用“同 IP 任意点击”冒充转化。
   const attributedInteractionRate = ratio(attributedInteractedVisits, attributedVisits);
@@ -325,7 +347,11 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
   const deviceStats = makeStats(deviceCounts, inflowLogs.length, ['电脑', '手机', '平板'], 3);
   const osStats = makeStats(osCounts, inflowLogs.length);
   return {
-    partner, pv24h: pv, uv24h: uv, pvUvRatio, outflowClicks: asNumber(partner.outflow_clicks),
+    partner, pv24h: pv, uv24h: uv, pvUvRatio,
+    attributed_page_pv_24h: attributedPagePv,
+    attributed_page_sessions_24h: attributedPageSessions,
+    attributed_continued_sessions_24h: attributedContinuedSessions,
+    outflowClicks: asNumber(partner.outflow_clicks),
     roi: Number((asNumber(partner.outflow_clicks) / (uv + 1)).toFixed(3)), complianceRate: asNumber(summary.compliance_rate),
     device_type_stats: deviceStats, os_stats: osStats, operatingSystems: osStats, browsers: makeStats(browserCounts, inflowLogs.length),
     inflow_ips: clientRows, all_inflow_ips: clientRows,
@@ -351,12 +377,12 @@ async function analyzePartnerClients(partnerId, { page = 1, pageSize = 100, quer
     ? filter
     : 'all';
   const normalizedQuery = String(query || '').trim().toLowerCase();
-  const [{ summary, clientEvents, clientInteractions, clientEventsTruncated }, thresholds] = await Promise.all([
+  const [{ summary, partnerPageViewVisits, clientEvents, clientInteractions, clientEventsTruncated }, thresholds] = await Promise.all([
     LogModel.getPartnerAnalytics(partner.id, { includeClients: true, clientEventLimit: 5000 }),
     SystemModel.getRiskControlConfig()
   ]);
   const pv = asNumber(summary?.pv);
-  const allRows = buildClientAuditRows(clientEvents, clientInteractions, pv, thresholds);
+  const allRows = buildClientAuditRows(clientEvents, clientInteractions, pv, thresholds, partnerPageViewVisits);
   const flagByFilter = {
     risk: 'risky',
     noInteraction: 'no_interaction',
@@ -369,8 +395,10 @@ async function analyzePartnerClients(partnerId, { page = 1, pageSize = 100, quer
     if (flag && !row.flags?.[flag]) return false;
     if (!normalizedQuery) return true;
     return [
-      row.ip, row.ip_network_type, row.ip_country_name, row.ip_region, row.ip_city,
-      row.ip_asn_org, row.ip_isp, row.visitor_short, row.client, row.raw_user_agent, row.source_domain,
+      row.ip, row.ip_network_type, row.ip_network_type_zh, row.ip_country_name, row.ip_region, row.ip_city,
+      row.ip_asn_org, row.ip_asn_org_zh, row.ip_isp, row.ip_confidence, row.ip_confidence_zh,
+      row.ip_crawler_operator, row.ip_crawler_type, row.ip_private_relay_region, row.ip_special_purpose,
+      row.visitor_short, row.client, row.raw_user_agent, row.source_domain,
       row.referer, ...(row.risk_reasons || [])
     ].some(value => String(value || '').toLowerCase().includes(normalizedQuery));
   });
@@ -417,7 +445,7 @@ function formatRiskAlert(report, dashboardReasons) {
     `死水交互率（近24h）：${formatPercent(d.dead_water_interaction_rate)}（${d.dead_water_interacted_uv}/${d.dead_water_inbound_uv} 入站 IP，阈值 ${formatPercent(d.thresholds.min_interaction_rate)}；仅供人工审核）`,
     `可归因站内互动率（30min）：${formatPercent(d.attributed_interaction_rate)}（${d.attributed_interacted_visits}/${d.attributed_inbound_visits} 会话，阈值 ${formatPercent(d.thresholds.min_attributed_interaction_rate)}）`,
     `1 小时峰值 UV 占比：${formatPercent(d.peak_hourly_ratio)}（阈值 ${formatPercent(d.thresholds.max_hourly_burst_ratio)}）`,
-    `PV/UV 比值：${d.pv_uv_ratio}（阈值 ${d.thresholds.pv_uv_ratio_threshold}）`,
+    `入站后浏览 PV/UV 比值（30min）：${d.pv_uv_ratio}（阈值 ${d.thresholds.pv_uv_ratio_threshold}）`,
     `空 Referer 占比：${formatPercent(d.empty_referer_ratio)}（阈值 ${formatPercent(d.thresholds.empty_referer_threshold)}）`, '',
     `设备类型：${formatDistribution(report.device_type_stats)}`, `操作系统 Top 10：${formatDistribution(report.os_stats)}`,
     `浏览器 Top 10：${formatDistribution(report.browsers)}`,

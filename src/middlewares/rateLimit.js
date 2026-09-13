@@ -294,6 +294,10 @@ function isVerificationExempt(req) {
     || pathname.startsWith('/uploads/logo/')
     || pathname.startsWith('/api/verify/')
     || pathname === '/api/health'
+    // 读取凭证签发入口必须始终公开，否则首次直访无法建立无感读取会话。
+    || pathname === '/api/read/bootstrap'
+    // 隐藏探针只记录当前 visitor 风险，不参与共享公网 IP 的硬限流。
+    || pathname === '/api/sys-trap/trapdoor'
     // 验证页也需要读取公开品牌配置，以展示管理员设置的统一 Logo。
     || pathname === '/api/config/public'
     || pathname === '/api/config'
@@ -311,6 +315,14 @@ function isDynamicRiskRequest(req) {
   if (req.path === '/' || req.path === '/go' || req.path.startsWith('/r/')) return true;
   if (req.path.startsWith('/api/')) return true;
   return req.method === 'GET' && String(req.get('accept') || '').includes('text/html');
+}
+
+function isNatSafeReadRequest(req) {
+  return req.method === 'GET' && (
+    req.path === '/api/links'
+    || req.path === '/api/showcase'
+    || /^\/api\/links\/\d+$/.test(req.path)
+  );
 }
 
 function sendRateLimitResponse(res, resetAt) {
@@ -350,7 +362,9 @@ function observeRequestRisk(req, res, next) {
   }
 
   // 浏览首页永远放行；极端 IP 总量只对动态 API 和出站操作返回 429。
-  if (ip60s.count > 300 && (req.path.startsWith('/api/') || req.path === '/go')) {
+  if (ip60s.count > 300
+    && (req.path.startsWith('/api/') || req.path === '/go')
+    && !isNatSafeReadRequest(req)) {
     return sendRateLimitResponse(res, ip60s.resetAt);
   }
   return next();
@@ -453,6 +467,34 @@ function createRateLimiter(name, windowMs, maxRequests) {
   };
 }
 
+/** NAT 友好的端点限流：访客身份为主，IP 只保留很高的聚合异常兜底。 */
+function createVisitorRateLimiter(name, windowMs, maxVisitorRequests, maxIpRequests) {
+  return (req, res, next) => {
+    const now = Date.now();
+    const visitorId = ensureVisitorIdentity(req, res);
+    const ip = getClientIp(req) || 'unknown';
+    const limits = [
+      { key: `${name}:visitor:${visitorId}`, max: maxVisitorRequests },
+      { key: `${name}:ip:${ip}`, max: maxIpRequests }
+    ];
+
+    for (const limit of limits) {
+      const record = endpointRateLimitCache.get(limit.key);
+      if (!record || now >= record.resetAt) {
+        endpointRateLimitCache.set(limit.key, { count: 1, resetAt: now + windowMs }, { ttl: windowMs });
+        continue;
+      }
+      if (record.count >= limit.max) return sendRateLimitResponse(res, record.resetAt);
+      endpointRateLimitCache.set(
+        limit.key,
+        { count: record.count + 1, resetAt: record.resetAt },
+        { ttl: Math.max(1, record.resetAt - now) }
+      );
+    }
+    return next();
+  };
+}
+
 /** 返回 true 表示同一站点/IP 仍在 60 秒冷却窗口内。 */
 function isPartnerVisitRateLimited(partnerId, ip) {
   const key = `${partnerId}_${ip}`;
@@ -489,6 +531,7 @@ module.exports = {
   GUEST_VERIFY_COOKIE,
   GUEST_VISITOR_COOKIE,
   createRateLimiter,
+  createVisitorRateLimiter,
   observeRequestRisk,
   applyRiskProtection,
   outboundRiskProtection,

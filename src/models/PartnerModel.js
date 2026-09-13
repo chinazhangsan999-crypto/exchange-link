@@ -49,10 +49,13 @@ const ADMIN_LINK_QUERY = `SELECT
     WHERE token.default_partner_id = p.id AND token.status = 1
     ORDER BY token.is_primary DESC, token.id DESC LIMIT 1) AS source_sid,
   p.priority,
-  p.is_approved, p.is_whitelisted, p.is_exempt, p.backlink_status, p.backlink_url, p.last_checked_at,
+  p.is_approved, p.is_whitelisted, p.is_internal, p.is_exempt, p.backlink_status, p.backlink_url, p.last_checked_at,
   p.failed_check_count, p.failed_check_count AS check_fail_count,
   p.lost_count, p.ping_exempt, p.ping_failed_count, p.ping_status,
   p.last_ping_at, p.created_at,
+  CASE WHEN COALESCE(p.is_internal, 0) = 1 THEN (
+    SELECT mirror.status FROM mirrors mirror WHERE mirror.url = p.url LIMIT 1
+  ) END AS node_management_status,
   COALESCE(recent.score_24h, 0) AS score_24h,
   COALESCE(inbound_total.total_score, 0) AS total_score,
   COALESCE(outbound_total.outflow_clicks, 0) AS outflow_clicks,
@@ -91,6 +94,15 @@ async function listManualPingTargets() {
       AND COALESCE(is_internal, 0) = 0
       AND COALESCE(ping_exempt, 0) = 0
     ORDER BY id ASC`);
+}
+
+async function getPingInspectionScope(mode = 'scheduled') {
+  const deferredClause = mode === 'scheduled' ? 'AND COALESCE(ping_failed_count, 0) <= 30' : '';
+  return get(`SELECT
+      COALESCE(SUM(CASE WHEN COALESCE(is_internal, 0) = 1 THEN 1 ELSE 0 END), 0) AS internal_skipped,
+      COALESCE(SUM(CASE WHEN COALESCE(is_internal, 0) = 0 AND COALESCE(ping_exempt, 0) = 1 THEN 1 ELSE 0 END), 0) AS ping_exempt_skipped,
+      COALESCE(SUM(CASE WHEN COALESCE(is_internal, 0) = 0 AND COALESCE(ping_exempt, 0) = 0 ${deferredClause} THEN 1 ELSE 0 END), 0) AS external_target_total
+    FROM partners WHERE is_approved = 1`);
 }
 
 async function listDeepPingRevivalTargets() {
@@ -356,13 +368,13 @@ async function findBacklinkPartner(id) {
 
 async function findPingPartner(id) {
   return get(`SELECT id, name, domain, url, contact, backlink_url,
-      ping_exempt, ping_status, ping_failed_count, last_ping_at
+      is_internal, ping_exempt, ping_status, ping_failed_count, last_ping_at
     FROM partners WHERE id = ? AND is_approved = 1`, [id]);
 }
 
 async function findCombinedInspectionPartner(id) {
   return get(`SELECT id, name, domain, url, contact, backlink_url,
-      backlink_status, is_exempt, failed_check_count, lost_count,
+      is_internal, backlink_status, is_exempt, failed_check_count, lost_count,
       ping_exempt, ping_status, ping_failed_count, last_checked_at, last_ping_at
     FROM partners WHERE id = ? AND is_approved = 1`, [id]);
 }
@@ -433,6 +445,7 @@ module.exports = {
   listInflowCandidates,
   listPingTargets,
   listManualPingTargets,
+  getPingInspectionScope,
   listDeepPingRevivalTargets,
   recordPingFailure,
   recordPingSuccess,

@@ -122,7 +122,7 @@ async function sendPingInspectionSummary(report, sendAdminAlert, taskLabel = '�
   const results = Array.isArray(report?.results) ? report.results : [];
   const details = options.includeAllResults === true ? results : results.filter(item => item?.alert_event);
   if (!options.includeAllResults && details.length === 0) return { sent: false, reason: 'no_state_changes' };
-  const header = `任务类型：${cleanText(taskLabel)}\n检测时间：${formatBeijingTime()}\n本次探活：${Number(report.target_total ?? results.length)} 个\n正常：${Number(report.normal || 0)} 个\n首次异常：${Number(report.first_failure || 0)} 个\n持续异常：${Number(report.ongoing_failure || 0)} 个\n达到三次失败：${Number(report.reached_dead || 0)} 个\n本轮恢复：${Number(report.recovered || 0)} 个\n任务执行异常：${Number(report.task_errors || 0)} 个`;
+  const header = `任务类型：${cleanText(taskLabel)}\n检测时间：${formatBeijingTime()}\n外部站点检测数：${Number(report.external_target_total ?? report.target_total ?? results.length)} 个\n内部节点跳过数：${Number(report.internal_skipped || 0)} 个\nPing 免检数：${Number(report.ping_exempt_skipped || 0)} 个\n成功：${Number(report.normal || 0)} 个\n异常：${Number(report.first_failure || 0) + Number(report.ongoing_failure || 0) + Number(report.reached_dead || 0) + Number(report.task_errors || 0)} 个\n本轮恢复：${Number(report.recovered || 0)} 个`;
   const entries = details.map((item, index) => ({ text: pingDetail(item, index), item }));
   const chunks = splitDetailEntries(header, entries);
   const deliveries = await sendChunks(sendAdminAlert, '⚡ 链群健康体检汇总', 'ping_inspection_summary', chunks);

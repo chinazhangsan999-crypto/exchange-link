@@ -330,7 +330,7 @@ async function clearPartnerTraffic(partnerId) {
 
 async function getPartnerAnalytics(partnerId, { includeClients = true, clientEventLimit = 2000 } = {}) {
   const safeClientEventLimit = Math.max(100, Math.min(5000, Number(clientEventLimit) || 2000));
-  const [summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak, clientEvents, clientInteractions] = await Promise.all([
+  const [summary, inflowLogs, requestRows, deadWaterInteraction, attributedInteraction, hourlyPeak, partnerPageViews, partnerPageViewVisits, clientEvents, clientInteractions] = await Promise.all([
     get(`SELECT COUNT(*) AS pv,
       COUNT(DISTINCT client_ip) AS uv,
       CASE WHEN COUNT(*) > 0 THEN 100 ELSE 0 END AS compliance_rate,
@@ -382,6 +382,18 @@ async function getPartnerAnalytics(partnerId, { includeClients = true, clientEve
         WHERE link_id = ? AND created_at >= datetime('now', '-24 hours')
         GROUP BY strftime('%Y-%m-%d %H', created_at)
       )`, [partnerId]),
+    get(`SELECT
+        COUNT(*) AS page_pv,
+        COALESCE(SUM(CASE WHEN page_kind = 'page' THEN 1 ELSE 0 END), 0) AS post_entry_page_pv,
+        COUNT(DISTINCT visit_hash) AS attributed_sessions,
+        COUNT(DISTINCT CASE WHEN page_kind = 'page' THEN visit_hash END) AS continued_sessions
+      FROM partner_session_page_views
+      WHERE partner_id = ? AND created_at >= datetime('now', '-24 hours')`, [partnerId]),
+    all(`SELECT visit_hash,
+        COALESCE(SUM(CASE WHEN page_kind = 'page' THEN 1 ELSE 0 END), 0) AS post_entry_page_pv
+      FROM partner_session_page_views
+      WHERE partner_id = ? AND created_at >= datetime('now', '-24 hours')
+      GROUP BY visit_hash`, [partnerId]),
     includeClients
       ? all(`SELECT inbound.id, inbound.client_ip AS ip, inbound.user_agent, inbound.referer,
           inbound.visit_id, inbound.attribution_method, inbound.observed_domain,
@@ -415,6 +427,8 @@ async function getPartnerAnalytics(partnerId, { includeClients = true, clientEve
     deadWaterInteraction,
     attributedInteraction,
     hourlyPeak,
+    partnerPageViews,
+    partnerPageViewVisits,
     clientEvents,
     clientInteractions,
     clientEventsTruncated: includeClients && Number(summary.pv || 0) > clientEvents.length

@@ -30,7 +30,7 @@ function classifyPingResult(item = {}) {
   return 'task_error';
 }
 
-function buildPingReport({ mode = 'scheduled', targets = [], results = [] } = {}) {
+function buildPingReport({ mode = 'scheduled', targets = [], results = [], scope = {} } = {}) {
   const counts = { normal: 0, first_failure: 0, ongoing_failure: 0, reached_dead: 0, recovered: 0, task_errors: 0 };
   for (const item of results) {
     const category = classifyPingResult(item);
@@ -41,6 +41,9 @@ function buildPingReport({ mode = 'scheduled', targets = [], results = [] } = {}
     started: true,
     mode,
     target_total: targets.length,
+    external_target_total: Number(scope.external_target_total ?? targets.length),
+    internal_skipped: Number(scope.internal_skipped || 0),
+    ping_exempt_skipped: Number(scope.ping_exempt_skipped || 0),
     completed: results.length,
     ...counts,
     state_change_count: results.filter(item => Boolean(item?.alert_event)).length,
@@ -292,11 +295,12 @@ async function runFullPingInspection(options = {}) {
       ...options,
       mode
     };
-    const links = mode === 'manual'
-      ? await PartnerModel.listManualPingTargets()
-      : await PartnerModel.listPingTargets();
+    const [links, scope] = await Promise.all([
+      mode === 'manual' ? PartnerModel.listManualPingTargets() : PartnerModel.listPingTargets(),
+      PartnerModel.getPingInspectionScope(mode)
+    ]);
     const results = await inspectPingTargets(links, taskOptions);
-    const report = buildPingReport({ mode, targets: links, results });
+    const report = buildPingReport({ mode, targets: links, results, scope });
     const shouldSendSummary = taskOptions.aggregateAlerts
       && (taskOptions.alwaysSendSummary === true || report.state_change_count > 0);
     if (shouldSendSummary) {

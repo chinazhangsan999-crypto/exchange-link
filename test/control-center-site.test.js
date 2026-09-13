@@ -22,6 +22,7 @@ test('总后台接管节点且广告策略不覆盖本地广告数据', async ()
   const AdModel = require('../src/models/AdModel');
   const MirrorModel = require('../src/models/MirrorModel');
   const ControlCenterAgentService = require('../src/services/ControlCenterAgentService');
+  const AdminController = require('../src/controllers/AdminController');
 
   try {
     await SystemModel.initializeDatabase();
@@ -38,9 +39,39 @@ test('总后台接管节点且广告策略不覆盖本地广告数据', async ()
 
     assert.deepEqual((await AdModel.getActiveAds()).map(item => item.title), ['Central']);
     assert.deepEqual((await AdModel.listLocalAds()).map(item => item.title), ['Local']);
+
+    const response = () => ({
+      statusCode: 200,
+      body: null,
+      status(code) { this.statusCode = code; return this; },
+      json(body) { this.body = body; return this; }
+    });
+    const syncResponse = response();
+    await AdminController.syncAdsMatrix({}, syncResponse);
+    assert.equal(syncResponse.statusCode, 403);
+    assert.match(syncResponse.body.msg, /总后台统一管理/);
+
+    const exportResponse = response();
+    await AdminController.exportMatrix({ params: { type: 'ads' } }, exportResponse);
+    assert.equal(exportResponse.statusCode, 403);
+    assert.match(exportResponse.body.msg, /仅提供友链 CSV 备份/);
   } finally {
     ControlCenterAgentService.stop();
     await database.closeDatabase();
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+test('总后台接管后导航站 CSV 区域只保留友链操作', async () => {
+  const reviewSource = await fs.readFile(path.join(__dirname, '..', 'public', 'admin', 'review.js'), 'utf8');
+  const appSource = await fs.readFile(path.join(__dirname, '..', 'public', 'admin', 'app.js'), 'utf8');
+
+  assert.match(reviewSource, /友链 CSV 同步/);
+  assert.match(reviewSource, /id="save-matrix-urls"/);
+  assert.match(reviewSource, /id="sync-matrix-partners"/);
+  assert.match(reviewSource, /id="download-matrix-partners"/);
+  assert.doesNotMatch(reviewSource, /广告矩阵表 CSV 直链/);
+  assert.doesNotMatch(reviewSource, /data-sync-type="ads"/);
+  assert.doesNotMatch(reviewSource, /data-export-type="ads"/);
+  assert.doesNotMatch(appSource, /runMatrixSync\(\['partners', 'ads'/);
 });

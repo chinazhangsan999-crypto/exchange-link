@@ -71,8 +71,11 @@
   <!-- 详情页联系弹层；申请按钮回到首页处理，避免复制第二套申请表单。 -->
   <div id="detailContactModal" class="detail-modal" role="dialog" aria-modal="true" aria-labelledby="detailContactTitle" hidden><section class="detail-modal-card"><button class="detail-modal-close" type="button" aria-label="关闭">✕</button><p class="modal-kicker">CONTACT ADMIN</p><h2 id="detailContactTitle">联系站长</h2><div id="detailContactContent" class="contact-content">正在加载联系方式…</div></section></div>
   <div id="detailToast" class="detail-toast" role="status" aria-live="polite"></div>
-  <script src="/common.js" defer></script>
-  <script src="/site-detail.js?v=20260909-combined-inspection" defer></script>
-  <script src="/showcase.js?v=20260909-code-timeout" defer></script>
+  <!-- 被动探针：只作为当前匿名访客的弱风险信号。 -->
+  <a href="/api/sys-trap/trapdoor" hidden aria-hidden="true" tabindex="-1">系统状态检查</a>
+  <script src="/read-client.js?v=20260914-read-limit2" defer></script>
+  <script src="/common.js?v=20260914-post-entry-page-view-all-pages" defer></script>
+  <script src="/site-detail.js?v=20260914-read-access" defer></script>
+  <script src="/showcase.js?v=20260914-detail-placement" defer></script>
 </body>
 </html>
