@@ -203,6 +203,14 @@
     });
     const exchangePayload = await exchanged.json().catch(() => null);
     if (!exchanged.ok || exchangePayload?.code !== 200) throw new Error(exchangePayload?.msg || '后台会话建立失败');
+
+    // HttpOnly Cookie 由上一步响应设置，不能由脚本读取；必须立即用受保护接口
+    // 验证它确实已被浏览器保存，不能把“交换成功”误当作“会话已可用”。
+    const sessionResponse = await fetch('/api/admin/session', { credentials: 'same-origin' });
+    const sessionPayload = await sessionResponse.json().catch(() => null);
+    if (!sessionResponse.ok || sessionPayload?.code !== 200) {
+      throw new Error(sessionPayload?.msg || '后台会话未能保存，请返回总后台重新进入');
+    }
     window.adminSessionActive = true;
     return true;
   }

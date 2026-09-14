@@ -86,6 +86,9 @@ async function proxy(request, env) {
     redirect: 'manual'
   });
   const headers = new Headers(response.headers);
+  // Response 的 Headers 已可能包含 Set-Cookie。先删除再按原响应逐条复制，
+  // 避免 Worker 把同一个管理员 Cookie 追加两次，导致浏览器会话落地不稳定。
+  headers.delete('Set-Cookie');
   copySetCookies(response.headers, headers);
   headers.set('Cache-Control', 'no-store, private');
   headers.set('X-Content-Type-Options', 'nosniff');

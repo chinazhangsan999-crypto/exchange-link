@@ -18,7 +18,6 @@
     chartRequest: 0
   };
 
-  const token = () => '';
   const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[character]));
@@ -27,10 +26,15 @@
   async function request(url, options = {}) {
     const response = await fetch(url, {
       ...options,
-      headers: { Authorization: `Bearer ${token()}`, ...(options.headers || {}) }
+      credentials: 'same-origin',
+      headers: { ...(options.headers || {}) }
     });
-    const result = await response.json();
-    if (result.code !== 200) throw Error(result.msg);
+    const result = await response.json().catch(() => null);
+    if (!response.ok || result?.code !== 200) {
+      const error = Error(result?.msg || `请求失败（HTTP ${response.status}）`);
+      error.status = response.status;
+      throw error;
+    }
     return result.data;
   }
 
@@ -55,6 +59,15 @@
     loadStyles();
     const anchor = document.querySelector('#dashboard .kpis');
     if (!anchor) return;
+
+    let status = document.querySelector('#dashboard-load-status');
+    if (!status) {
+      status = document.createElement('p');
+      status.id = 'dashboard-load-status';
+      status.className = 'hint';
+      status.hidden = true;
+      anchor.parentElement?.insertBefore(status, anchor);
+    }
 
     const trafficCard = anchor.querySelector('.kpi:first-child');
     if (trafficCard && !document.querySelector('#today-exchange')) {
@@ -214,7 +227,7 @@
   }
 
   async function loadSiteTrafficTrend() {
-    if (!token() || !isDashboardVisible()) return;
+    if (window.adminSessionActive !== true || !isDashboardVisible()) return;
     const requestId = ++state.chartRequest;
     try {
       const data = await request(`/api/admin/dashboard/site-traffic?range=${encodeURIComponent(state.range)}`);
@@ -234,10 +247,12 @@
   }
 
   async function loadDashboardStats() {
-    if (!token()) return;
+    if (window.adminSessionActive !== true) return;
     try {
       createDashboard();
       const data = await request('/api/admin/dashboard/stats');
+      const status = document.querySelector('#dashboard-load-status');
+      if (status) status.hidden = true;
       const inbound = number(data.todayInbound ?? data.today_inflow_uv);
       const outbound = number(data.todayOutbound ?? data.today_outflow_uv);
       const traffic = data.today_site_traffic || {};
@@ -279,7 +294,20 @@
           } catch (error) { notify(error.message); }
         };
       });
-    } catch (error) { console.error(error); }
+    } catch (error) {
+      console.error('加载仪表盘统计失败：', error);
+      const status = document.querySelector('#dashboard-load-status');
+      if (status) {
+        status.hidden = false;
+        status.textContent = error.status === 401 || error.status === 403
+          ? '后台会话已失效，请返回总后台重新进入本站后台。'
+          : `仪表盘数据加载失败：${error.message || '请稍后重试'}`;
+      }
+      if (error.status === 401 || error.status === 403) {
+        window.adminSessionActive = false;
+        notify('后台会话无效，请返回总后台重新进入');
+      }
+    }
   }
 
   function isDashboardVisible() {
@@ -304,7 +332,7 @@
   });
 
   async function setupCategoryFilter() {
-    if (!token()) return;
+    if (window.adminSessionActive !== true) return;
     const toolbar = document.querySelector('#partners .toolbar');
     if (!toolbar) return;
     const existing = toolbar.querySelector('#partner-category-filter');
