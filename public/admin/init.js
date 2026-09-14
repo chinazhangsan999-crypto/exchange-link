@@ -22,6 +22,18 @@
   const toast = message => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = message; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
   const normalizeTab = value => aliases[value] || value;
 
+  // 旧模块曾为 Cookie 会话附带空的 "Authorization: Bearer"。部分边缘代理会
+  // 将它按无效凭证处理，导致页面骨架可见但所有后台数据请求都被拒绝。
+  // 只移除空值；SSO 兑换需要的短暂有效 Bearer 不受影响。
+  function normalizeAdminFetchHeaders() {
+    const previousFetch = window.fetch.bind(window);
+    window.fetch = (input, options = {}) => {
+      const headers = new Headers(options.headers || {});
+      if (/^Bearer\s*$/i.test(String(headers.get('Authorization') || ''))) headers.delete('Authorization');
+      return previousFetch(input, { ...options, credentials: options.credentials || 'same-origin', headers });
+    };
+  }
+
   /** 登录后读取系统设置，统一更新后台页签与品牌标题。 */
   window.loadAdminBrand = async function loadAdminBrand() {
     if (!token()) return;
@@ -247,6 +259,7 @@
   }
 
   async function bootstrap() {
+    normalizeAdminFetchHeaders();
     try { await consumeControlCenterSso(); }
     catch (error) { toast(error.message || '统一登录失败，请返回总后台重试'); }
     const status = await controlCenterStatus();
