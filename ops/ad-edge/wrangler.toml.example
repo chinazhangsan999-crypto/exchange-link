@@ -1,0 +1,7 @@
+name = "webring-ad-isolation"
+main = "worker.js"
+compatibility_date = "2026-09-15"
+
+routes = [
+  { pattern = "ad.chinazhangsan.ccwu.cc", custom_domain = true }
+]

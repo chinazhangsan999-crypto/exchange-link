@@ -42,3 +42,9 @@ ops/public-edge/wrangler.toml
 ops/public-edge/.wrangler/
 ops/api-edge/wrangler.toml
 ops/api-edge/.wrangler/
+ops/public-production-edge/wrangler.toml
+ops/public-production-edge/.wrangler/
+ops/admin-edge/wrangler.toml
+ops/admin-edge/.wrangler/
+ops/ad-edge/wrangler.toml
+ops/ad-edge/.wrangler/

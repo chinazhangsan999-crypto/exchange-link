@@ -5,10 +5,16 @@ const path = require('path');
 const fs = require('fs');
 const session = require('express-session');
 const SQLiteStore = require('connect-sqlite3')(session);
-const { IS_PRODUCTION, SESSION_SECRET, TRUSTED_PROXIES, PUBLIC_FRONTEND_MODE } = require('./config/env');
+const {
+  IS_PRODUCTION,
+  SESSION_SECRET,
+  TRUSTED_PROXIES,
+  PUBLIC_FRONTEND_MODE
+} = require('./config/env');
 const { securityHeaders } = require('./middlewares/security');
 const { observeRequestRisk } = require('./middlewares/rateLimit');
 const { acceptTrustedFrontendProxy } = require('./middlewares/frontendProxy');
+const { requireAdminFrontendBoundary } = require('./middlewares/adminBoundary');
 const { publicRouter, adminRouter } = require('./routes');
 const PublicController = require('./controllers/PublicController');
 const ControlCenterAgentService = require('./services/ControlCenterAgentService');
@@ -37,6 +43,8 @@ app.use(express.json({
 }));
 // 缺少代理头时保持原同源模式；只有携带完整代理上下文时才执行严格验签。
 app.use(acceptTrustedFrontendProxy);
+// 设置 ADMIN_FRONTEND_ORIGIN 后，主站仅作为受信上游，拒绝直连后台路径。
+app.use(requireAdminFrontendBoundary);
 app.use(session({
   store: sessionStore,
   name: 'webring.sid',

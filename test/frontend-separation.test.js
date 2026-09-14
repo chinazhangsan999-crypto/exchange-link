@@ -12,6 +12,7 @@ test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心�
   process.env.DB_PATH = path.join(directory, 'webring.db');
   process.env.NODE_ENV = 'test';
   process.env.PUBLIC_FRONTEND_MODE = 'separated';
+  process.env.ADMIN_FRONTEND_ORIGIN = 'http://127.0.0.1:8787';
   process.env.FRONTEND_PROXY_SECRET = 'test-frontend-proxy-secret-0123456789';
   process.env.FRONTEND_PROXY_API_HOSTS = 'api-link.example.test';
   process.env.SESSION_SECRET = 'test-session-secret-0123456789';
@@ -89,10 +90,19 @@ test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心�
     assert.equal(await requestStatusWithHost('/api/mirrors', 'api-link.example.test'), 404);
     assert.equal(await requestStatusWithHost('/api/health', 'api-link.example.test'), 200);
 
-    const login = await fetch(`${baseUrl}/api/admin/login`, {
+    const directAdminLogin = await fetch(`${baseUrl}/api/admin/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'admin', password: 'LocalTestPassword123' })
+    });
+    assert.equal(directAdminLogin.status, 404);
+    assert.equal((await fetch(`${baseUrl}/admin`, { redirect: 'manual' })).status, 404);
+
+    const loginBody = JSON.stringify({ username: 'admin', password: 'LocalTestPassword123' });
+    const login = await fetch(`${baseUrl}/api/admin/login`, {
+      method: 'POST',
+      headers: { ...proxyHeaders('POST', '/api/admin/login', loginBody), 'Content-Type': 'application/json' },
+      body: loginBody
     });
     assert.equal(login.status, 200);
     assert.equal((await login.json()).data.token, undefined);
@@ -104,27 +114,32 @@ test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心�
     assert.ok(csrf);
     const rejectedWithoutCsrf = await fetch(`${baseUrl}/api/admin/frontend-origins`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Cookie: adminCookieHeader },
+      headers: {
+        ...proxyHeaders('PUT', '/api/admin/frontend-origins', JSON.stringify({ origins: [] })),
+        'Content-Type': 'application/json', Cookie: adminCookieHeader
+      },
       body: JSON.stringify({ origins: [] })
     });
     assert.equal(rejectedWithoutCsrf.status, 403);
+    const savedOriginsBody = JSON.stringify({
+      origins: [
+        { origin: frontendOrigin, enabled: '1' },
+        { origin: 'http://localhost:8788', enabled: '0' }
+      ]
+    });
     const savedOrigins = await fetch(`${baseUrl}/api/admin/frontend-origins`, {
       method: 'PUT',
       headers: {
+        ...proxyHeaders('PUT', '/api/admin/frontend-origins', savedOriginsBody),
         'Content-Type': 'application/json',
         Cookie: adminCookieHeader,
         'X-CSRF-Token': csrf
       },
-      body: JSON.stringify({
-        origins: [
-          { origin: frontendOrigin, enabled: '1' },
-          { origin: 'http://localhost:8788', enabled: '0' }
-        ]
-      })
+      body: savedOriginsBody
     });
     assert.equal(savedOrigins.status, 200);
     const originConfig = await (await fetch(`${baseUrl}/api/admin/frontend-origins`, {
-      headers: { Cookie: adminCookieHeader }
+      headers: { ...proxyHeaders('GET', '/api/admin/frontend-origins'), Cookie: adminCookieHeader }
     })).json();
     assert.equal(originConfig.data.frontendProxyConfigured, true);
     assert.equal(originConfig.data.publicFrontendMode, 'separated');
