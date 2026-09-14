@@ -7,7 +7,6 @@
     document.head.append(stylesheet);
   }
 
-  const token = () => window.adminSessionActive === true ? 'cookie-session' : '';
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[character]));
@@ -33,9 +32,9 @@
   async function api(url, options = {}) {
     const response = await fetch(url, {
       ...options,
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token()}`,
         ...(options.headers || {})
       }
     });

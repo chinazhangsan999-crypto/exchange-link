@@ -1,9 +1,9 @@
 /** 友链审核与系统设置：使用固定列宽表格，避免申请文本撑破布局。 */
 (() => {
-  const token = () => window.adminSessionActive === true ? 'cookie-session' : '';
+  const hasSession = () => window.adminSessionActive === true;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const toast = text => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = text; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
-  const api = async (url, options = {}) => { const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}`, ...(options.headers || {}) } }); const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '请求失败'); return result.data; };
+  const api = async (url, options = {}) => { const response = await fetch(url, { ...options, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } }); const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '请求失败'); return result.data; };
   const time = value => window.formatAdminTime?.(value) || '—';
 
   function switchTo(id, button) { document.querySelectorAll('.tabs button,.panel').forEach(el => el.classList.remove('active')); button.classList.add('active'); document.querySelector('#' + id)?.classList.add('active'); }
@@ -59,7 +59,7 @@
     urlInput.addEventListener('input', () => setLogoPreview(urlInput.value));
     document.querySelector('#clear-site-logo').onclick = async () => {
       try {
-        const response = await fetch('/api/admin/settings', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}` }, body: JSON.stringify({ site_logo_url: '' }) });
+        const response = await fetch('/api/admin/settings', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ site_logo_url: '' }) });
         const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '恢复默认 Logo 失败');
         urlInput.value = ''; setLogoPreview(''); await window.loadAdminBrand?.(); toast('已恢复默认星标');
       } catch (error) { toast(error.message || '恢复默认 Logo 失败'); }
@@ -71,7 +71,7 @@
       const body = new FormData(); body.append('logo', file);
       try {
         button.disabled = true; button.textContent = '上传中…';
-        const response = await fetch('/api/admin/settings/logo', { method: 'POST', headers: { Authorization: `Bearer ${token()}` }, body });
+        const response = await fetch('/api/admin/settings/logo', { method: 'POST', credentials: 'same-origin', body });
         const result = await response.json();
         if (result.code !== 200) throw Error(result.msg || 'Logo 上传失败');
         urlInput.value = result.data.site_logo_url; setLogoPreview(urlInput.value);
@@ -97,7 +97,7 @@
   }
 
   async function loadReview() {
-    if (!token()) return;
+    if (!hasSession()) return;
     try {
       const data = await api('/api/admin/review'); document.querySelector('#review-count').textContent = data.count;
       document.querySelector('#review-body').innerHTML = data.partners.map(item => `<tr><td class="site-cell"><b class="text-ellipsis" title="${esc(item.name)}">${esc(item.name)}</b><span class="site-domain" title="${esc(item.category || '未分类')}">${esc(item.category || '未分类')}</span></td><td><a href="${esc(item.url)}" target="_blank" rel="noopener" class="review-url text-ellipsis" title="${esc(item.url)}">${esc(item.url)}</a></td><td><span class="text-ellipsis review-description" title="${esc(item.description || '—')}">${esc(item.description || '—')}</span></td><td><span class="text-ellipsis review-contact" title="${esc(item.contact || '—')}">${esc(item.contact || '—')}</span></td><td class="score-center">${Number(item.score_24h || 0)}</td><td><span class="progress-pill">${Number(item.total_uv || 0)} / ${data.threshold}</span></td><td><span class="compact-time" title="${esc(item.created_at)}">${esc(time(item.created_at))}</span></td><td><div class="action-btn-group"><button class="btn-sm btn-action btn-pass approve-review" data-id="${item.id}">通过</button><button class="btn-sm btn-action btn-reject reject-review" data-id="${item.id}">拒绝</button></div></td></tr>`).join('') || '<tr><td class="empty-row" colspan="8">暂无待审核友链</td></tr>';

@@ -1,13 +1,13 @@
 'use strict';
 
 (() => {
-  const token = () => window.adminSessionActive === true ? 'cookie-session' : '';
+  const hasSession = () => window.adminSessionActive === true;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[char]));
   const notify = message => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = message; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
   let rows = [];
 
   async function request(url, options = {}) {
-    const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}`, ...(options.headers || {}) } });
+    const response = await fetch(url, { ...options, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } });
     const result = await response.json();
     if (!response.ok || result.code !== 200) throw new Error(result.msg || '请求失败');
     return result.data;
@@ -81,7 +81,7 @@
     body.innerHTML = mirrorRows.map(row => `<tr><td><b>${esc(row.speed_name)}</b><small class="mirror-state ${Number(row.status) ? 'on' : 'off'}">${Number(row.status) ? '已启用' : '已停用'}</small></td><td>${esc(row.partner_name)}</td><td><a class="mirror-url" href="${esc(row.url)}" target="_blank" rel="noopener" title="${esc(row.url)}">${esc(row.url)}</a></td><td><div class="actions"><button type="button" class="action mirror-edit" data-url="${esc(row.url)}">编辑</button><button type="button" class="action mirror-toggle" data-url="${esc(row.url)}" data-status="${Number(row.status) ? 0 : 1}">${Number(row.status) ? '停用' : '启用'}</button><button type="button" class="action delete mirror-delete" data-url="${esc(row.url)}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="4" class="hint">暂无节点。新增并启用后会自动同步为内部霸榜友链。</td></tr>';
   }
 
-  async function loadMirrors() { if (!token()) return; try { mirrorRows = await request('/api/admin/mirrors'); renderMirrors(); } catch (error) { notify(error.message); } }
+  async function loadMirrors() { if (!hasSession()) return; try { mirrorRows = await request('/api/admin/mirrors'); renderMirrors(); } catch (error) { notify(error.message); } }
 
   function openMirrorModal(row = null) {
     const originalUrl = row ? String(row.url || '') : '';
@@ -153,7 +153,7 @@
     body.querySelectorAll('.ad-delete').forEach(button => button.onclick = () => removeAd(button));
   }
 
-  async function loadAds() { if (!token()) return; try { rows = await request('/api/admin/ads'); render(); } catch (error) { notify(error.message); } }
+  async function loadAds() { if (!hasSession()) return; try { rows = await request('/api/admin/ads'); render(); } catch (error) { notify(error.message); } }
   async function saveAd(event) { event.preventDefault(); const form = event.currentTarget, data = Object.fromEntries(new FormData(form)); const id = data.id; delete data.id; data.sort_order = Number(data.sort_order); if (data.ad_type === 'code') data.platform = 'all'; const current = id ? rows.find(ad => Number(ad.id) === Number(id)) : null; data.status = current ? Number(current.status) : 1; try { await request(id ? `/api/admin/ads/${id}` : '/api/admin/ads', { method: id ? 'PUT' : 'POST', body: JSON.stringify(data) }); form.closest('.modal').classList.remove('open'); notify(id ? '广告已更新' : '广告已新增'); await loadAds(); } catch (error) { notify(error.message); } }
   async function toggleAd(button) { try { await request(`/api/admin/ads/${button.dataset.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: Number(button.dataset.status) }) }); notify(Number(button.dataset.status) ? '广告已启用' : '广告已停用'); await loadAds(); } catch (error) { notify(error.message); } }
   async function removeAd(button) { if (!confirm('确定删除这条广告吗？')) return; try { await request(`/api/admin/ads/${button.dataset.id}`, { method: 'DELETE' }); notify('广告已删除'); await loadAds(); } catch (error) { notify(error.message); } }

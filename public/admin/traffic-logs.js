@@ -1,7 +1,7 @@
 /** 后台有效带量与未通过校验请求明细：服务端筛选后分页，每页 100 条。 */
 (() => {
   const PAGE_SIZE = 100;
-  const token = () => window.adminSessionActive === true ? 'cookie-session' : '';
+  const hasSession = () => window.adminSessionActive === true;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[character]));
@@ -10,7 +10,7 @@
     rejected: { page: 1, query: '', sequence: 0, controller: null }
   };
   const request = async (url, signal) => {
-    const response = await fetch(url, { signal, headers: { Authorization: `Bearer ${token()}` } });
+    const response = await fetch(url, { signal, credentials: 'same-origin' });
     const result = await response.json().catch(() => ({}));
     if (!response.ok || result.code !== 200) throw Error(result.msg || `请求失败 (${response.status})`);
     return result.data;
@@ -118,7 +118,7 @@
   async function loadLogs(page = states.accepted.page) {
     const body = document.querySelector('#log-body');
     const input = document.querySelector('#log-q');
-    if (!body || !token()) return;
+    if (!body || !hasSession()) return;
     const state = states.accepted;
     state.page = Math.max(1, Number(page) || 1);
     state.query = String(input?.value || '').trim();
@@ -148,7 +148,7 @@
   async function loadRejectedLogs(page = states.rejected.page) {
     const body = document.querySelector('#rejected-log-body');
     const input = document.querySelector('#rejected-log-q');
-    if (!body || !token()) return;
+    if (!body || !hasSession()) return;
     const state = states.rejected;
     state.page = Math.max(1, Number(page) || 1);
     state.query = String(input?.value || '').trim();

@@ -1,9 +1,9 @@
 /** 友链管理统一表格渲染：防止多脚本重复插列造成布局失控。 */
 (() => {
-  const token = () => window.adminSessionActive === true ? 'cookie-session' : '';
+  const hasSession = () => window.adminSessionActive === true;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const toast = text => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = text; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
-  const request = async (url, options = {}) => { const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}`, ...(options.headers || {}) } }); const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '请求失败'); return result.data; };
+  const request = async (url, options = {}) => { const response = await fetch(url, { ...options, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } }); const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '请求失败'); return result.data; };
   const time = value => window.formatAdminTime?.(value) || '—';
   let rows = [], sort = { key: 'priority', direction: 'desc' };
 
@@ -81,7 +81,7 @@
 
   async function copyContact(button) { const value = button.dataset.contact || ''; try { if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value); else { const input = document.createElement('input'); input.value = value; document.body.append(input); input.select(); document.execCommand('copy'); input.remove(); } const old = button.textContent; button.textContent = '✓'; setTimeout(() => { button.textContent = old; }, 1200); toast('联系方式已复制'); } catch { toast('复制失败，请手动复制'); } }
 
-  async function loadPartners() { if (!token()) return; try { const query = document.querySelector('#partner-q')?.value || ''; rows = await request('/api/admin/partners?q=' + encodeURIComponent(query)); renderRows(); } catch (error) { toast(error.message); } }
+  async function loadPartners() { if (!hasSession()) return; try { const query = document.querySelector('#partner-q')?.value || ''; rows = await request('/api/admin/partners?q=' + encodeURIComponent(query)); renderRows(); } catch (error) { toast(error.message); } }
   async function checkOne(button) {
     try {
       button.disabled = true;
@@ -263,7 +263,7 @@
 
 /** 友链 CSV：广告和节点已由总后台接管，导航站只保留友链同步与备份。 */
 (() => {
-  const token = () => window.adminSessionActive === true ? 'cookie-session' : '';
+  const hasSession = () => window.adminSessionActive === true;
   const form = () => document.querySelector('#matrix-url-form');
   const logBox = () => document.querySelector('#matrix-sync-log');
   const matrixToast = message => {
@@ -278,9 +278,9 @@
   async function matrixApi(url, options = {}) {
     const response = await fetch(url, {
       ...options,
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${token()}`,
         ...(options.headers || {})
       }
     });
@@ -301,7 +301,7 @@
   }
 
   async function loadMatrixSettings() {
-    if (!form() || !token()) return;
+    if (!form() || !hasSession()) return;
     try {
       const data = await matrixApi('/api/admin/settings');
       ['csv_url_partners'].forEach(key => {
@@ -380,9 +380,7 @@
     try {
       lockControls(true);
       setLog(`正在生成${type === 'all' ? '全部' : type}备份…`, 'running');
-      const response = await fetch(`/api/admin/export/${type}`, {
-        headers: { Authorization: `Bearer ${token()}` }
-      });
+      const response = await fetch(`/api/admin/export/${type}`, { credentials: 'same-origin' });
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         throw new Error(error.msg || '下载失败');
