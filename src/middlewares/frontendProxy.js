@@ -1,7 +1,7 @@
 'use strict';
 
 const FrontendProxyService = require('../services/FrontendProxyService');
-const { PUBLIC_FRONTEND_MODE } = require('../config/env');
+const { PUBLIC_FRONTEND_MODE, FRONTEND_PROXY_API_HOSTS } = require('../config/env');
 
 const PROXY_HEADERS = [
   'x-frontend-origin',
@@ -11,9 +11,26 @@ const PROXY_HEADERS = [
   'x-proxy-signature'
 ];
 
+const DIRECT_API_HOST_PATHS = new Set(['/api/health']);
+
+function requestHostname(req) {
+  const host = String(req.headers.host || '').trim().toLowerCase();
+  if (host.startsWith('[')) return host.slice(1, host.indexOf(']'));
+  return host.split(':', 1)[0].replace(/\.$/, '');
+}
+
+function isProtectedApiHost(req) {
+  return FRONTEND_PROXY_API_HOSTS.includes(requestHostname(req));
+}
+
 async function acceptTrustedFrontendProxy(req, res, next) {
   const present = PROXY_HEADERS.filter(name => req.get(name));
-  if (!present.length) return next();
+  if (!present.length) {
+    if (isProtectedApiHost(req) && !DIRECT_API_HOST_PATHS.has(req.path)) {
+      return res.status(404).end();
+    }
+    return next();
+  }
   if (present.length !== PROXY_HEADERS.length) {
     return res.status(401).json({ code: 401, msg: '前台代理上下文不完整', data: null });
   }

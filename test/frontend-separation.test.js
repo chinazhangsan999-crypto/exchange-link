@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
+const http = require('node:http');
 
 test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心跳闭环', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'webring-frontend-separation-'));
@@ -12,6 +13,7 @@ test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心�
   process.env.NODE_ENV = 'test';
   process.env.PUBLIC_FRONTEND_MODE = 'separated';
   process.env.FRONTEND_PROXY_SECRET = 'test-frontend-proxy-secret-0123456789';
+  process.env.FRONTEND_PROXY_API_HOSTS = 'api-link.example.test';
   process.env.SESSION_SECRET = 'test-session-secret-0123456789';
   process.env.ADMIN_JWT_SECRET = 'test-admin-secret-01234567890';
   process.env.GUEST_JWT_SECRET = 'test-guest-secret-01234567890';
@@ -63,11 +65,29 @@ test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心�
     };
   }
 
+  function requestStatusWithHost(requestPath, host) {
+    return new Promise((resolve, reject) => {
+      const request = http.request({
+        hostname: '127.0.0.1',
+        port: server.address().port,
+        path: requestPath,
+        headers: { Host: host }
+      }, response => {
+        response.resume();
+        response.once('end', () => resolve(response.statusCode));
+      });
+      request.once('error', reject);
+      request.end();
+    });
+  }
+
   try {
     const directRead = await fetch(`${baseUrl}/api/read/bootstrap`);
     assert.equal(directRead.status, 404);
     assert.equal((await fetch(`${baseUrl}/r/untrusted-sid`, { redirect: 'manual' })).status, 404);
     assert.equal((await fetch(`${baseUrl}/api/mirrors`)).status, 200);
+    assert.equal(await requestStatusWithHost('/api/mirrors', 'api-link.example.test'), 404);
+    assert.equal(await requestStatusWithHost('/api/health', 'api-link.example.test'), 200);
 
     const login = await fetch(`${baseUrl}/api/admin/login`, {
       method: 'POST',

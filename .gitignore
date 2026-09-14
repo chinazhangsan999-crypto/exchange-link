@@ -40,3 +40,5 @@ backups/
 # Cloudflare Worker 本地部署配置与状态（可能包含真实域名）
 ops/public-edge/wrangler.toml
 ops/public-edge/.wrangler/
+ops/api-edge/wrangler.toml
+ops/api-edge/.wrangler/

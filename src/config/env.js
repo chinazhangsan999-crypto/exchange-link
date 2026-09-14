@@ -67,6 +67,10 @@ const CONTROL_CENTER_SYNC_INTERVAL_MS = Math.max(10_000, Math.min(10 * 60_000,
   Number.parseInt(process.env.CONTROL_CENTER_SYNC_INTERVAL_MS || '60000', 10) || 60_000));
 const PUBLIC_FRONTEND_MODE = String(process.env.PUBLIC_FRONTEND_MODE || 'embedded').trim().toLowerCase();
 const FRONTEND_PROXY_SECRET = String(process.env.FRONTEND_PROXY_SECRET || '').trim();
+const FRONTEND_PROXY_API_HOSTS = String(process.env.FRONTEND_PROXY_API_HOSTS || '')
+  .split(',')
+  .map(item => item.trim().toLowerCase().replace(/\.$/, ''))
+  .filter(Boolean);
 const FRONTEND_PROXY_MAX_SKEW_MS = Math.max(5_000, Math.min(5 * 60_000,
   Number.parseInt(process.env.FRONTEND_PROXY_MAX_SKEW_MS || '30000', 10) || 30_000));
 
@@ -119,5 +123,6 @@ module.exports = {
   CONTROL_CENTER_SYNC_INTERVAL_MS,
   PUBLIC_FRONTEND_MODE,
   FRONTEND_PROXY_SECRET,
+  FRONTEND_PROXY_API_HOSTS,
   FRONTEND_PROXY_MAX_SKEW_MS
 };

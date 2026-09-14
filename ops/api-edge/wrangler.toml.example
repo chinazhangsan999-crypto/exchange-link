@@ -1,0 +1,15 @@
+name = "webring-api-edge"
+main = "worker.js"
+compatibility_date = "2026-09-14"
+
+routes = [
+  { pattern = "api.example.com", custom_domain = true }
+]
+
+[vars]
+API_ORIGIN = "https://origin.example.com"
+ALLOWED_FRONTEND_ORIGINS = "https://www.example.com"
+MAX_SKEW_MS = "30000"
+
+# FRONTEND_PROXY_SECRET 必须通过 `wrangler secret put FRONTEND_PROXY_SECRET`
+# 单独保存，禁止写入本文件或 Git。
