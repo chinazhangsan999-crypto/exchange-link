@@ -38,6 +38,7 @@ const { toSqliteUtcTimestamp } = require('../utils/time');
 const {
   issueAdminToken,
   setAdminSessionCookies,
+  setAdminCsrfCookie,
   clearAdminSessionCookies
 } = require('../middlewares/auth');
 
@@ -223,7 +224,8 @@ async function login(req, res) {
     const admin = await SystemModel.getAdminByUsername(username);
     if (!admin || !(await bcrypt.compare(password, admin.password_hash))) return fail(res, '用户名或密码错误', 401);
     const token = issueAdminToken(admin);
-    setAdminSessionCookies(res, token);
+    const csrfToken = setAdminSessionCookies(res, token);
+    setAdminCsrfCookie(res, csrfToken);
     res.setHeader('Cache-Control', 'no-store');
     // 不再把管理员 JWT 回传给浏览器脚本；凭证仅保存在 HttpOnly Cookie 中。
     return ok(res, { expiresIn: 28800 }, '登录成功');
@@ -1808,8 +1810,12 @@ function renderAdminPage(req, res) {
 }
 
 function getAdminSession(req, res) {
+  setAdminCsrfCookie(res, req.admin.csrf);
   res.setHeader('Cache-Control', 'no-store');
-  return ok(res, { username: req.admin.username, expiresAt: req.admin.exp ? req.admin.exp * 1000 : null });
+  return ok(res, {
+    username: req.admin.username,
+    expiresAt: req.admin.exp ? req.admin.exp * 1000 : null
+  });
 }
 
 function logout(req, res) {
@@ -1821,6 +1827,7 @@ function logout(req, res) {
 function exchangeBearerForCookie(req, res) {
   setAdminSessionCookies(res, req.adminToken);
   res.setHeader('Cache-Control', 'no-store');
+  console.info(`[后台会话] 已建立 HttpOnly 会话 origin=${req.trustedFrontendOrigin || 'direct'}`);
   return ok(res, { expiresIn: 28800 }, '后台会话已建立');
 }
 

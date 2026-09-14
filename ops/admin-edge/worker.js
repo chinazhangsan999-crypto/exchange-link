@@ -40,7 +40,11 @@ function copySetCookies(fromHeaders, toHeaders) {
     return;
   }
   const cookie = fromHeaders.get('Set-Cookie');
-  if (cookie) toHeaders.append('Set-Cookie', cookie);
+  if (!cookie) return;
+  // 最旧的兼容运行时可能把多条 Set-Cookie 合并成一个字符串。仅在看见
+  // “逗号 + 新 cookie 名=”时切分，不能误切 Expires=Wed, ... 中的逗号。
+  const cookies = cookie.split(/,(?=\s*[!#$%&'*+.^_`|~0-9A-Za-z-]+=)/g);
+  for (const value of cookies) toHeaders.append('Set-Cookie', value.trim());
 }
 
 function notFound() {

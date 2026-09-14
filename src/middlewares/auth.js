@@ -34,7 +34,12 @@ function setAdminSessionCookies(res, token) {
   const payload = jwt.decode(token) || {};
   const options = { maxAge: ADMIN_SESSION_TTL_MS, secure: IS_PRODUCTION, sameSite: 'strict', path: '/' };
   res.cookie(ADMIN_SESSION_COOKIE, token, { ...options, httpOnly: true });
-  res.cookie(ADMIN_CSRF_COOKIE, String(payload.csrf || ''), { ...options, httpOnly: false });
+  return String(payload.csrf || '');
+}
+
+function setAdminCsrfCookie(res, csrfToken) {
+  const options = { maxAge: ADMIN_SESSION_TTL_MS, secure: IS_PRODUCTION, sameSite: 'strict', path: '/' };
+  res.cookie(ADMIN_CSRF_COOKIE, String(csrfToken || ''), { ...options, httpOnly: false });
 }
 
 function clearAdminSessionCookies(res) {
@@ -110,5 +115,6 @@ module.exports = {
   requireAdminCsrf,
   issueAdminToken,
   setAdminSessionCookies,
+  setAdminCsrfCookie,
   clearAdminSessionCookies
 };
