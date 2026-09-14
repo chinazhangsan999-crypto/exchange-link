@@ -6,7 +6,8 @@ const {
   CONTROL_CENTER_ENABLED,
   CONTROL_CENTER_URL,
   CONTROL_CENTER_SITE_CREDENTIAL,
-  CONTROL_CENTER_SYNC_INTERVAL_MS
+  CONTROL_CENTER_SYNC_INTERVAL_MS,
+  ADMIN_FRONTEND_ORIGIN
 } = require('../config/env');
 const { issueAdminToken } = require('../middlewares/auth');
 const { createControlCenterAgent } = require('../../packages/site-agent');
@@ -41,7 +42,8 @@ if (CONTROL_CENTER_ENABLED) {
     controlCenterUrl: CONTROL_CENTER_URL,
     credential: CONTROL_CENTER_SITE_CREDENTIAL,
     intervalMs: CONTROL_CENTER_SYNC_INTERVAL_MS,
-    adminPath: '/admin',
+    // 总后台票据在旧主站桥接兑换后，必须落到隔离后台 Origin，避免回跳已关闭的主站 /admin。
+    adminPath: ADMIN_FRONTEND_ORIGIN ? `${ADMIN_FRONTEND_ORIGIN}/admin` : '/admin',
     applyConfig: snapshot => adapter.applyConfig(snapshot),
     issueAdminToken: async (_centralAdmin, context = {}) => {
       const localAdmin = await get("SELECT id, username FROM admins WHERE username='admin' ORDER BY id LIMIT 1");

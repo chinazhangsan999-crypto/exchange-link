@@ -36,8 +36,7 @@ function createControlCenterAgent(options) {
   const exchanges = new Map();
   const exchangeTtlMs = 30_000;
   const maxPendingExchanges = 500;
-  const adminPath = String(options.adminPath || '/admin');
-  if (!/^\/[A-Za-z0-9/_-]*$/.test(adminPath)) throw new Error('站点 Agent 后台路径不合法');
+  const adminPath = normalizeAdminPath(options.adminPath || '/admin');
 
   function noStore(res) {
     res.set({
@@ -191,6 +190,20 @@ function createControlCenterAgent(options) {
     destroy: () => { stop(); clearInterval(cleanup); exchanges.clear(); },
     getAppliedRevision: () => appliedRevision
   };
+}
+
+function normalizeAdminPath(value) {
+  const candidate = String(value || '').trim();
+  if (/^\/[A-Za-z0-9/_-]*$/.test(candidate)) return candidate;
+  let url;
+  try { url = new URL(candidate); }
+  catch { throw new Error('站点 Agent 后台路径不合法'); }
+  if (url.protocol !== 'https:'
+    || url.username || url.password || url.search || url.hash
+    || url.pathname !== '/admin') {
+    throw new Error('站点 Agent 后台地址必须是 HTTPS 且路径为 /admin。');
+  }
+  return url.toString().replace(/\/$/, '');
 }
 
 module.exports = { createControlCenterAgent };
