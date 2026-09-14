@@ -8,4 +8,4 @@ Worker 只代理后台路径，并以 HMAC 将前端 Origin 和客户端 IP 传�
 
 - `https://houtai.chinazhangsan.ccwu.cc/admin` 正常打开；
 - 登录、保存设置、上传 Logo 与退出登录正常；
-- `https://link.chinazhangsan.ccwu.cc/admin` 和 `/api/admin/*` 返回 404。
+- 旧公开域名和专用回源域名上的 `/admin`、`/api/admin/*` 均返回 404。

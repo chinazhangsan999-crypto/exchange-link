@@ -7,6 +7,6 @@ routes = [
 ]
 
 [vars]
-API_ORIGIN = "https://link.chinazhangsan.ccwu.cc"
+API_ORIGIN = "https://origin.example.com"
 
 # 通过 `wrangler secret put FRONTEND_PROXY_SECRET` 注入；不得提交真实密钥。

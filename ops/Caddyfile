@@ -1,4 +1,4 @@
-link.chinazhangsan.ccwu.cc {
+link.chinazhangsan.ccwu.cc, origin-link.chinazhangsan.ccwu.cc {
     header {
         Strict-Transport-Security "max-age=31536000"
     }
