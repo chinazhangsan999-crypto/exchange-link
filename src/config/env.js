@@ -65,6 +65,22 @@ const CONTROL_CENTER_URL = String(process.env.CONTROL_CENTER_URL || '').trim().r
 const CONTROL_CENTER_SITE_CREDENTIAL = String(process.env.CONTROL_CENTER_SITE_CREDENTIAL || '').trim();
 const CONTROL_CENTER_SYNC_INTERVAL_MS = Math.max(10_000, Math.min(10 * 60_000,
   Number.parseInt(process.env.CONTROL_CENTER_SYNC_INTERVAL_MS || '60000', 10) || 60_000));
+const PUBLIC_FRONTEND_MODE = String(process.env.PUBLIC_FRONTEND_MODE || 'embedded').trim().toLowerCase();
+const FRONTEND_PROXY_SECRET = String(process.env.FRONTEND_PROXY_SECRET || '').trim();
+const FRONTEND_PROXY_MAX_SKEW_MS = Math.max(5_000, Math.min(5 * 60_000,
+  Number.parseInt(process.env.FRONTEND_PROXY_MAX_SKEW_MS || '30000', 10) || 30_000));
+
+if (!['embedded', 'separated'].includes(PUBLIC_FRONTEND_MODE)) {
+  throw new Error('PUBLIC_FRONTEND_MODE 仅支持 embedded 或 separated。');
+}
+
+if (FRONTEND_PROXY_SECRET && FRONTEND_PROXY_SECRET.length < 32) {
+  throw new Error('FRONTEND_PROXY_SECRET 长度不得少于 32 位。');
+}
+
+if (PUBLIC_FRONTEND_MODE === 'separated' && FRONTEND_PROXY_SECRET.length < 32) {
+  throw new Error('启用前后端分离模式前，必须配置不少于 32 位的 FRONTEND_PROXY_SECRET。');
+}
 
 if (CONTROL_CENTER_ENABLED) {
   if (!/^https:\/\//i.test(CONTROL_CENTER_URL)) {
@@ -100,5 +116,8 @@ module.exports = {
   CONTROL_CENTER_ENABLED,
   CONTROL_CENTER_URL,
   CONTROL_CENTER_SITE_CREDENTIAL,
-  CONTROL_CENTER_SYNC_INTERVAL_MS
+  CONTROL_CENTER_SYNC_INTERVAL_MS,
+  PUBLIC_FRONTEND_MODE,
+  FRONTEND_PROXY_SECRET,
+  FRONTEND_PROXY_MAX_SKEW_MS
 };

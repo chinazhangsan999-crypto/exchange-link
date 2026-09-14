@@ -11,7 +11,7 @@ const {
   GUEST_JWT_SECRET,
   TRAFFIC_DEBUG
 } = require('../config/env');
-const { getClientIp, parseHostname, matchesPartnerDomain, normalizePartnerUrl, normalizeRegisteredDomain } = require('../utils/network');
+const { getClientIp, parseHostname, normalizePartnerUrl, normalizeRegisteredDomain } = require('../utils/network');
 const { ok, fail, safeApiErrorMessage, isUniqueConstraintError } = require('../utils/http');
 const { buildSourceEntryUrls } = require('../utils/sourceLinks');
 const {
@@ -26,7 +26,6 @@ const {
   clearPendingTrafficSource,
   getCookie,
   ensureVisitorIdentity,
-  isPartnerVisitRateLimited,
   storeVerificationNonce,
   getVerificationNonce,
   consumeVerificationNonce
@@ -43,10 +42,10 @@ const SiteTrafficService = require('../services/SiteTrafficService');
 const PartnerPageViewService = require('../services/PartnerPageViewService');
 const InflowAttributionService = require('../services/InflowAttributionService');
 const VisitorRiskService = require('../services/VisitorRiskService');
+const InflowService = require('../services/InflowService');
 const IpIntelligenceService = require('../services/IpIntelligenceService');
 const { sendAdminAlert, formatAlertLink, formatContactLine } = require('../services/AlertService');
 
-const CLAIM_TTL_SECONDS = 15 * 60;
 const ATTRIBUTION_COOKIE = 'inflow_visit';
 const ATTRIBUTION_TTL_SECONDS = 30 * 60;
 const ANALYTICS_CONFIG_KEYS = [
@@ -97,7 +96,7 @@ function queueRejectedInbound(req, details = {}) {
   void LogModel.recordRejectedInbound({
     clientIp,
     visitorHash: visitorIdentityHash(req),
-    userAgent: String(req.get('user-agent') || '').trim(),
+    userAgent: String(details.userAgent ?? req.get('user-agent') ?? '').trim(),
     referer,
     observedDomain: details.observedDomain ?? normalizeRegisteredDomain(parseHostname(referer)),
     partnerId: details.partnerId,
@@ -144,50 +143,6 @@ function readAttributionToken(token) {
   }
 }
 
-async function isLegitUser(req, refererOverride = '', { trustedSource = false } = {}) {
-  const ua = String(req.headers['user-agent'] || '').trim();
-  const invalidUa = /curl|python|requests|headlesschrome|postman|wget|httpclient|scrapy|bot|spider|crawl|slurp/i;
-  if (!ua || invalidUa.test(ua)) {
-    req.trafficBlockReason = '爬虫、无头浏览器或异常 User-Agent';
-    req.trafficBlockCode = 'abnormal_user_agent';
-    return false;
-  }
-
-  // 有效 SID 已在前置中间件中完成数据库解析和签名绑定；Referer 仅用于观察，
-  // 不能因为浏览器隐私策略将其删除而否定 SID 归属。
-  if (trustedSource) return true;
-
-  const referer = String(refererOverride || req.get('Referer') || '').trim();
-  let refererUrl;
-  try { refererUrl = new URL(referer); } catch {
-    req.trafficBlockReason = referer ? 'Referer 格式无效' : '普通直访，未携带 SID 或 Referer';
-    req.trafficBlockCode = referer ? 'invalid_referer' : 'direct_no_source';
-    return false;
-  }
-  if (!/^https?:$/.test(refererUrl.protocol)) {
-    req.trafficBlockReason = 'Referer 协议不合法';
-    req.trafficBlockCode = 'invalid_referer_protocol';
-    return false;
-  }
-
-  const sourceHost = parseHostname(referer);
-  const ownUrlText = await SystemModel.configValue('site_url');
-  const ownHost = parseHostname(ownUrlText);
-  let ownUrl = null;
-  try { ownUrl = new URL(ownUrlText); } catch { /* 未配置本站地址时跳过本站来源判断。 */ }
-  const localHosts = new Set(['localhost', '127.0.0.1', '::1']);
-  const isDifferentLocalPort = ownUrl
-    && localHosts.has(sourceHost)
-    && sourceHost === parseHostname(ownUrl.href)
-    && refererUrl.port !== ownUrl.port;
-  if (!sourceHost || (ownHost && matchesPartnerDomain(sourceHost, ownHost) && !isDifferentLocalPort)) {
-    req.trafficBlockReason = '本站来源或无效 Referer';
-    req.trafficBlockCode = 'internal_navigation';
-    return false;
-  }
-  return true;
-}
-
 function extractSourceSid(req) {
   const pathMatch = String(req.path || '').match(/^\/r\/([^/]+)\/?$/);
   if (pathMatch) {
@@ -212,41 +167,12 @@ function cleanSidLandingUrl(req) {
 async function resolveSidLanding(req) {
   const sidInput = extractSourceSid(req);
   if (!sidInput.present) return null;
-
   const referer = String(req.get('Referer') || req.get('Referrer') || '').trim();
-  const observedDomain = normalizeRegisteredDomain(parseHostname(referer));
-  const [sidBinding, candidates] = await Promise.all([
-    SourceTokenModel.findActiveSid(sidInput.value),
-    PartnerModel.listInflowCandidates()
-  ]);
-  const domainPartner = observedDomain
-    ? candidates.find(item => normalizeRegisteredDomain(item.domain) === observedDomain)
-    : null;
-
-  let partnerId = null;
-  let method = 'unattributed';
-  if (domainPartner) {
-    partnerId = domainPartner.id;
-    if (!sidInput.value) method = 'domain_only';
-    else if (!sidBinding) method = 'invalid_sid_domain_match';
-    else if (Number(sidBinding.partner_id) === Number(domainPartner.id)) method = 'sid_domain_match';
-    else method = 'sid_domain_mismatch';
-  } else if (sidBinding) {
-    partnerId = sidBinding.partner_id;
-    method = observedDomain ? 'sid_fallback_unknown_domain' : 'sid_fallback_no_referer';
-  } else {
-    method = observedDomain ? 'invalid_sid_unknown_domain' : 'invalid_sid_no_referer';
-  }
-
-  return {
-    partnerId,
-    sourceTokenId: sidBinding?.token_id || null,
-    sidPartnerId: sidBinding?.partner_id || null,
-    domainPartnerId: domainPartner?.id || null,
-    method,
-    observedDomain,
+  return InflowService.resolveSourceAttribution({
+    sourceSidPresent: true,
+    sourceSid: sidInput.value,
     referer
-  };
+  });
 }
 
 /**
@@ -363,89 +289,79 @@ async function trackInflow(req, res, next) {
     if (pendingSource) clearPendingTrafficSource(res);
     if (restoredReferer) clearPendingTrafficReferer(res);
 
-    if (!ip || !(await isLegitUser(req, effectiveReferer, { trustedSource: Boolean(pendingSource) }))) {
-      trafficDebug(`拦截原因: ${req.trafficBlockReason || '无法识别客户端 IP'}`);
-      if (ip && req.trafficBlockCode !== 'internal_navigation') {
-        queueRejectedInbound(req, {
-          referer: effectiveReferer,
-          visitorType: req.trafficBlockCode === 'direct_no_source' ? 'ordinary_direct' : 'source_validation',
-          stage: 'source_resolution',
-          reasonCode: req.trafficBlockCode || 'missing_client_ip',
-          reasonText: req.trafficBlockReason || '无法识别客户端 IP'
-        });
-      }
-      return next();
-    }
-
-    const candidates = await PartnerModel.listInflowCandidates();
-    let partner = pendingSource
-      ? candidates.find(item => Number(item.id) === Number(pendingSource.partnerId))
-      : null;
-    let observedDomain = pendingSource?.observedDomain || '';
-    if (!partner) {
-      const refererUrl = new URL(effectiveReferer);
-      observedDomain = normalizeRegisteredDomain(refererUrl.hostname);
-      partner = candidates.find(item => observedDomain === normalizeRegisteredDomain(item.domain));
-    }
-    if (!partner) {
-      queueRejectedInbound(req, {
-        referer: effectiveReferer,
-        observedDomain,
-        stage: 'source_resolution',
-        reasonCode: 'unregistered_source_domain',
-        reasonText: '来源域名未登记，无法归属到友链'
-      });
-      return next();
-    }
-    const now = Date.now();
-    const attemptId = crypto.randomUUID();
-    if (isPartnerVisitRateLimited(partner.id, ip)) {
-      queueRejectedInbound(req, {
-        referer: effectiveReferer,
-        observedDomain,
-        partnerId: partner.id,
-        sourceTokenId: pendingSource?.sourceTokenId,
-        attributionMethod: pendingSource?.method || 'domain_only',
-        attemptId,
-        classification: 'suppressed',
-        stage: 'claim_issue',
-        reasonCode: 'entry_cooldown',
-        reasonText: '重复请求已抑制（不影响此前已领取的有效凭证）'
-      });
-      return next();
-    }
-
-    const token = crypto.randomBytes(24).toString('base64url');
-    await LogModel.createClaimToken({
-      tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
-      partnerId: partner.id,
-      ip,
-      ttlSeconds: CLAIM_TTL_SECONDS,
-      startedAtMs: now,
-      referer: effectiveReferer,
-      sourceTokenId: pendingSource?.sourceTokenId || null,
-      sidPartnerId: pendingSource?.sidPartnerId || null,
-      domainPartnerId: pendingSource?.domainPartnerId || (pendingSource ? null : partner.id),
-      attributionMethod: pendingSource?.method || 'domain_only',
-      observedDomain,
-      userAgent: String(req.get('user-agent') || '').trim(),
+    const result = await InflowService.prepareLanding({
+      clientIp: ip,
+      userAgent: req.get('user-agent'),
       visitorHash: visitorIdentityHash(req),
+      referer: effectiveReferer,
       requestPath: String(req.originalUrl || req.path || '/').slice(0, 500),
-      attemptId
+      frontendOrigin: `${req.protocol}://${req.get('host')}`,
+      preResolvedSource: pendingSource
     });
-    const cookieOptions = {
-      maxAge: CLAIM_TTL_SECONDS * 1000,
-      httpOnly: true,
-      sameSite: 'lax',
-      secure: IS_PRODUCTION,
-      path: '/'
-    };
-    res.cookie('track_session', token, cookieOptions);
-    res.cookie('inflow_claim', token, cookieOptions);
+    if (result.status === 'rejected') {
+      trafficDebug(`拦截原因: ${result.reasonText}`);
+      queueRejectedInbound(req, result);
+      return next();
+    }
+    if (result.status === 'claim_issued') setInflowClaimCookies(res, result.token);
     return next();
   } catch (error) {
     console.error('[流量排查] 入站凭证签发失败：', error.message);
     return next();
+  }
+}
+
+function setInflowClaimCookies(res, token) {
+  const cookieOptions = {
+    maxAge: InflowService.CLAIM_TTL_SECONDS * 1000,
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: IS_PRODUCTION,
+    path: '/'
+  };
+  res.cookie('track_session', token, cookieOptions);
+  res.cookie('inflow_claim', token, cookieOptions);
+}
+
+/** 物理分离前台的可信边缘落地入口；只签发 Claim，绝不在这里增加带量。 */
+async function prepareFrontendLanding(req, res) {
+  try {
+    const body = req.body || {};
+    const requestPath = String(body.requestPath || '/').slice(0, 500);
+    const supportedLanding = /^\/(?:\?.*)?$/.test(requestPath)
+      || /^\/index\.html(?:\?.*)?$/.test(requestPath)
+      || /^\/r\/[^/?]+\/?(?:\?.*)?$/.test(requestPath);
+    if (!supportedLanding) {
+      return fail(res, '落地页面地址不合法', 400);
+    }
+    const visitorId = ensureVisitorIdentity(req, res);
+    const sourceSidPresent = body.sourceSid !== undefined && body.sourceSid !== null;
+    const result = await InflowService.prepareLanding({
+      clientIp: getClientIp(req),
+      userAgent: String(body.userAgent || req.get('user-agent') || '').slice(0, 500),
+      visitorHash: crypto.createHash('sha256').update(visitorId).digest('hex'),
+      referer: String(body.referer || '').slice(0, 2048),
+      sourceSidPresent,
+      sourceSid: String(body.sourceSid || '').slice(0, 256),
+      requestPath,
+      frontendOrigin: req.trustedFrontendOrigin
+    });
+    res.set('Cache-Control', 'private, no-store');
+    if (result.status === 'claim_issued') setInflowClaimCookies(res, result.token);
+    else if (result.status === 'rejected') {
+      queueRejectedInbound(req, {
+        ...result,
+        userAgent: String(body.userAgent || req.get('user-agent') || '').slice(0, 500)
+      });
+    }
+    return ok(res, {
+      status: result.status,
+      claimIssued: result.status === 'claim_issued',
+      cleanPath: sourceSidPresent ? '/' : null
+    });
+  } catch (error) {
+    console.error('[Frontend Landing] 入站准备失败：', error.message);
+    return fail(res, '入站准备失败', 500);
   }
 }
 
@@ -492,7 +408,7 @@ function getReadBootstrap(req, res) {
     fetchDest: req.get('sec-fetch-dest'),
     origin: req.get('origin'),
     referer: req.get('referer'),
-    expectedOrigin: `${req.protocol}://${req.get('host')}`
+    expectedOrigin: req.trustedFrontendOrigin || `${req.protocol}://${req.get('host')}`
   });
   return ok(res, issueReadAccessToken(req, res), '读取凭证已生成');
 }
@@ -1081,6 +997,7 @@ async function go(req, res) {
 
 module.exports = {
   preVerifyInflowTraffic,
+  prepareFrontendLanding,
   trackSitePageView,
   recordSitePageView,
   recordPostEntryPageView,

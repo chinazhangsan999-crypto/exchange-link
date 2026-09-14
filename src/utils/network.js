@@ -81,7 +81,9 @@ function expandIpv6Hextets(value) {
  * 禁止直接读取客户端可伪造的转发请求头。
  */
 function getClientIp(req) {
-  let ip = String(req.ip || req.socket?.remoteAddress || '').trim();
+  // 物理分离模式下只接受已经通过 HMAC 验签并写入请求上下文的边缘 IP；
+  // 普通客户端伪造同名 HTTP Header 不会影响此属性。
+  let ip = String(req.verifiedClientIp || req.ip || req.socket?.remoteAddress || '').trim();
   if (ip.startsWith('[') && ip.endsWith(']')) ip = ip.slice(1, -1);
   const zoneIndex = ip.indexOf('%');
   if (zoneIndex >= 0) ip = ip.slice(0, zoneIndex);

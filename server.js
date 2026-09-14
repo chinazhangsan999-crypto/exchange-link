@@ -14,6 +14,7 @@ const { initializeMirrorsTable, syncMirrorsToPartners } = require('./src/models/
 const { initializeSiteTrafficTable } = require('./src/models/SiteTrafficModel');
 const { initializePartnerPageViewTable } = require('./src/models/PartnerPageViewModel');
 const { initializeIpProfileTable } = require('./src/models/IpProfileModel');
+const { initializeFrontendOriginTable } = require('./src/models/FrontendOriginModel');
 const SiteTrafficService = require('./src/services/SiteTrafficService');
 const PartnerPageViewService = require('./src/services/PartnerPageViewService');
 const IpIntelligenceService = require('./src/services/IpIntelligenceService');
@@ -40,6 +41,7 @@ initializeDatabase()
   .then(initializeSiteTrafficTable)
   .then(initializePartnerPageViewTable)
   .then(initializeIpProfileTable)
+  .then(initializeFrontendOriginTable)
   .then(initializeSourceTokenTables)
   .then(initializeAdsTable)
   .then(initializeMirrorsTable)

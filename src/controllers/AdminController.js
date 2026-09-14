@@ -8,7 +8,12 @@ const jwt = require('jsonwebtoken');
 const UAParser = require('ua-parser-js');
 const { ZipArchive } = require('archiver');
 const { parse: parseCsv } = require('csv-parse/sync');
-const { ADMIN_JWT_SECRET, CONTROL_CENTER_ENABLED } = require('../config/env');
+const {
+  ADMIN_JWT_SECRET,
+  CONTROL_CENTER_ENABLED,
+  FRONTEND_PROXY_SECRET,
+  PUBLIC_FRONTEND_MODE
+} = require('../config/env');
 const { parseHostname, matchesPartnerDomain, normalizePartnerUrl } = require('../utils/network');
 const { normalizeUrl, normalizeAnalyticsScriptUrl } = require('../utils/url');
 const { buildSourceEntryUrls } = require('../utils/sourceLinks');
@@ -18,17 +23,20 @@ const LogModel = require('../models/LogModel');
 const SystemModel = require('../models/SystemModel');
 const AdModel = require('../models/AdsModel');
 const MirrorModel = require('../models/MirrorModel');
+const FrontendOriginModel = require('../models/FrontendOriginModel');
 const SourceTokenModel = require('../models/SourceTokenModel');
 const InspectionService = require('../services/InspectionService');
 const PingService = require('../services/PingService');
 const RiskService = require('../services/RiskService');
 const SiteTrafficService = require('../services/SiteTrafficService');
 const CacheService = require('../services/CacheService');
+const FrontendProxyService = require('../services/FrontendProxyService');
 const WebhookDeliveryModel = require('../models/WebhookDeliveryModel');
 const { sendAdminAlert, sendBarkTestAlert, providerForUrl } = require('../services/AlertService');
 const InspectionAlertService = require('../services/InspectionAlertService');
 const { runTrackedJob } = require('../jobs/cron');
 const { runPromisePool } = require('../utils/asyncPool');
+const { toSqliteUtcTimestamp } = require('../utils/time');
 
 const ANALYTICS_CONFIG_KEYS = [
   'umami_enabled',
@@ -305,6 +313,63 @@ async function getSettings(req, res) {
 async function getRiskControlSettings(req, res) {
   try { return ok(res, await SystemModel.getRiskControlConfig()); }
   catch { return fail(res, '获取站点风控监控参数失败', 500); }
+}
+
+async function getFrontendOrigins(req, res) {
+  try {
+    const origins = (await FrontendOriginModel.listAllOrigins()).map(item => ({
+      origin: item.origin,
+      enabled: Number(item.enabled) === 1,
+      expiresAt: item.expires_at || null,
+      updatedAt: item.updated_at
+    }));
+    return ok(res, {
+      origins,
+      frontendProxyConfigured: Boolean(FRONTEND_PROXY_SECRET),
+      publicFrontendMode: PUBLIC_FRONTEND_MODE
+    });
+  } catch (error) {
+    console.error('读取公共前端域名白名单失败：', error);
+    return fail(res, safeApiErrorMessage(error, '读取公共前端域名白名单失败'), 500);
+  }
+}
+
+async function saveFrontendOrigins(req, res) {
+  try {
+    const submitted = req.body?.origins;
+    if (!Array.isArray(submitted)) return fail(res, 'origins 必须是数组');
+    if (submitted.length > 50) return fail(res, '公共前端域名最多配置 50 个');
+
+    const unique = new Map();
+    for (const entry of submitted) {
+      const source = typeof entry === 'string' ? { origin: entry } : (entry || {});
+      const origin = FrontendProxyService.normalizeFrontendOrigin(source.origin);
+      if (!origin) return fail(res, `公共前端 Origin 不合法：${String(source.origin || '')}`);
+
+      let expiresAt = null;
+      const rawExpiry = source.expiresAt ?? source.expires_at;
+      if (rawExpiry) {
+        const parsedExpiry = new Date(rawExpiry);
+        if (Number.isNaN(parsedExpiry.getTime())) return fail(res, `域名过期时间不合法：${origin}`);
+        expiresAt = toSqliteUtcTimestamp(parsedExpiry);
+      }
+      const enabled = source.enabled === undefined
+        ? true
+        : ['1', 'true', 'on', 'yes'].includes(String(source.enabled).toLowerCase());
+      unique.set(origin, {
+        origin,
+        enabled,
+        expiresAt
+      });
+    }
+
+    const result = await FrontendOriginModel.replaceOrigins([...unique.values()]);
+    FrontendProxyService.clearAllowedOriginCache();
+    return ok(res, result, '公共前端域名白名单已保存');
+  } catch (error) {
+    console.error('保存公共前端域名白名单失败：', error);
+    return fail(res, safeApiErrorMessage(error, '保存公共前端域名白名单失败'), 500);
+  }
 }
 
 async function saveSettings(req, res) {
@@ -1746,6 +1811,8 @@ module.exports = {
   saveAnalyticsConfig,
   getSettings,
   getRiskControlSettings,
+  getFrontendOrigins,
+  saveFrontendOrigins,
   saveSettings,
   uploadSiteLogo,
   testWebhook,

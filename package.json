@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "build:public-frontend": "node scripts/build-public-frontend.js"
   },
   "dependencies": {
     "archiver": "^8.0.0",
