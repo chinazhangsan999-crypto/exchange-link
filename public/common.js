@@ -37,7 +37,7 @@
 // 全站 PV 由每个公开页面在加载完成后主动上报；服务端按匿名访客与 IP 聚合到小时桶。
 (() => {
   const pagePath = window.location.pathname || '/';
-  if (!/^\/(?:$|index\.html$|site-detail\.html$)/.test(pagePath)) return;
+  if (!/^\/(?:index\.html|site-detail(?:\.html)?)?$/.test(pagePath)) return;
   fetch('/api/track/site-page-view', {
     method: 'POST', credentials: 'same-origin', keepalive: true,
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pagePath })

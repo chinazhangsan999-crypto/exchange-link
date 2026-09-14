@@ -8,7 +8,7 @@ const { ensureVisitorIdentity } = require('./rateLimit');
 const VisitorRiskService = require('../services/VisitorRiskService');
 
 const READ_TOKEN_TTL_SECONDS = 60;
-const READ_TOKEN_MAX_USES = 24;
+const READ_TOKEN_MAX_USES = 16;
 const READ_ACCESS_SCOPES = Object.freeze([
   'links:list',
   'links:detail',
@@ -40,6 +40,7 @@ function sendReadAccessDenied(res, msg) {
 
 function issueReadAccessToken(req, res) {
   const visitorId = ensureVisitorIdentity(req, res);
+  const origin = String(req.trustedFrontendOrigin || `${req.protocol}://${req.get('host')}`).toLowerCase();
   const jti = crypto.randomUUID();
   const issuedAt = Date.now();
   const expiresAt = issuedAt + READ_TOKEN_TTL_SECONDS * 1000;
@@ -48,6 +49,7 @@ function issueReadAccessToken(req, res) {
       type: 'read-access',
       role: 'guest',
       visitorId,
+      origin,
       scope: READ_ACCESS_SCOPES,
       jti
     },
@@ -55,7 +57,7 @@ function issueReadAccessToken(req, res) {
     { expiresIn: READ_TOKEN_TTL_SECONDS, algorithm: 'HS256' }
   );
 
-  issuedReadTokens.set(jti, { visitorId, uses: 0, expiresAt });
+  issuedReadTokens.set(jti, { visitorId, origin, uses: 0, expiresAt });
   res.set('Cache-Control', 'private, no-store');
   return { token, expiresIn: READ_TOKEN_TTL_SECONDS, expiresAt };
 }
@@ -79,15 +81,21 @@ function requireReadAccess(requiredScope) {
     }
 
     const visitorId = ensureVisitorIdentity(req, res);
+    const origin = String(req.trustedFrontendOrigin || `${req.protocol}://${req.get('host')}`).toLowerCase();
     const restriction = VisitorRiskService.getReadRestriction(visitorId);
     if (restriction) {
       res.set('Retry-After', String(restriction.retryAfter));
-      return res.status(429).json({ code: 429, msg: '当前读取会话请求异常，请稍后重试', data: null });
+      return res.status(429).json({
+        code: 429,
+        msg: IS_PRODUCTION ? '请求无法处理' : '当前读取会话请求异常，请稍后重试',
+        data: null
+      });
     }
     const scopes = Array.isArray(payload?.scope) ? payload.scope : [];
     if (payload?.type !== 'read-access'
       || payload?.role !== 'guest'
       || payload?.visitorId !== visitorId
+      || payload?.origin !== origin
       || typeof payload?.jti !== 'string'
       || !scopes.includes(requiredScope)) {
       return sendReadAccessDenied(res, '读取凭证与当前访客或接口不匹配');
@@ -95,7 +103,7 @@ function requireReadAccess(requiredScope) {
 
     const record = issuedReadTokens.get(payload.jti);
     if (!record || record.expiresAt <= Date.now()) return sendReadAccessRequired(res);
-    if (record.visitorId !== visitorId) {
+    if (record.visitorId !== visitorId || record.origin !== origin) {
       return sendReadAccessDenied(res, '读取凭证与当前访客不匹配');
     }
     if (record.uses >= READ_TOKEN_MAX_USES) return sendReadAccessRequired(res, '读取凭证使用次数已达上限');
@@ -105,7 +113,11 @@ function requireReadAccess(requiredScope) {
       const detailRestriction = VisitorRiskService.getReadRestriction(visitorId);
       if (detailRestriction) {
         res.set('Retry-After', String(detailRestriction.retryAfter));
-        return res.status(429).json({ code: 429, msg: '当前读取会话请求异常，请稍后重试', data: null });
+        return res.status(429).json({
+          code: 429,
+          msg: IS_PRODUCTION ? '请求无法处理' : '当前读取会话请求异常，请稍后重试',
+          data: null
+        });
       }
     }
 
@@ -120,6 +132,7 @@ function requireReadAccess(requiredScope) {
 
 module.exports = {
   READ_TOKEN_TTL_SECONDS,
+  READ_TOKEN_MAX_USES,
   READ_ACCESS_SCOPES,
   issueReadAccessToken,
   requireReadAccess

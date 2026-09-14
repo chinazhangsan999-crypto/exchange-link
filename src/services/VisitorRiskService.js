@@ -8,6 +8,10 @@ const READ_RESTRICTION_MS = 30 * 1000;
 const READ_RESTRICTION_SCORE = 80;
 const DETAIL_SCAN_WINDOW_MS = 20 * 1000;
 const DETAIL_SCAN_DISTINCT_LIMIT = 8;
+const DETAIL_SCAN_SEQUENCE_LIMIT = 6;
+const DETAIL_MINUTE_WINDOW_MS = 60 * 1000;
+const DETAIL_MINUTE_LIMIT = 30;
+const SCRIPT_USER_AGENT = /(?:python-requests|curl\/|wget\/|scrapy|go-http-client|aiohttp|httpx\/)/i;
 
 const visitorRiskCache = new LRUCache({
   max: 100000,
@@ -48,6 +52,7 @@ function recordBootstrapSignals(visitorId, metadata = {}, now = Date.now()) {
   const fetchSite = String(metadata.fetchSite || '').toLowerCase();
   const fetchMode = String(metadata.fetchMode || '').toLowerCase();
   const fetchDest = String(metadata.fetchDest || '').toLowerCase();
+  const userAgent = String(metadata.userAgent || '');
 
   if (!fetchSite && !fetchMode && !fetchDest && !flags.has('missing-fetch-metadata')) {
     flags.add('missing-fetch-metadata');
@@ -66,6 +71,10 @@ function recordBootstrapSignals(visitorId, metadata = {}, now = Date.now()) {
     flags.add('foreign-referer');
     points += 30;
   }
+  if (SCRIPT_USER_AGENT.test(userAgent) && !flags.has('script-user-agent')) {
+    flags.add('script-user-agent');
+    points += 50;
+  }
 
   record = addRiskScore({ ...record, signalFlags: [...flags] }, points, now);
   return saveRecord(key, record);
@@ -77,16 +86,36 @@ function recordDetailRead(visitorId, detailId, now = Date.now()) {
   const id = Number(detailId);
   if (!key || !Number.isSafeInteger(id) || id <= 0) return null;
   let record = visitorRiskCache.get(key) || { score: 0, restrictedUntil: 0 };
-  const recentDetailReads = (Array.isArray(record.recentDetailReads) ? record.recentDetailReads : [])
+  const recentMinuteReads = (Array.isArray(record.recentDetailReads) ? record.recentDetailReads : [])
+    .filter(item => now - Number(item.at || 0) <= DETAIL_MINUTE_WINDOW_MS);
+  const recentDetailReads = recentMinuteReads
     .filter(item => now - Number(item.at || 0) <= DETAIL_SCAN_WINDOW_MS);
   recentDetailReads.push({ id, at: now });
   const distinctCount = new Set(recentDetailReads.map(item => item.id)).size;
+  const sequence = recentDetailReads.slice(-DETAIL_SCAN_SEQUENCE_LIMIT).map(item => item.id);
+  const sequential = sequence.length >= DETAIL_SCAN_SEQUENCE_LIMIT
+    && sequence.every((value, index) => index === 0 || value === sequence[index - 1] + 1);
+  const minuteCount = recentMinuteReads.length + 1;
   const lastTriggeredAt = Number(record.detailScanTriggeredAt || 0);
-  if (distinctCount >= DETAIL_SCAN_DISTINCT_LIMIT && now - lastTriggeredAt > DETAIL_SCAN_WINDOW_MS) {
+  if ((distinctCount >= DETAIL_SCAN_DISTINCT_LIMIT || sequential || minuteCount > DETAIL_MINUTE_LIMIT)
+    && now - lastTriggeredAt > DETAIL_SCAN_WINDOW_MS) {
     record = addRiskScore({ ...record, detailScanTriggeredAt: now }, 80, now);
   }
-  record.recentDetailReads = recentDetailReads.slice(-DETAIL_SCAN_DISTINCT_LIMIT * 2);
+  record.recentDetailReads = [...recentMinuteReads, { id, at: now }].slice(-DETAIL_MINUTE_LIMIT - 1);
   return saveRecord(key, record);
+}
+
+function markReadProofVerified(visitorId, now = Date.now()) {
+  const key = String(visitorId || '');
+  if (!key) return null;
+  const record = visitorRiskCache.get(key) || {};
+  return saveRecord(key, {
+    ...record,
+    score: 0,
+    restrictedUntil: 0,
+    proofVerifiedAt: now,
+    recentDetailReads: []
+  });
 }
 
 function recordTrapdoor(visitorId, metadata = {}, now = Date.now()) {
@@ -125,8 +154,12 @@ module.exports = {
   READ_RESTRICTION_MS,
   DETAIL_SCAN_WINDOW_MS,
   DETAIL_SCAN_DISTINCT_LIMIT,
+  DETAIL_SCAN_SEQUENCE_LIMIT,
+  DETAIL_MINUTE_WINDOW_MS,
+  DETAIL_MINUTE_LIMIT,
   recordTrapdoor,
   recordBootstrapSignals,
   recordDetailRead,
+  markReadProofVerified,
   getReadRestriction
 };

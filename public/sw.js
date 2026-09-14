@@ -1,13 +1,13 @@
 /** 星环导航轻量离线缓存：验证和敏感操作永不缓存，普通页面网络优先。 */
-const CACHE_NAME = 'nav-cache-v10-post-entry-all-pages';
+const CACHE_NAME = 'nav-cache-v12-read-proof';
 const STATIC_ASSETS = [
-  '/', '/index.html', '/read-client.js?v=20260914-read-limit2', '/script.js?v=20260914-post-entry-page-view-all-pages', '/style.css', '/manifest.json',
+  '/', '/index.html', '/read-client.js?v=20260915-read-proof3', '/script.js?v=20260914-post-entry-page-view-all-pages', '/style.css', '/manifest.json',
   '/tooltip.css', '/apply.css', '/apply-category.css', '/no-icons.css',
   '/header-cleanup.css', '/mobile-nav.css', '/enhance.css', '/pwa.css',
   '/icons/icon-192.png', '/icons/icon-512.png'
 ];
 const NEVER_CACHE_PATHS = new Set([
-  '/verify.html', '/verify.css', '/verify.js', '/go', '/api/links/apply', '/api/read/bootstrap'
+  '/verify.html', '/verify.css', '/verify.js', '/go', '/api/links/apply', '/api/read/bootstrap', '/api/read/proof'
 ]);
 
 self.addEventListener('install', event => {

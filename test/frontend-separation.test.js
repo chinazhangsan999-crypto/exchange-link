@@ -7,11 +7,10 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 
-test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心跳闭环', async () => {
+test('API 服务仅接受可信边缘请求并保留入站 Claim 到 3 秒心跳闭环', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'webring-frontend-separation-'));
   process.env.DB_PATH = path.join(directory, 'webring.db');
   process.env.NODE_ENV = 'test';
-  process.env.PUBLIC_FRONTEND_MODE = 'separated';
   process.env.ADMIN_FRONTEND_ORIGIN = 'http://127.0.0.1:8787';
   process.env.FRONTEND_PROXY_SECRET = 'test-frontend-proxy-secret-0123456789';
   process.env.FRONTEND_PROXY_API_HOSTS = 'api-link.example.test';
@@ -83,10 +82,15 @@ test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心�
   }
 
   try {
+    assert.equal((await fetch(`${baseUrl}/`)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/index.html`)).status, 404);
     const directRead = await fetch(`${baseUrl}/api/read/bootstrap`);
     assert.equal(directRead.status, 404);
     assert.equal((await fetch(`${baseUrl}/r/untrusted-sid`, { redirect: 'manual' })).status, 404);
-    assert.equal((await fetch(`${baseUrl}/api/mirrors`)).status, 200);
+    assert.equal((await fetch(`${baseUrl}/api/mirrors`)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/api/mirrors`, {
+      headers: proxyHeaders('GET', '/api/mirrors')
+    })).status, 200);
     assert.equal(await requestStatusWithHost('/api/mirrors', 'api-link.example.test'), 404);
     assert.equal(await requestStatusWithHost('/api/health', 'api-link.example.test'), 200);
 
@@ -142,7 +146,6 @@ test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心�
       headers: { ...proxyHeaders('GET', '/api/admin/frontend-origins'), Cookie: adminCookieHeader }
     })).json();
     assert.equal(originConfig.data.frontendProxyConfigured, true);
-    assert.equal(originConfig.data.publicFrontendMode, 'separated');
     assert.equal(originConfig.data.origins.length, 2);
     assert.equal(originConfig.data.origins.find(item => item.origin === 'http://localhost:8788').enabled, false);
 

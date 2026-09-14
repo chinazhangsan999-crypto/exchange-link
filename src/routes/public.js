@@ -13,7 +13,7 @@ const { requireReadAccess } = require('../middlewares/readAccess');
 const { limitReadConcurrency } = require('../middlewares/readConcurrency');
 const {
   requireTrustedFrontendProxy,
-  requireSeparatedFrontendProxy
+  requireFrontendProxy
 } = require('../middlewares/frontendProxy');
 
 const router = express.Router();
@@ -25,12 +25,14 @@ const verifyInitRateLimiter = createRateLimiter('verify-init', 10 * 60 * 1000, 2
 const verifyCheckRateLimiter = createRateLimiter('verify-check', 10 * 60 * 1000, 10);
 const showcaseDiagnosticRateLimiter = createRateLimiter('showcase-diagnostics', 60 * 1000, 20);
 const readBootstrapRateLimiter = createVisitorRateLimiter('read-bootstrap', 60 * 1000, 6, 600);
+const readProofRateLimiter = createVisitorRateLimiter('read-proof', 60 * 1000, 6, 600);
 
 router.get('/api/health', PublicController.health);
 // 仅供经过 HMAC 验签的静态前端边缘代理调用；浏览器无法直接伪造来源或客户端 IP。
 router.post('/internal/frontend/landing', requireTrustedFrontendProxy, PublicController.prepareFrontendLanding);
-router.use(requireSeparatedFrontendProxy);
+router.use(requireFrontendProxy);
 router.get('/api/read/bootstrap', readBootstrapRateLimiter, PublicController.getReadBootstrap);
+router.post('/api/read/proof', readProofRateLimiter, PublicController.verifyReadProof);
 router.get('/api/sys-trap/trapdoor', PublicController.recordTrapdoor);
 router.head('/', PublicController.headRoot);
 router.get('/favicon.ico', PublicController.favicon);

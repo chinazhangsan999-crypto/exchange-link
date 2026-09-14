@@ -18,6 +18,7 @@ fs.cpSync(sourceDirectory, outputDirectory, {
   filter(source) {
     const relative = path.relative(sourceDirectory, source);
     if (!relative) return true;
+    if (relative.toLowerCase().endsWith('.map')) return false;
     return relative.split(path.sep)[0].toLowerCase() !== 'admin';
   }
 });

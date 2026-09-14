@@ -43,6 +43,7 @@ const SiteTrafficService = require('../services/SiteTrafficService');
 const PartnerPageViewService = require('../services/PartnerPageViewService');
 const InflowAttributionService = require('../services/InflowAttributionService');
 const VisitorRiskService = require('../services/VisitorRiskService');
+const ReadProofService = require('../services/ReadProofService');
 const InflowService = require('../services/InflowService');
 const IpIntelligenceService = require('../services/IpIntelligenceService');
 const { sendAdminAlert, formatAlertLink, formatContactLine } = require('../services/AlertService');
@@ -253,7 +254,7 @@ function trackSitePageView(req, res, next) {
 
 function recordSitePageView(req, res) {
   const pagePath = String(req.body?.pagePath || '');
-  if (!/^\/(?:$|index\.html$|site-detail\.html$)/.test(pagePath)) {
+  if (!/^\/(?:index\.html|site-detail(?:\.html)?)?$/.test(pagePath)) {
     return fail(res, '页面地址不支持统计', 400);
   }
   const visitorId = ensureVisitorIdentity(req, res);
@@ -267,7 +268,7 @@ function recordPostEntryPageView(req, res) {
   const attribution = readAttributionToken(req.body?.token);
   const pagePath = String(req.body?.pagePath || '');
   if (!attribution) return fail(res, '入站归因已失效', 401);
-  if (!/^\/(?:$|index\.html$|site-detail\.html$|publish\.html$)/.test(pagePath)) {
+  if (!/^\/(?:index\.html|site-detail(?:\.html)?|publish\.html)?$/.test(pagePath)) {
     return fail(res, '页面地址不支持统计', 400);
   }
   PartnerPageViewService.recordPageView({
@@ -409,9 +410,37 @@ function getReadBootstrap(req, res) {
     fetchDest: req.get('sec-fetch-dest'),
     origin: req.get('origin'),
     referer: req.get('referer'),
+    userAgent: req.get('user-agent'),
     expectedOrigin: req.trustedFrontendOrigin || `${req.protocol}://${req.get('host')}`
   });
+  const restriction = VisitorRiskService.getReadRestriction(visitorId);
+  if (restriction) {
+    res.set('Cache-Control', 'private, no-store');
+    return res.status(428).json({
+      code: 428,
+      msg: IS_PRODUCTION ? '请求无法处理' : '当前读取会话需要完成短时计算校验',
+      data: {
+        proofRequired: true,
+        challenge: ReadProofService.issueChallenge(visitorId)
+      }
+    });
+  }
   return ok(res, issueReadAccessToken(req, res), '读取凭证已生成');
+}
+
+function verifyReadProof(req, res) {
+  const visitorId = ensureVisitorIdentity(req, res);
+  const result = ReadProofService.verifyChallenge(visitorId, req.body || {});
+  res.set('Cache-Control', 'private, no-store');
+  if (!result.ok) {
+    return res.status(400).json({
+      code: 400,
+      msg: IS_PRODUCTION ? '请求无法处理' : '计算校验无效或已过期',
+      data: null
+    });
+  }
+  VisitorRiskService.markReadProofVerified(visitorId);
+  return ok(res, { verified: true }, '计算校验通过');
 }
 
 function recordTrapdoor(req, res) {
@@ -1010,6 +1039,7 @@ module.exports = {
   favicon,
   initVerification,
   getReadBootstrap,
+  verifyReadProof,
   recordTrapdoor,
   checkVerification,
   getAnalyticsConfig,

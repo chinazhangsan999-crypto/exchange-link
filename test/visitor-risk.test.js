@@ -32,11 +32,32 @@ test('缺少 Fetch Metadata 只是弱信号，不会单独限制正常访客', (
 test('20 秒内遍历八个不同详情 ID 会短暂限制当前访客', () => {
   const visitorId = `detail-scan-${Date.now()}`;
   const now = 1_800_000_200_000;
-  for (let id = 1; id <= 7; id += 1) {
-    VisitorRiskService.recordDetailRead(visitorId, id, now + id * 100);
-  }
+  const ids = [1, 3, 5, 7, 9, 11, 13];
+  ids.forEach((id, index) => VisitorRiskService.recordDetailRead(visitorId, id, now + (index + 1) * 100));
   assert.equal(VisitorRiskService.getReadRestriction(visitorId, now + 800), null);
-  VisitorRiskService.recordDetailRead(visitorId, 8, now + 800);
+  VisitorRiskService.recordDetailRead(visitorId, 15, now + 800);
   assert.equal(VisitorRiskService.getReadRestriction(visitorId, now + 800).retryAfter, 30);
   assert.equal(VisitorRiskService.getReadRestriction('same-nat-other-visitor', now + 800), null);
+});
+
+test('连续编号遍历六个详情会提前限制当前访客', () => {
+  const visitorId = `sequence-test-${Date.now()}`;
+  const now = 1_800_000_300_000;
+  for (let id = 20; id <= 24; id += 1) {
+    VisitorRiskService.recordDetailRead(visitorId, id, now + id);
+  }
+  assert.equal(VisitorRiskService.getReadRestriction(visitorId, now + 100), null);
+  VisitorRiskService.recordDetailRead(visitorId, 25, now + 101);
+  assert.equal(VisitorRiskService.getReadRestriction(visitorId, now + 101).retryAfter, 30);
+});
+
+test('脚本客户端特征与缺失 Fetch Metadata 组合计入风险但不连坐其他访客', () => {
+  const visitorId = `script-signal-${Date.now()}`;
+  const now = 1_800_000_400_000;
+  const record = VisitorRiskService.recordBootstrapSignals(visitorId, {
+    userAgent: 'python-requests/2.32.0'
+  }, now);
+  assert.equal(record.score, 65);
+  assert.equal(VisitorRiskService.getReadRestriction(visitorId, now), null);
+  assert.equal(VisitorRiskService.getReadRestriction('same-nat-normal-browser', now), null);
 });

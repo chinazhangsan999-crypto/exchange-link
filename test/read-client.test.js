@@ -17,18 +17,50 @@ function jsonResponse(status, body) {
 
 async function loadClient(fetchMock) {
   const source = await fs.readFile(path.join(__dirname, '..', 'public', 'read-client.js'), 'utf8');
-  const window = {};
+  const window = { crypto: globalThis.crypto };
   vm.runInNewContext(source, {
     window,
     fetch: fetchMock,
     Headers,
     Set,
     Date,
+    TextEncoder,
     TypeError,
     Promise
   });
   return window;
 }
+
+test('高风险读取会话完成一次本地计算后自动重新领取凭证', async () => {
+  let bootstrapCalls = 0;
+  let proofCalls = 0;
+  const challenge = {
+    challengeId: 'client-proof-challenge',
+    salt: 'client-proof-salt',
+    difficultyBits: 1,
+    expiresAt: Date.now() + 30000
+  };
+  const window = await loadClient(async (url, init = {}) => {
+    if (url === '/api/read/bootstrap') {
+      bootstrapCalls += 1;
+      return bootstrapCalls === 1
+        ? jsonResponse(428, { code: 428, data: { proofRequired: true, challenge } })
+        : jsonResponse(200, { code: 200, data: { token: 'proof-token', expiresAt: Date.now() + 60000 } });
+    }
+    if (url === '/api/read/proof') {
+      proofCalls += 1;
+      const payload = JSON.parse(init.body);
+      assert.equal(payload.challengeId, challenge.challengeId);
+      assert.ok(Number.isSafeInteger(payload.solution));
+      return jsonResponse(200, { code: 200, data: { verified: true } });
+    }
+    return jsonResponse(200, { code: 200, data: {} });
+  });
+
+  await window.readAccessReady;
+  assert.equal(bootstrapCalls, 2);
+  assert.equal(proofCalls, 1);
+});
 
 test('并发页面组件共享一次读取凭证请求', async () => {
   let bootstrapCalls = 0;

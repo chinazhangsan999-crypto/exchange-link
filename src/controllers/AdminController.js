@@ -9,8 +9,7 @@ const { ZipArchive } = require('archiver');
 const { parse: parseCsv } = require('csv-parse/sync');
 const {
   CONTROL_CENTER_ENABLED,
-  FRONTEND_PROXY_SECRET,
-  PUBLIC_FRONTEND_MODE
+  FRONTEND_PROXY_SECRET
 } = require('../config/env');
 const { parseHostname, matchesPartnerDomain, normalizePartnerUrl } = require('../utils/network');
 const { normalizeUrl, normalizeAnalyticsScriptUrl } = require('../utils/url');
@@ -330,8 +329,7 @@ async function getFrontendOrigins(req, res) {
     }));
     return ok(res, {
       origins,
-      frontendProxyConfigured: Boolean(FRONTEND_PROXY_SECRET),
-      publicFrontendMode: PUBLIC_FRONTEND_MODE
+      frontendProxyConfigured: Boolean(FRONTEND_PROXY_SECRET)
     });
   } catch (error) {
     console.error('读取公共前端域名白名单失败：', error);

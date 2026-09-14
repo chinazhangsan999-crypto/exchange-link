@@ -1,7 +1,7 @@
 'use strict';
 
 const FrontendProxyService = require('../services/FrontendProxyService');
-const { PUBLIC_FRONTEND_MODE, FRONTEND_PROXY_API_HOSTS } = require('../config/env');
+const { FRONTEND_PROXY_API_HOSTS } = require('../config/env');
 
 const PROXY_HEADERS = [
   'x-frontend-origin',
@@ -63,6 +63,7 @@ const PUBLIC_PROXY_PATHS = [
   '/api/track/',
   '/api/config',
   '/api/categories',
+  '/api/mirrors',
   '/api/captcha',
   '/api/links',
   '/api/showcase',
@@ -70,11 +71,10 @@ const PUBLIC_PROXY_PATHS = [
 ];
 
 /**
- * 分离模式下，公开业务接口只接受白名单边缘前端转发。
- * 健康检查、后台与防失联发布页依赖的 /api/mirrors 保持可直连。
+ * 公开业务接口永久只接受白名单边缘前端转发。
+ * /api/health 是唯一允许直接读取的公共服务状态接口。
  */
-function requireSeparatedFrontendProxy(req, res, next) {
-  if (PUBLIC_FRONTEND_MODE !== 'separated') return next();
+function requireFrontendProxy(req, res, next) {
   const path = String(req.path || '');
   if (!PUBLIC_PROXY_PATHS.some(prefix => path === prefix || path.startsWith(prefix))) return next();
   if (req.trustedFrontendOrigin && req.verifiedClientIp) return next();
@@ -84,5 +84,5 @@ function requireSeparatedFrontendProxy(req, res, next) {
 module.exports = {
   acceptTrustedFrontendProxy,
   requireTrustedFrontendProxy,
-  requireSeparatedFrontendProxy
+  requireFrontendProxy
 };

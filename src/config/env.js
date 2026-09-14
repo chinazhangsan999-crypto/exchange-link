@@ -13,7 +13,8 @@ if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65535) {
 const REQUIRED_PRODUCTION_SECRETS = [
   'SESSION_SECRET',
   'ADMIN_JWT_SECRET',
-  'GUEST_JWT_SECRET'
+  'GUEST_JWT_SECRET',
+  'FRONTEND_PROXY_SECRET'
 ];
 const missingProductionSecrets = REQUIRED_PRODUCTION_SECRETS.filter(key => !process.env[key]);
 
@@ -65,8 +66,7 @@ const CONTROL_CENTER_URL = String(process.env.CONTROL_CENTER_URL || '').trim().r
 const CONTROL_CENTER_SITE_CREDENTIAL = String(process.env.CONTROL_CENTER_SITE_CREDENTIAL || '').trim();
 const CONTROL_CENTER_SYNC_INTERVAL_MS = Math.max(10_000, Math.min(10 * 60_000,
   Number.parseInt(process.env.CONTROL_CENTER_SYNC_INTERVAL_MS || '60000', 10) || 60_000));
-const PUBLIC_FRONTEND_MODE = String(process.env.PUBLIC_FRONTEND_MODE || 'embedded').trim().toLowerCase();
-// 为空时保持兼容模式；设置后后台 HTML 与 /api/admin/* 只能经该可信边缘域名进入。
+// 后台 HTML 与 /api/admin/* 只能经该可信边缘域名进入。
 const ADMIN_FRONTEND_ORIGIN = String(process.env.ADMIN_FRONTEND_ORIGIN || '').trim().replace(/\/$/, '').toLowerCase();
 const FRONTEND_PROXY_SECRET = String(process.env.FRONTEND_PROXY_SECRET || '').trim();
 const FRONTEND_PROXY_API_HOSTS = String(process.env.FRONTEND_PROXY_API_HOSTS || '')
@@ -81,21 +81,16 @@ const ADMIN_CSRF_COOKIE = 'webring_admin_csrf';
 // 主站默认不执行第三方联盟脚本。若确有业务需要，应先迁移到独立受限域名后再显式开启。
 const PUBLIC_CODE_ADS_ENABLED = process.env.PUBLIC_CODE_ADS_ENABLED === '1';
 
-if (!['embedded', 'separated'].includes(PUBLIC_FRONTEND_MODE)) {
-  throw new Error('PUBLIC_FRONTEND_MODE 仅支持 embedded 或 separated。');
-}
-
 const ADMIN_ORIGIN_PATTERN = IS_PRODUCTION ? /^https:\/\/[^/]+$/i : /^https?:\/\/[^/]+$/i;
 if (ADMIN_FRONTEND_ORIGIN && !ADMIN_ORIGIN_PATTERN.test(ADMIN_FRONTEND_ORIGIN)) {
   throw new Error('ADMIN_FRONTEND_ORIGIN 必须是有效 Origin；生产环境仅允许 HTTPS。');
 }
+if (IS_PRODUCTION && !ADMIN_FRONTEND_ORIGIN) {
+  throw new Error('生产环境启动失败：必须配置 ADMIN_FRONTEND_ORIGIN 以隔离后台入口。');
+}
 
 if (FRONTEND_PROXY_SECRET && FRONTEND_PROXY_SECRET.length < 32) {
   throw new Error('FRONTEND_PROXY_SECRET 长度不得少于 32 位。');
-}
-
-if (PUBLIC_FRONTEND_MODE === 'separated' && FRONTEND_PROXY_SECRET.length < 32) {
-  throw new Error('启用前后端分离模式前，必须配置不少于 32 位的 FRONTEND_PROXY_SECRET。');
 }
 
 if (CONTROL_CENTER_ENABLED) {
@@ -133,7 +128,6 @@ module.exports = {
   CONTROL_CENTER_URL,
   CONTROL_CENTER_SITE_CREDENTIAL,
   CONTROL_CENTER_SYNC_INTERVAL_MS,
-  PUBLIC_FRONTEND_MODE,
   ADMIN_FRONTEND_ORIGIN,
   FRONTEND_PROXY_SECRET,
   FRONTEND_PROXY_API_HOSTS,

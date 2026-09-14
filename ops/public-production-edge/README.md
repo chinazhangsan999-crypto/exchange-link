@@ -9,4 +9,4 @@
 3. 使用与 Node.js、API Worker 一致的 `FRONTEND_PROXY_SECRET` 执行 `wrangler secret put`。
 4. `npx wrangler deploy --config ops/public-production-edge/wrangler.toml`。
 
-只有验收首页、详情、SID 落地、心跳、出站跳转均正常后，才能将 Node.js 的 `PUBLIC_FRONTEND_MODE` 切换为 `separated`。
+Node.js 已永久关闭公共静态托管；部署后必须验收首页、详情、SID 落地、心跳和出站跳转。

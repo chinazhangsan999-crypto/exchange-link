@@ -5,6 +5,30 @@ const PROXIED_PATHS = [
   '/uploads/logo/'
 ];
 
+const SCRIPT_CLIENT_PATTERN = /(?:python-requests|curl\/|wget\/|scrapy|go-http-client|aiohttp|httpx\/)/i;
+
+function isProtectedReadPath(pathname) {
+  return pathname === '/api/read/bootstrap'
+    || pathname === '/api/links'
+    || /^\/api\/links\/\d+$/.test(pathname)
+    || pathname === '/api/showcase';
+}
+
+function denyObviousScriptClient(request, pathname) {
+  if (!isProtectedReadPath(pathname)) return null;
+  const userAgent = request.headers.get('User-Agent') || '';
+  if (userAgent && !SCRIPT_CLIENT_PATTERN.test(userAgent)) return null;
+  return new Response(JSON.stringify({ code: 403, msg: '请求无法处理', data: null }), {
+    status: 403,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'private, no-store',
+      'X-Content-Type-Options': 'nosniff',
+      'X-Robots-Tag': 'noindex, nofollow'
+    }
+  });
+}
+
 function toHex(bytes) {
   return [...new Uint8Array(bytes)].map(value => value.toString(16).padStart(2, '0')).join('');
 }
@@ -214,6 +238,8 @@ export default {
           headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
         }));
       }
+      const scriptClientResponse = denyObviousScriptClient(request, url.pathname);
+      if (scriptClientResponse) return scriptClientResponse;
       if (shouldProxy(url.pathname)) return await proxyRequest(request, env);
       if (request.method === 'GET'
         && (url.pathname === '/' || url.pathname === '/index.html' || url.pathname.startsWith('/r/'))) {

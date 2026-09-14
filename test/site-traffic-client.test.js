@@ -17,3 +17,16 @@ test('全站 PV 使用页面主动上报，而不是静态响应 finish 事件',
   assert.match(publicRoutes, /router\.post\('\/api\/track\/site-page-view'/);
   assert.match(common, /fetch\('\/api\/track\/site-page-view'/);
 });
+
+test('全站与入站后 PV 同时兼容详情页净化路径和 html 路径', () => {
+  const supportedPaths = ['/', '/index.html', '/site-detail', '/site-detail.html'];
+  const browserPattern = /^\/(?:index\.html|site-detail(?:\.html)?)?$/;
+  const serverPattern = /^\/(?:index\.html|site-detail(?:\.html)?|publish\.html)?$/;
+
+  for (const pagePath of supportedPaths) {
+    assert.equal(browserPattern.test(pagePath), true, `浏览器应上报 ${pagePath}`);
+    assert.equal(serverPattern.test(pagePath), true, `服务端应接收 ${pagePath}`);
+  }
+  assert.match(common, /site-detail\(\?:\\\.html\)\?/);
+  assert.match(publicController, /site-detail\(\?:\\\.html\)\?/);
+});
