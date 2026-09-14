@@ -32,6 +32,13 @@ function copySetCookies(fromHeaders, toHeaders) {
     for (const cookie of fromHeaders.getSetCookie()) toHeaders.append('Set-Cookie', cookie);
     return;
   }
+  // Cloudflare Workers 的部分兼容运行时仍提供 getAll，而非标准 getSetCookie。
+  // 多个 Set-Cookie 绝不能通过 get() 合并为逗号字符串，否则浏览器会丢弃
+  // 或只保存其中一个 Cookie，导致 SSO 后所有受保护 API 都显示为空。
+  if (typeof fromHeaders.getAll === 'function') {
+    for (const cookie of fromHeaders.getAll('Set-Cookie')) toHeaders.append('Set-Cookie', cookie);
+    return;
+  }
   const cookie = fromHeaders.get('Set-Cookie');
   if (cookie) toHeaders.append('Set-Cookie', cookie);
 }
