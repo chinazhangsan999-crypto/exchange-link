@@ -1,6 +1,6 @@
 name = "webring-admin-edge"
 main = "worker.js"
-compatibility_date = "2026-09-15"
+compatibility_date = "2026-09-14"
 
 routes = [
   { pattern = "houtai.chinazhangsan.ccwu.cc", custom_domain = true }

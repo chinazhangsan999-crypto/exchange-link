@@ -1,6 +1,6 @@
 name = "webring-public-production"
 main = "worker.js"
-compatibility_date = "2026-09-15"
+compatibility_date = "2026-09-14"
 
 routes = [
   { pattern = "qiantai.chinazhangsan.ccwu.cc", custom_domain = true }
