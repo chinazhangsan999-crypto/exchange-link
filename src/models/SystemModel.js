@@ -97,13 +97,17 @@ async function upsertConfigs(entries) {
 }
 
 async function getAdminByUsername(username, fields = 'full') {
-  if (fields === 'password') return get('SELECT id, username, password_hash FROM admins WHERE username = ?', [username]);
+  if (fields === 'password') return get('SELECT id, username, password_hash, session_version FROM admins WHERE username = ?', [username]);
   return get('SELECT * FROM admins WHERE username = ?', [username]);
+}
+
+async function getAdminSessionById(id) {
+  return get('SELECT id, username, session_version FROM admins WHERE id = ?', [id]);
 }
 
 async function updateAdminPassword(id, passwordHash) {
   return withTransaction(
-    ({ run: txRun }) => txRun('UPDATE admins SET password_hash = ? WHERE id = ?', [passwordHash, id]),
+    ({ run: txRun }) => txRun('UPDATE admins SET password_hash = ?, session_version = session_version + 1 WHERE id = ?', [passwordHash, id]),
     { priority: 'interactive', label: 'change admin password', durability: 'full' }
   );
 }
@@ -382,7 +386,11 @@ async function initializeDatabase() {
   for (const [column, sql] of claimAttributionMigrations) {
     if (!tokenColumns.some(item => item.name === column)) await run(sql);
   }
-  await run('CREATE TABLE IF NOT EXISTS admins (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL)');
+  await run('CREATE TABLE IF NOT EXISTS admins (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, session_version INTEGER NOT NULL DEFAULT 0)');
+  const adminColumns = await all('PRAGMA table_info(admins)');
+  if (!adminColumns.some(column => column.name === 'session_version')) {
+    await run('ALTER TABLE admins ADD COLUMN session_version INTEGER NOT NULL DEFAULT 0');
+  }
   await run(`CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, sort_order INTEGER NOT NULL DEFAULT 0, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   )`);
@@ -497,6 +505,7 @@ module.exports = {
   upsertConfig,
   upsertConfigs,
   getAdminByUsername,
+  getAdminSessionById,
   updateAdminPassword,
   listCategories,
   listAdminCategories,

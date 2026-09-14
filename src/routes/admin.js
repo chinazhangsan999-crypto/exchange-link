@@ -2,7 +2,7 @@
 
 const express = require('express');
 const AdminController = require('../controllers/AdminController');
-const { requireAdmin } = require('../middlewares/auth');
+const { requireAdmin, requireAdminCsrf } = require('../middlewares/auth');
 const { createRateLimiter } = require('../middlewares/rateLimit');
 const { siteLogoUpload } = require('../middlewares/siteLogoUpload');
 
@@ -10,10 +10,15 @@ const router = express.Router();
 const loginRateLimiter = createRateLimiter('admin-login', 15 * 60 * 1000, 5);
 
 router.post('/api/admin/login', loginRateLimiter, AdminController.login);
-router.put('/api/admin/password', requireAdmin, AdminController.changePassword);
+// 统一后台交换码可能短暂带 Bearer；这里立即换成 HttpOnly Cookie，不写入 localStorage。
+router.post('/api/admin/session/exchange', requireAdmin, AdminController.exchangeBearerForCookie);
+router.get('/api/admin/session', requireAdmin, AdminController.getAdminSession);
+router.post('/api/admin/logout', requireAdmin, requireAdminCsrf, AdminController.logout);
 
 // 登录接口之外的所有后台 API 统一在此处鉴权。
 router.use('/api/admin', requireAdmin);
+router.use('/api/admin', requireAdminCsrf);
+router.put('/api/admin/password', AdminController.changePassword);
 router.get('/api/admin/analytics/config', AdminController.getAnalyticsConfig);
 router.post('/api/admin/analytics/config', AdminController.saveAnalyticsConfig);
 router.get(['/api/admin/config', '/api/admin/settings'], AdminController.getSettings);

@@ -95,12 +95,25 @@ test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心�
       body: JSON.stringify({ username: 'admin', password: 'LocalTestPassword123' })
     });
     assert.equal(login.status, 200);
-    const adminToken = (await login.json()).data.token;
+    assert.equal((await login.json()).data.token, undefined);
+    const setCookies = typeof login.headers.getSetCookie === 'function'
+      ? login.headers.getSetCookie() : [login.headers.get('set-cookie')];
+    const adminCookieHeader = setCookies.filter(Boolean).map(value => value.split(';')[0]).join('; ');
+    const csrf = /webring_admin_csrf=([^;]+)/.exec(adminCookieHeader)?.[1] || '';
+    assert.ok(adminCookieHeader.includes('webring_admin='));
+    assert.ok(csrf);
+    const rejectedWithoutCsrf = await fetch(`${baseUrl}/api/admin/frontend-origins`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', Cookie: adminCookieHeader },
+      body: JSON.stringify({ origins: [] })
+    });
+    assert.equal(rejectedWithoutCsrf.status, 403);
     const savedOrigins = await fetch(`${baseUrl}/api/admin/frontend-origins`, {
       method: 'PUT',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${adminToken}`
+        Cookie: adminCookieHeader,
+        'X-CSRF-Token': csrf
       },
       body: JSON.stringify({
         origins: [
@@ -111,7 +124,7 @@ test('分离模式仅接受可信边缘请求并保留入站 Claim 到 3 秒心�
     });
     assert.equal(savedOrigins.status, 200);
     const originConfig = await (await fetch(`${baseUrl}/api/admin/frontend-origins`, {
-      headers: { Authorization: `Bearer ${adminToken}` }
+      headers: { Cookie: adminCookieHeader }
     })).json();
     assert.equal(originConfig.data.frontendProxyConfigured, true);
     assert.equal(originConfig.data.publicFrontendMode, 'separated');

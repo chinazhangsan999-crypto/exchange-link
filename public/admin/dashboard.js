@@ -18,7 +18,7 @@
     chartRequest: 0
   };
 
-  const token = () => localStorage.getItem('webring_admin_token') || '';
+  const token = () => '';
   const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[character]));

@@ -55,19 +55,17 @@
     try {
       button.disabled = true;
       button.textContent = '保存中…';
-      const token = localStorage.getItem('webring_admin_token') || '';
       const response = await fetch('/api/admin/password', {
         method: 'PUT',
         headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ oldPassword, newPassword })
       });
       const result = await response.json();
       if (!response.ok || result.code !== 200) throw new Error(result.msg || '密码修改失败');
 
-      localStorage.removeItem('webring_admin_token');
+      window.adminSessionActive = false;
       notify(result.msg || '密码修改成功，请重新登录');
       form.reset();
       window.setTimeout(() => window.location.replace('/admin/'), 1000);

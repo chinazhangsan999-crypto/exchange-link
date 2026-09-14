@@ -14,7 +14,7 @@
     }).format(date).replace(/\//g, '-');
   };
 
-  const token = () => localStorage.getItem('webring_admin_token') || '';
+  const token = () => window.adminSessionActive === true ? 'cookie-session' : '';
   const activeKey = 'admin_active_tab';
   const validTabs = new Set(['dashboard', 'partners', 'logs', 'rejected-logs', 'categories', 'review', 'settings', 'ads', 'mirrors']);
   const aliases = { links: 'partners', 'inbound-logs': 'logs', 'unentered-logs': 'rejected-logs', audit: 'review' };
@@ -24,10 +24,9 @@
 
   /** 登录后读取系统设置，统一更新后台页签与品牌标题。 */
   window.loadAdminBrand = async function loadAdminBrand() {
-    const adminToken = token();
-    if (!adminToken) return;
+    if (!token()) return;
     try {
-      const response = await fetch('/api/admin/settings', { headers: { Authorization: `Bearer ${adminToken}` } });
+      const response = await fetch('/api/admin/settings');
       const result = await response.json();
       if (result.code !== 200) return;
       const siteName = String(result.data?.site_name || '').trim();
@@ -81,8 +80,9 @@
       logout.type = 'button';
       logout.className = 'admin-logout';
       logout.textContent = '退出登录';
-      logout.onclick = () => {
-        localStorage.removeItem('webring_admin_token');
+      logout.onclick = async () => {
+        try { await fetch('/api/admin/logout', { method: 'POST', credentials: 'same-origin' }); } catch {}
+        window.adminSessionActive = false;
         window.location.assign('/admin');
       };
     }
@@ -148,10 +148,10 @@
 
   async function requestLogin(credentials) {
     const response = await fetch('/api/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(credentials) });
-    const result = await response.json(); if (result.code !== 200 || !result.data?.token) throw Error(result.msg || '登录失败'); return result.data.token;
+    const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '登录失败'); return true;
   }
-  async function handleLoginSuccess(newToken) {
-    localStorage.setItem('webring_admin_token', newToken);
+  async function handleLoginSuccess() {
+    window.adminSessionActive = true;
     document.querySelector('#login-modal')?.classList.remove('open');
     void window.loadAdminBrand();
     window.restoreAdminTab();
@@ -169,7 +169,7 @@
     });
   }
   const form = document.querySelector('#login-form');
-  if (form) form.onsubmit = async event => { event.preventDefault(); const submit = form.querySelector('button[type="submit"],button:not([type])'); try { if (submit) { submit.disabled = true; submit.textContent = '登录中…'; } await handleLoginSuccess(await requestLogin(Object.fromEntries(new FormData(form)))); } catch (error) { toast(error.message || '登录失败，请稍后重试'); } finally { if (submit) { submit.disabled = false; submit.textContent = '登录管理后台'; } } };
+  if (form) form.onsubmit = async event => { event.preventDefault(); const submit = form.querySelector('button[type="submit"],button:not([type])'); try { if (submit) { submit.disabled = true; submit.textContent = '登录中…'; } await requestLogin(Object.fromEntries(new FormData(form))); await handleLoginSuccess(); } catch (error) { toast(error.message || '登录失败，请稍后重试'); } finally { if (submit) { submit.disabled = false; submit.textContent = '登录管理后台'; } } };
   window.addEventListener('hashchange', () => { const tab = normalizeTab(window.location.hash.replace(/^#/, '')); if (validTabs.has(tab)) window.switchAdminTab(tab, { updateHash: false }); });
   bindTabs();
   // review.js 在本文件之前创建审核/设置标签；赋予其路由标识并重新统一绑定。
@@ -198,20 +198,18 @@
     const payload = await response.json().catch(() => null);
     const newToken = payload?.data?.token;
     if (!response.ok || !newToken) throw new Error(payload?.message || payload?.msg || '统一登录交换失败，请返回总后台重试');
-    localStorage.setItem('webring_admin_token', newToken);
-    localStorage.setItem('webring_login_source', 'control_center');
+    const exchanged = await fetch('/api/admin/session/exchange', {
+      method: 'POST', credentials: 'same-origin', headers: { Authorization: `Bearer ${newToken}` }
+    });
+    const exchangePayload = await exchanged.json().catch(() => null);
+    if (!exchanged.ok || exchangePayload?.code !== 200) throw new Error(exchangePayload?.msg || '后台会话建立失败');
+    window.adminSessionActive = true;
     return true;
   }
 
   function applyCentralManagementUi(status) {
     window.controlCenterManaged = status.enabled === true;
     if (!window.controlCenterManaged) return;
-    try {
-      const current = token();
-      const encoded = current ? current.split('.')[1].replace(/-/g, '+').replace(/_/g, '/') : '';
-      const payload = encoded ? JSON.parse(atob(encoded.padEnd(Math.ceil(encoded.length / 4) * 4, '='))) : null;
-      if (payload?.source !== 'control_center') localStorage.removeItem('webring_admin_token');
-    } catch { localStorage.removeItem('webring_admin_token'); }
     document.querySelector('.tabs [data-tab="mirrors"]')?.remove();
     document.querySelector('#matrix-url-form [name="csv_url_mirrors"]')?.closest('label')?.remove();
     document.querySelectorAll('#matrix-url-form [data-sync-type="mirrors"]').forEach(item => item.remove());
@@ -244,6 +242,10 @@
     try { await consumeControlCenterSso(); }
     catch (error) { toast(error.message || '统一登录失败，请返回总后台重试'); }
     const status = await controlCenterStatus();
+    if (!window.adminSessionActive) {
+      const session = await fetch('/api/admin/session', { credentials: 'same-origin' }).then(response => response.ok ? response.json() : null).catch(() => null);
+      window.adminSessionActive = session?.code === 200;
+    }
     applyCentralManagementUi(status);
     normalizePrimaryNavigation();
     bindTabs();

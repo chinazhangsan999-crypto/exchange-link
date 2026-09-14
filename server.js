@@ -49,8 +49,9 @@ initializeDatabase()
   .then(syncMirrorsToPartners)
   .then(ensureAllPartnersHaveSid)
   .then(() => {
-    httpServer = app.listen(PORT, () => {
-      console.log(`互助友链系统已启动：http://localhost:${PORT}`);
+    // Node 只对本机 Caddy 开放；公网 TLS 与真实 IP 校验均在反向代理层完成。
+    httpServer = app.listen(PORT, '127.0.0.1', () => {
+      console.log(`互助友链系统已启动：http://127.0.0.1:${PORT}`);
       SiteTrafficService.start();
       PartnerPageViewService.start();
       IpIntelligenceService.start();

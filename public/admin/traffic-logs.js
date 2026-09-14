@@ -1,7 +1,7 @@
 /** 后台有效带量与未通过校验请求明细：服务端筛选后分页，每页 100 条。 */
 (() => {
   const PAGE_SIZE = 100;
-  const token = () => localStorage.getItem('webring_admin_token') || '';
+  const token = () => '';
   const esc = value => String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[character]));

@@ -14,6 +14,12 @@ link.chinazhangsan.ccwu.cc {
     }
 
     handle {
-        reverse_proxy localhost:3001
+        # 源站直连不再进入 Node，避免绕过 Cloudflare 的 WAF 与真实 IP 链路。
+        respond "Not Found" 404
     }
+}
+
+ip.chinazhangsan.ccwu.cc {
+    encode zstd gzip
+    reverse_proxy 127.0.0.1:3101
 }

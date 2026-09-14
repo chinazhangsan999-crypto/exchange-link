@@ -73,6 +73,11 @@ const FRONTEND_PROXY_API_HOSTS = String(process.env.FRONTEND_PROXY_API_HOSTS || 
   .filter(Boolean);
 const FRONTEND_PROXY_MAX_SKEW_MS = Math.max(5_000, Math.min(5 * 60_000,
   Number.parseInt(process.env.FRONTEND_PROXY_MAX_SKEW_MS || '30000', 10) || 30_000));
+const ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const ADMIN_SESSION_COOKIE = 'webring_admin';
+const ADMIN_CSRF_COOKIE = 'webring_admin_csrf';
+// 主站默认不执行第三方联盟脚本。若确有业务需要，应先迁移到独立受限域名后再显式开启。
+const PUBLIC_CODE_ADS_ENABLED = process.env.PUBLIC_CODE_ADS_ENABLED === '1';
 
 if (!['embedded', 'separated'].includes(PUBLIC_FRONTEND_MODE)) {
   throw new Error('PUBLIC_FRONTEND_MODE 仅支持 embedded 或 separated。');
@@ -124,5 +129,9 @@ module.exports = {
   PUBLIC_FRONTEND_MODE,
   FRONTEND_PROXY_SECRET,
   FRONTEND_PROXY_API_HOSTS,
-  FRONTEND_PROXY_MAX_SKEW_MS
+  FRONTEND_PROXY_MAX_SKEW_MS,
+  ADMIN_SESSION_TTL_MS,
+  ADMIN_SESSION_COOKIE,
+  ADMIN_CSRF_COOKIE,
+  PUBLIC_CODE_ADS_ENABLED
 };

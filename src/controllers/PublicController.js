@@ -9,7 +9,8 @@ const { Mutex } = require('async-mutex');
 const {
   IS_PRODUCTION,
   GUEST_JWT_SECRET,
-  TRAFFIC_DEBUG
+  TRAFFIC_DEBUG,
+  PUBLIC_CODE_ADS_ENABLED
 } = require('../config/env');
 const { getClientIp, parseHostname, normalizePartnerUrl, normalizeRegisteredDomain } = require('../utils/network');
 const { ok, fail, safeApiErrorMessage, isUniqueConstraintError } = require('../utils/http');
@@ -895,7 +896,9 @@ async function getAds(req, res) {
         description: row.description || '',
         sort_order: Number(row.sort_order || 0)
       }));
-    const codeItems = position => rows
+    // 任意第三方 JavaScript 不能与主站会话处于同一 Origin。默认不下发，
+    // 仅在完成独立受限广告域部署后由环境变量显式恢复。
+    const codeItems = position => !PUBLIC_CODE_ADS_ENABLED ? [] : rows
       .filter(row => row.ad_type === 'code' && row.ad_position === position)
       .map(row => ({
         id: row.id,

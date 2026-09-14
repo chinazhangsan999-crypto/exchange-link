@@ -7,7 +7,7 @@
     document.head.append(stylesheet);
   }
 
-  const token = () => localStorage.getItem('webring_admin_token') || '';
+  const token = () => '';
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[character]));

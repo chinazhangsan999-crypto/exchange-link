@@ -1,6 +1,6 @@
 /** 友链编辑与积分列排序增强，独立加载以保持原 Gemini 后台页面兼容。 */
 (() => {
-  const auth = () => ({ 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem('webring_admin_token') || ''}` });
+  const auth = () => ({ 'Content-Type': 'application/json' });
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   const notify = text => { const el = document.querySelector('#toast'); if (!el) return alert(text); el.textContent = text; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
   async function request(url, options = {}) { const response = await fetch(url, { ...options, headers: { ...auth(), ...(options.headers || {}) } }); const result = await response.json(); if (result.code !== 200) throw Error(result.msg); return result.data; }

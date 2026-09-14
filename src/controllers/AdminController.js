@@ -4,12 +4,10 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
 const UAParser = require('ua-parser-js');
 const { ZipArchive } = require('archiver');
 const { parse: parseCsv } = require('csv-parse/sync');
 const {
-  ADMIN_JWT_SECRET,
   CONTROL_CENTER_ENABLED,
   FRONTEND_PROXY_SECRET,
   PUBLIC_FRONTEND_MODE
@@ -37,6 +35,11 @@ const InspectionAlertService = require('../services/InspectionAlertService');
 const { runTrackedJob } = require('../jobs/cron');
 const { runPromisePool } = require('../utils/asyncPool');
 const { toSqliteUtcTimestamp } = require('../utils/time');
+const {
+  issueAdminToken,
+  setAdminSessionCookies,
+  clearAdminSessionCookies
+} = require('../middlewares/auth');
 
 const ANALYTICS_CONFIG_KEYS = [
   'umami_enabled',
@@ -219,12 +222,11 @@ async function login(req, res) {
     if (!username || !password) return fail(res, '请输入用户名和密码');
     const admin = await SystemModel.getAdminByUsername(username);
     if (!admin || !(await bcrypt.compare(password, admin.password_hash))) return fail(res, '用户名或密码错误', 401);
-    const token = jwt.sign(
-      { id: admin.id, username: admin.username, role: 'admin', type: 'admin' },
-      ADMIN_JWT_SECRET,
-      { expiresIn: '8h', algorithm: 'HS256' }
-    );
-    return ok(res, { token, expiresIn: 28800 }, '登录成功');
+    const token = issueAdminToken(admin);
+    setAdminSessionCookies(res, token);
+    res.setHeader('Cache-Control', 'no-store');
+    // 不再把管理员 JWT 回传给浏览器脚本；凭证仅保存在 HttpOnly Cookie 中。
+    return ok(res, { expiresIn: 28800 }, '登录成功');
   } catch {
     return fail(res, '登录服务异常', 500);
   }
@@ -243,6 +245,7 @@ async function changePassword(req, res) {
     const passwordHash = await bcrypt.hash(newPassword, 12);
     const updated = await SystemModel.updateAdminPassword(admin.id, passwordHash);
     if (!updated.changes) return fail(res, '管理员账号不存在', 404);
+    clearAdminSessionCookies(res);
     return ok(res, null, '密码修改成功，请重新登录');
   } catch (error) {
     console.error('修改管理员密码失败：', error);
@@ -1804,8 +1807,28 @@ function renderAdminPage(req, res) {
   return renderAdminHtml(res, 'index.html');
 }
 
+function getAdminSession(req, res) {
+  res.setHeader('Cache-Control', 'no-store');
+  return ok(res, { username: req.admin.username, expiresAt: req.admin.exp ? req.admin.exp * 1000 : null });
+}
+
+function logout(req, res) {
+  clearAdminSessionCookies(res);
+  res.setHeader('Cache-Control', 'no-store');
+  return ok(res, null, '已安全退出登录');
+}
+
+function exchangeBearerForCookie(req, res) {
+  setAdminSessionCookies(res, req.adminToken);
+  res.setHeader('Cache-Control', 'no-store');
+  return ok(res, { expiresIn: 28800 }, '后台会话已建立');
+}
+
 module.exports = {
   login,
+  getAdminSession,
+  logout,
+  exchangeBearerForCookie,
   changePassword,
   getAnalyticsConfig,
   saveAnalyticsConfig,

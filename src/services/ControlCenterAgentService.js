@@ -1,15 +1,14 @@
 'use strict';
 
 const express = require('express');
-const jwt = require('jsonwebtoken');
 const { get, run, all, withTransaction } = require('../config/database');
 const {
-  ADMIN_JWT_SECRET,
   CONTROL_CENTER_ENABLED,
   CONTROL_CENTER_URL,
   CONTROL_CENTER_SITE_CREDENTIAL,
   CONTROL_CENTER_SYNC_INTERVAL_MS
 } = require('../config/env');
+const { issueAdminToken } = require('../middlewares/auth');
 const { createControlCenterAgent } = require('../../packages/site-agent');
 const { createWebringConfigApplier } = require('../../packages/site-agent/webring-adapter');
 const MirrorModel = require('../models/MirrorModel');
@@ -47,13 +46,8 @@ if (CONTROL_CENTER_ENABLED) {
     issueAdminToken: async (_centralAdmin, context = {}) => {
       const localAdmin = await get("SELECT id, username FROM admins WHERE username='admin' ORDER BY id LIMIT 1");
       if (!localAdmin) throw new Error('导航站管理员账号不存在');
-      return jwt.sign({
-        id: localAdmin.id,
-        username: localAdmin.username,
-        role: 'admin',
-        type: 'admin',
-        source: context.source || 'control_center'
-      }, ADMIN_JWT_SECRET, { expiresIn: '8h', algorithm: 'HS256' });
+      const admin = await get('SELECT id, username, session_version FROM admins WHERE id = ?', [localAdmin.id]);
+      return issueAdminToken(admin, { source: context.source || 'control_center' });
     },
     metadata: () => ({ app: 'webring-traffic-exchange', runtime: process.version }),
     onError: error => console.error('总后台 Agent：', error?.message || error)
