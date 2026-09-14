@@ -29,7 +29,7 @@
     const previousFetch = window.fetch.bind(window);
     window.fetch = (input, options = {}) => {
       const headers = new Headers(options.headers || {});
-      if (/^Bearer\s*$/i.test(String(headers.get('Authorization') || ''))) headers.delete('Authorization');
+      if (/^Bearer\s*(?:cookie-session)?$/i.test(String(headers.get('Authorization') || ''))) headers.delete('Authorization');
       return previousFetch(input, { ...options, credentials: options.credentials || 'same-origin', headers });
     };
   }

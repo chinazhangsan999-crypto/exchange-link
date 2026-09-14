@@ -1,7 +1,7 @@
 'use strict';
 
 (() => {
-  const token = () => '';
+  const token = () => window.adminSessionActive === true ? 'cookie-session' : '';
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[char]));
   const notify = message => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = message; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
   let rows = [];

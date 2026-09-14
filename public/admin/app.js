@@ -1,6 +1,6 @@
 /** 友链管理统一表格渲染：防止多脚本重复插列造成布局失控。 */
 (() => {
-  const token = () => '';
+  const token = () => window.adminSessionActive === true ? 'cookie-session' : '';
   const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
   const toast = text => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = text; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
   const request = async (url, options = {}) => { const response = await fetch(url, { ...options, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token()}`, ...(options.headers || {}) } }); const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '请求失败'); return result.data; };
@@ -263,7 +263,7 @@
 
 /** 友链 CSV：广告和节点已由总后台接管，导航站只保留友链同步与备份。 */
 (() => {
-  const token = () => '';
+  const token = () => window.adminSessionActive === true ? 'cookie-session' : '';
   const form = () => document.querySelector('#matrix-url-form');
   const logBox = () => document.querySelector('#matrix-sync-log');
   const matrixToast = message => {
