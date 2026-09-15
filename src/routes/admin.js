@@ -19,6 +19,12 @@ router.post('/api/admin/logout', requireAdmin, requireAdminCsrf, AdminController
 router.use('/api/admin', requireAdmin);
 router.use('/api/admin', requireAdminCsrf);
 router.put('/api/admin/password', AdminController.changePassword);
+router.get('/api/admin/integrations/control-center', AdminController.getControlCenterIntegration);
+router.post('/api/admin/integrations/control-center/test', AdminController.testControlCenterIntegration);
+router.put('/api/admin/integrations/control-center/enroll', AdminController.enrollControlCenter);
+router.get('/api/admin/integrations/ip-intelligence', AdminController.getIpIntelligenceIntegration);
+router.post('/api/admin/integrations/ip-intelligence/test', AdminController.testIpIntelligenceIntegration);
+router.put('/api/admin/integrations/ip-intelligence', AdminController.saveIpIntelligenceIntegration);
 router.get('/api/admin/analytics/config', AdminController.getAnalyticsConfig);
 router.post('/api/admin/analytics/config', AdminController.saveAnalyticsConfig);
 router.get(['/api/admin/config', '/api/admin/settings'], AdminController.getSettings);

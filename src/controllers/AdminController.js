@@ -7,10 +7,7 @@ const bcrypt = require('bcryptjs');
 const UAParser = require('ua-parser-js');
 const { ZipArchive } = require('archiver');
 const { parse: parseCsv } = require('csv-parse/sync');
-const {
-  CONTROL_CENTER_ENABLED,
-  FRONTEND_PROXY_SECRET
-} = require('../config/env');
+const { FRONTEND_PROXY_SECRET } = require('../config/env');
 const { parseHostname, matchesPartnerDomain, normalizePartnerUrl } = require('../utils/network');
 const { normalizeUrl, normalizeAnalyticsScriptUrl } = require('../utils/url');
 const { buildSourceEntryUrls } = require('../utils/sourceLinks');
@@ -28,6 +25,9 @@ const RiskService = require('../services/RiskService');
 const SiteTrafficService = require('../services/SiteTrafficService');
 const CacheService = require('../services/CacheService');
 const FrontendProxyService = require('../services/FrontendProxyService');
+const IntegrationState = require('../services/IntegrationStateService');
+const ControlCenterAgentService = require('../services/ControlCenterAgentService');
+const IpIntelligenceService = require('../services/IpIntelligenceService');
 const WebhookDeliveryModel = require('../models/WebhookDeliveryModel');
 const { sendAdminAlert, sendBarkTestAlert, providerForUrl } = require('../services/AlertService');
 const InspectionAlertService = require('../services/InspectionAlertService');
@@ -214,7 +214,7 @@ async function analyticsConfig() {
 
 async function login(req, res) {
   try {
-    if (CONTROL_CENTER_ENABLED) {
+    if (!IntegrationState.isLocalPasswordLoginAllowed()) {
       return fail(res, '本站已启用统一后台，请从总后台进入', 403);
     }
     const username = String(req.body?.username || '').trim();
@@ -251,6 +251,59 @@ async function changePassword(req, res) {
   } catch (error) {
     console.error('修改管理员密码失败：', error);
     return fail(res, safeApiErrorMessage(error), 500);
+  }
+}
+
+async function getControlCenterIntegration(req, res) {
+  try { return ok(res, ControlCenterAgentService.publicStatus()); }
+  catch { return fail(res, '读取总后台接入状态失败', 500); }
+}
+
+async function testControlCenterIntegration(req, res) {
+  try {
+    const result = await ControlCenterAgentService.testConfig(req.body || {});
+    return ok(res, { connected: true, siteId: result.result?.site_id || null }, '总后台连接验证成功');
+  } catch (error) {
+    console.error('验证总后台接入失败：', error);
+    return fail(res, '总后台地址或站点凭据验证失败', 400);
+  }
+}
+
+async function enrollControlCenter(req, res) {
+  try {
+    const config = await ControlCenterAgentService.enroll(req.body || {});
+    const replacementHash = await bcrypt.hash(crypto.randomBytes(32).toString('base64url'), 12);
+    await IntegrationState.markEnrolled(replacementHash);
+    clearAdminSessionCookies(res);
+    return ok(res, { enrolled: true, controlCenterUrl: config.url }, '总后台已接管，本地账号密码登录已永久关闭');
+  } catch (error) {
+    console.error('总后台接管失败：', error);
+    return fail(res, '接管失败：请核对总后台地址和站点接入凭据', 400);
+  }
+}
+
+async function getIpIntelligenceIntegration(req, res) {
+  try { return ok(res, IpIntelligenceService.status()); }
+  catch { return fail(res, '读取 IP 情报接入状态失败', 500); }
+}
+
+async function testIpIntelligenceIntegration(req, res) {
+  try {
+    await IpIntelligenceService.testConfig(req.body || {});
+    return ok(res, { connected: true }, 'IP 情报服务连接验证成功');
+  } catch (error) {
+    console.error('验证 IP 情报接入失败：', error);
+    return fail(res, 'IP 情报服务地址或凭据验证失败', 400);
+  }
+}
+
+async function saveIpIntelligenceIntegration(req, res) {
+  try {
+    const status = await IpIntelligenceService.saveAndReconfigure(req.body || {});
+    return ok(res, status, 'IP 情报接入配置已安全保存并生效');
+  } catch (error) {
+    console.error('保存 IP 情报接入失败：', error);
+    return fail(res, '保存失败：请核对服务地址、Client ID 和 Client Secret', 400);
   }
 }
 
@@ -302,7 +355,7 @@ async function saveAnalyticsConfig(req, res) {
 async function getSettings(req, res) {
   try {
     const settings = await SystemModel.getAllConfig();
-    if (CONTROL_CENTER_ENABLED) {
+    if (IntegrationState.isControlCenterEnrolled()) {
       delete settings.csv_url_ads;
       delete settings.csv_url_mirrors;
     }
@@ -378,7 +431,7 @@ async function saveFrontendOrigins(req, res) {
 async function saveSettings(req, res) {
   try {
     const body = req.body || {};
-    if (CONTROL_CENTER_ENABLED && (body.csv_url_ads !== undefined || body.csv_url_mirrors !== undefined)) {
+    if (IntegrationState.isControlCenterEnrolled() && (body.csv_url_ads !== undefined || body.csv_url_mirrors !== undefined)) {
       return fail(res, '广告与节点已由总后台统一管理，导航站不再接受对应 CSV 配置', 403);
     }
     const entries = [];
@@ -1341,7 +1394,7 @@ function csvStatus(value) {
 }
 
 async function getAds(req, res) {
-  try { return ok(res, await (CONTROL_CENTER_ENABLED ? AdModel.listLocalAds() : AdModel.listAds())); }
+  try { return ok(res, await (IntegrationState.isControlCenterEnrolled() ? AdModel.listLocalAds() : AdModel.listAds())); }
   catch (error) { console.error('获取广告列表失败：', error); return fail(res, '获取广告列表失败', 500); }
 }
 
@@ -1362,7 +1415,7 @@ async function updateAd(req, res) {
     if (!Number.isSafeInteger(id) || id <= 0) return fail(res, '广告编号不合法');
     const existing = await AdModel.getAdById(id);
     if (!existing) return fail(res, '广告不存在', 404);
-    if (CONTROL_CENTER_ENABLED && existing.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
+    if (IntegrationState.isControlCenterEnrolled() && existing.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
     const result = await AdModel.updateAd(id, parseAdPayload({ ...existing, ...req.body }));
     CacheService.clearPublicCache();
     return ok(res, { changes: result.changes }, '广告已更新');
@@ -1377,7 +1430,7 @@ async function updateAdStatus(req, res) {
     const id = Number(req.params.id), status = Number(req.body?.status);
     if (!Number.isSafeInteger(id) || id <= 0 || ![0, 1].includes(status)) return fail(res, '参数不合法');
     const existing = await AdModel.getAdById(id);
-    if (CONTROL_CENTER_ENABLED && existing?.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
+    if (IntegrationState.isControlCenterEnrolled() && existing?.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
     const result = await AdModel.setAdStatus(id, status);
     if (!result.changes) return fail(res, '广告不存在', 404);
     CacheService.clearPublicCache();
@@ -1392,7 +1445,7 @@ async function deleteAd(req, res) {
   try {
     const id = Number(req.params.id);
     const existing = await AdModel.getAdById(id);
-    if (CONTROL_CENTER_ENABLED && existing?.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
+    if (IntegrationState.isControlCenterEnrolled() && existing?.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
     const result = await AdModel.deleteAd(id);
     if (!result.changes) return fail(res, '广告不存在', 404);
     CacheService.clearPublicCache();
@@ -1464,7 +1517,7 @@ async function getMirrors(req, res) {
 
 async function createMirror(req, res) {
   try {
-    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
+    if (IntegrationState.isControlCenterEnrolled()) return fail(res, '节点已由总后台统一管理', 403);
     const mirror = parseMirrorPayload(req.body);
     await MirrorModel.createMirror(mirror);
     await syncMirrorPartnersAndCache();
@@ -1477,7 +1530,7 @@ async function createMirror(req, res) {
 
 async function updateMirror(req, res) {
   try {
-    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
+    if (IntegrationState.isControlCenterEnrolled()) return fail(res, '节点已由总后台统一管理', 403);
     const originalUrl = String(req.params.url || '');
     const existing = await MirrorModel.getMirrorByUrl(originalUrl);
     if (!existing) return fail(res, '节点不存在', 404);
@@ -1494,7 +1547,7 @@ async function updateMirror(req, res) {
 
 async function updateMirrorStatus(req, res) {
   try {
-    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
+    if (IntegrationState.isControlCenterEnrolled()) return fail(res, '节点已由总后台统一管理', 403);
     const result = await MirrorModel.setMirrorStatus(req.params.url, req.body?.status);
     if (!result.changes) return fail(res, '节点不存在', 404);
     await syncMirrorPartnersAndCache();
@@ -1506,7 +1559,7 @@ async function updateMirrorStatus(req, res) {
 
 async function deleteMirror(req, res) {
   try {
-    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
+    if (IntegrationState.isControlCenterEnrolled()) return fail(res, '节点已由总后台统一管理', 403);
     const result = await MirrorModel.deleteMirror(req.params.url);
     if (!result.changes) return fail(res, '节点不存在', 404);
     await syncMirrorPartnersAndCache();
@@ -1518,7 +1571,7 @@ async function deleteMirror(req, res) {
 
 async function syncMirrorsCsv(req, res) {
   try {
-    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
+    if (IntegrationState.isControlCenterEnrolled()) return fail(res, '节点已由总后台统一管理', 403);
     const rawRows = parseCsvRows(req.body?.csv);
     if (rawRows[0]?.[0] && /^(测速名|speed[_ ]?name)$/i.test(rawRows[0][0])) rawRows.shift();
     if (!rawRows.length) return fail(res, 'CSV 内容为空');
@@ -1648,7 +1701,7 @@ async function syncPartnersMatrix(req, res) {
 
 async function syncAdsMatrix(req, res) {
   try {
-    if (CONTROL_CENTER_ENABLED) return fail(res, '广告已由总后台统一管理', 403);
+    if (IntegrationState.isControlCenterEnrolled()) return fail(res, '广告已由总后台统一管理', 403);
     const sourceRows = await fetchMatrixCsv('csv_url_ads', 'ads');
     const items = sourceRows.map(row => parseAdPayload({
       ad_type: csvType(row['广告类型']),
@@ -1673,7 +1726,7 @@ async function syncAdsMatrix(req, res) {
 
 async function syncMirrorsMatrix(req, res) {
   try {
-    if (CONTROL_CENTER_ENABLED) return fail(res, '节点已由总后台统一管理', 403);
+    if (IntegrationState.isControlCenterEnrolled()) return fail(res, '节点已由总后台统一管理', 403);
     const [sourceRows, siteUrl] = await Promise.all([
       fetchMatrixCsv('csv_url_mirrors', 'mirrors'),
       SystemModel.configValue('site_url')
@@ -1743,7 +1796,7 @@ async function exportMatrix(req, res) {
   try {
     const type = String(req.params.type || '').toLowerCase();
     if (!['partners', 'ads', 'mirrors', 'all'].includes(type)) return fail(res, '不支持的导出类型', 404);
-    if (CONTROL_CENTER_ENABLED && type !== 'partners') {
+    if (IntegrationState.isControlCenterEnrolled() && type !== 'partners') {
       return fail(res, '广告与节点已由总后台统一管理，导航站仅提供友链 CSV 备份', 403);
     }
     const { files, siteName } = await buildMatrixExports();
@@ -1835,6 +1888,12 @@ module.exports = {
   logout,
   exchangeBearerForCookie,
   changePassword,
+  getControlCenterIntegration,
+  testControlCenterIntegration,
+  enrollControlCenter,
+  getIpIntelligenceIntegration,
+  testIpIntelligenceIntegration,
+  saveIpIntelligenceIntegration,
   getAnalyticsConfig,
   saveAnalyticsConfig,
   getSettings,

@@ -4,13 +4,13 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const {
   ADMIN_JWT_SECRET,
-  CONTROL_CENTER_ENABLED,
   IS_PRODUCTION,
   ADMIN_SESSION_TTL_MS,
   ADMIN_SESSION_COOKIE,
   ADMIN_CSRF_COOKIE
 } = require('../config/env');
 const SystemModel = require('../models/SystemModel');
+const IntegrationState = require('../services/IntegrationStateService');
 
 function readCookie(req, name) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -84,7 +84,7 @@ async function requireAdmin(req, res, next) {
     console.error('读取管理员会话版本失败：', error);
     return res.status(503).json({ code: 503, msg: '管理员会话暂不可用，请稍后重试', data: null });
   }
-  if (CONTROL_CENTER_ENABLED && payload?.source !== 'control_center') {
+  if (IntegrationState.isControlCenterEnrolled() && payload?.source !== 'control_center') {
     return rejectAdminSession(req, res, 401, '请从总后台重新进入本站后台', 'wrong_session_source');
   }
 

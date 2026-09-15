@@ -1,0 +1,5 @@
+# 数据库作为独立备份资产保留在仓库历史中，但绝不能进入应用发布包覆盖线上运行库。
+webring.db export-ignore
+*.db-shm export-ignore
+*.db-wal export-ignore
+.playwright-cli/ export-ignore

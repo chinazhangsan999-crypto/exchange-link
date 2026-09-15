@@ -19,6 +19,7 @@ const SiteTrafficService = require('./src/services/SiteTrafficService');
 const PartnerPageViewService = require('./src/services/PartnerPageViewService');
 const IpIntelligenceService = require('./src/services/IpIntelligenceService');
 const ControlCenterAgentService = require('./src/services/ControlCenterAgentService');
+const IntegrationStateService = require('./src/services/IntegrationStateService');
 const { startJobs, stopJobs } = require('./src/jobs/cron');
 
 let httpServer;
@@ -45,6 +46,7 @@ initializeDatabase()
   .then(initializeSourceTokenTables)
   .then(initializeAdsTable)
   .then(initializeMirrorsTable)
+  .then(IntegrationStateService.initialize)
   .then(ControlCenterAgentService.initialize)
   .then(syncMirrorsToPartners)
   .then(ensureAllPartnersHaveSid)

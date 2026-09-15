@@ -64,6 +64,8 @@ const IP_INTELLIGENCE_BATCH_SIZE = Math.max(1, Math.min(100,
 const CONTROL_CENTER_ENABLED = process.env.CONTROL_CENTER_ENABLED === '1';
 const CONTROL_CENTER_URL = String(process.env.CONTROL_CENTER_URL || '').trim().replace(/\/$/, '');
 const CONTROL_CENTER_SITE_CREDENTIAL = String(process.env.CONTROL_CENTER_SITE_CREDENTIAL || '').trim();
+const CONTROL_CENTER_CREDENTIAL_FILE = String(process.env.CONTROL_CENTER_CREDENTIAL_FILE
+  || (IS_PRODUCTION ? '/home/niaiwo/app-secrets/control-center-site.json' : 'data/secrets/control-center-site.json')).trim();
 const CONTROL_CENTER_SYNC_INTERVAL_MS = Math.max(10_000, Math.min(10 * 60_000,
   Number.parseInt(process.env.CONTROL_CENTER_SYNC_INTERVAL_MS || '60000', 10) || 60_000));
 // 后台 HTML 与 /api/admin/* 只能经该可信边缘域名进入。
@@ -127,6 +129,7 @@ module.exports = {
   CONTROL_CENTER_ENABLED,
   CONTROL_CENTER_URL,
   CONTROL_CENTER_SITE_CREDENTIAL,
+  CONTROL_CENTER_CREDENTIAL_FILE,
   CONTROL_CENTER_SYNC_INTERVAL_MS,
   ADMIN_FRONTEND_ORIGIN,
   FRONTEND_PROXY_SECRET,

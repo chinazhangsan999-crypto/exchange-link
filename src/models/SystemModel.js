@@ -1,7 +1,6 @@
-const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const { run, get, all, withTransaction, writeGet } = require('../config/database');
-const { INITIAL_ADMIN_PASSWORD } = require('../config/env');
+const { INITIAL_ADMIN_PASSWORD, CONTROL_CENTER_ENABLED } = require('../config/env');
 
 const CONFIG_DEFAULTS = {
   site_name: '星环导航',
@@ -110,6 +109,31 @@ async function updateAdminPassword(id, passwordHash) {
     ({ run: txRun }) => txRun('UPDATE admins SET password_hash = ?, session_version = session_version + 1 WHERE id = ?', [passwordHash, id]),
     { priority: 'interactive', label: 'change admin password', durability: 'full' }
   );
+}
+
+const INTEGRATION_STATE_DEFAULTS = {
+  control_center_enrolled: '0',
+  local_password_login_enabled: '1',
+  bootstrap_password_active: '1'
+};
+
+async function getIntegrationState() {
+  return getConfigValues(Object.keys(INTEGRATION_STATE_DEFAULTS));
+}
+
+async function completeControlCenterEnrollment(passwordHash) {
+  return withTransaction(async ({ run: txRun }) => {
+    const entries = {
+      control_center_enrolled: '1',
+      local_password_login_enabled: '0',
+      bootstrap_password_active: '0'
+    };
+    for (const [key, value] of Object.entries(entries)) {
+      await txRun(`INSERT INTO site_configs(key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP`, [key, value]);
+    }
+    await txRun("UPDATE admins SET password_hash = ?, session_version = session_version + 1 WHERE username = 'admin'", [passwordHash]);
+  }, { priority: 'interactive', label: 'complete control center enrollment', durability: 'full' });
 }
 
 async function listCategories() {
@@ -464,30 +488,27 @@ async function initializeDatabase() {
     }
   }
 
-  const createSecureInitialPassword = () => {
-    const generated = !INITIAL_ADMIN_PASSWORD;
-    const password = INITIAL_ADMIN_PASSWORD || crypto.randomBytes(8).toString('hex');
-    if (generated) console.warn(`【安全提示】系统已生成初始管理员密码：${password}，请尽快登录后台修改！`);
-    return password;
-  };
+  const initialPassword = INITIAL_ADMIN_PASSWORD || 'admin123';
   const adminCount = await get('SELECT COUNT(*) AS count FROM admins');
   if (Number(adminCount.count) === 0) {
-    await run("INSERT INTO admins(username, password_hash) VALUES('admin', ?)", [await bcrypt.hash(createSecureInitialPassword(), 12)]);
-  }
-  const oldDefaultHash = crypto.createHash('sha256').update('admin123').digest('hex');
-  const defaultAdmin = await get("SELECT id, password_hash FROM admins WHERE username = 'admin'");
-  if (defaultAdmin) {
-    let usesLegacyDefault = defaultAdmin.password_hash === oldDefaultHash;
-    if (!usesLegacyDefault && /^\$2[aby]\$/.test(defaultAdmin.password_hash)) {
-      usesLegacyDefault = await bcrypt.compare('admin123', defaultAdmin.password_hash);
-    }
-    if (usesLegacyDefault) {
-      await updateAdminPassword(defaultAdmin.id, await bcrypt.hash(createSecureInitialPassword(), 12));
-    }
+    await run("INSERT INTO admins(username, password_hash) VALUES('admin', ?)", [await bcrypt.hash(initialPassword, 12)]);
+    if (!INITIAL_ADMIN_PASSWORD) console.warn('【安全提示】总后台接管前可使用引导账号 admin / admin123；请尽快完成总后台接入。');
   }
 
   for (const [key, value] of Object.entries(CONFIG_DEFAULTS)) {
     await run('INSERT OR IGNORE INTO site_configs(key, value) VALUES (?, ?)', [key, value]);
+  }
+  for (const [key, value] of Object.entries(INTEGRATION_STATE_DEFAULTS)) {
+    await run('INSERT OR IGNORE INTO site_configs(key, value) VALUES (?, ?)', [key, value]);
+  }
+  const integrationState = await getIntegrationState();
+  if (!CONTROL_CENTER_ENABLED
+    && integrationState.control_center_enrolled !== '1'
+    && integrationState.bootstrap_password_active === '1') {
+    const admin = await getAdminByUsername('admin', 'password');
+    if (admin && !(await bcrypt.compare(initialPassword, admin.password_hash))) {
+      await updateAdminPassword(admin.id, await bcrypt.hash(initialPassword, 12));
+    }
   }
   const contactEmail = await configValue('contact_email');
   const legacyEmail = await configValue('lost_prevention_email');
@@ -507,6 +528,8 @@ module.exports = {
   getAdminByUsername,
   getAdminSessionById,
   updateAdminPassword,
+  getIntegrationState,
+  completeControlCenterEnrollment,
   listCategories,
   listAdminCategories,
   categoryExists,
