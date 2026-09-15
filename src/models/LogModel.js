@@ -334,7 +334,12 @@ async function getPartnerAnalytics(partnerId, { includeClients = true, clientEve
     get(`SELECT COUNT(*) AS pv,
       COUNT(DISTINCT client_ip) AS uv,
       CASE WHEN COUNT(*) > 0 THEN 100 ELSE 0 END AS compliance_rate,
-      SUM(CASE WHEN referer IS NULL OR TRIM(referer) = '' THEN 1 ELSE 0 END) AS empty_referer_count
+      SUM(CASE WHEN (referer IS NULL OR TRIM(referer) = '')
+        AND COALESCE(attribution_method, '') <> 'sid_fallback_no_referer'
+        THEN 1 ELSE 0 END) AS empty_referer_count,
+      SUM(CASE WHEN referer IS NULL OR TRIM(referer) = '' THEN 1 ELSE 0 END) AS raw_empty_referer_count,
+      SUM(CASE WHEN COALESCE(attribution_method, '') = 'sid_fallback_no_referer'
+        THEN 1 ELSE 0 END) AS sid_no_referer_count
       FROM inbound_logs
       WHERE link_id = ? AND created_at >= datetime('now', '-24 hours')`, [partnerId]),
     all(`SELECT ip, user_agent, referer, timestamp FROM (
