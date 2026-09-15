@@ -361,8 +361,6 @@
     const attributedInteraction = percent(diagnostics.attributed_interaction_rate);
     const hourly = percent(diagnostics.peak_hourly_ratio);
     const emptyReferer = percent(diagnostics.empty_referer_ratio);
-    const rawEmptyReferer = percent(diagnostics.raw_empty_referer_ratio);
-    const sidNoRefererCount = Number(diagnostics.sid_no_referer_count || 0);
     const pvUv = numberText(diagnostics.pv_uv_ratio ?? data.pvUvRatio);
     state.clients = [];
     state.clientFilter = 'all';
@@ -397,9 +395,8 @@
               : '<span class="tag">等待新的可归因会话数据</span>'}
           </article>
           <article class="diagnostic-card">
-            <p>来源合法性</p><strong>无凭证空 Referer 占比：${emptyReferer}</strong>
-            ${statusTag(diagnostics.empty_referer, `🟡 无 Referer 且无有效 SID: ${emptyReferer}（仅供人工审核）`, `来源凭证健康：${emptyReferer}`, true)}
-            <small>原始空 Referer：${rawEmptyReferer} · 其中有效 SID 归属：${sidNoRefererCount} 次</small>
+            <p>来源合法性</p><strong>空 Referer 占比：${emptyReferer}</strong>
+            ${statusTag(diagnostics.empty_referer, `🟡 空 Referer 偏高: ${emptyReferer}（仅供人工审核）`, `来源结构健康：${emptyReferer}`, true)}
           </article>
         </div>
       </section>

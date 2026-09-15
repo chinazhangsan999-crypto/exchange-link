@@ -16,19 +16,6 @@ const MIN_ATTRIBUTED_SESSIONS = 10;
 const SINGLE_IP_RATIO_THRESHOLD = 0.35;
 let riskScanInProgress = false;
 
-function calculateSourceLegitimacy(summary, pv) {
-  const unverifiedEmptyCount = asNumber(summary?.empty_referer_count);
-  const rawEmptyCount = asNumber(summary?.raw_empty_referer_count);
-  const sidNoRefererCount = asNumber(summary?.sid_no_referer_count);
-  return {
-    emptyRefererCount: unverifiedEmptyCount,
-    emptyRefererRatio: ratio(unverifiedEmptyCount, pv),
-    rawEmptyRefererCount: rawEmptyCount,
-    rawEmptyRefererRatio: ratio(rawEmptyCount, pv),
-    sidNoRefererCount
-  };
-}
-
 function buildRiskAssessment(uv, diagnostics) {
   const attributedVisits = asNumber(diagnostics.attributed_inbound_visits);
   if (uv < MIN_ALERT_UV || attributedVisits < MIN_ATTRIBUTED_SESSIONS) {
@@ -328,12 +315,12 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
   const attributedPageSessions = asNumber(partnerPageViews?.attributed_sessions);
   const attributedContinuedSessions = asNumber(partnerPageViews?.continued_sessions);
   const maxIpRequests = requestRows.reduce((max, row) => Math.max(max, asNumber(row.requests)), 0);
-  const sourceLegitimacy = calculateSourceLegitimacy(summary, pv);
+  const emptyRefererCount = asNumber(summary.empty_referer_count);
   const pvUvRatio = ratio(attributedPagePv, uv, 2);
   const deadWaterInteractionRate = ratio(deadWaterInteractedUv, deadWaterInboundUv);
   // 仅统计同一签名访问会话在 30 分钟内的后续出站，不再用“同 IP 任意点击”冒充转化。
   const attributedInteractionRate = ratio(attributedInteractedVisits, attributedVisits);
-  const emptyRefererRatio = sourceLegitimacy.emptyRefererRatio;
+  const emptyRefererRatio = ratio(emptyRefererCount, pv);
   const diagnostics = {
     // 两种互动率均只生成审核信号，绝不自动封禁；历史记录没有 visit_id 时不判定可归因互动率。
     dead_water_low: uv >= 100 && deadWaterInboundUv > 0 && deadWaterInteractionRate < thresholds.min_interaction_rate,
@@ -349,10 +336,7 @@ async function analyzePartner(partnerId, { includeClients = true } = {}) {
     peak_hourly_ratio: ratio(peakHourlyUv, uv), peak_hourly_uv: peakHourlyUv,
     empty_referer: pv > 0 && emptyRefererRatio > thresholds.empty_referer_threshold,
     empty_referer_ratio: emptyRefererRatio,
-    empty_referer_count: sourceLegitimacy.emptyRefererCount,
-    raw_empty_referer_ratio: sourceLegitimacy.rawEmptyRefererRatio,
-    raw_empty_referer_count: sourceLegitimacy.rawEmptyRefererCount,
-    sid_no_referer_count: sourceLegitimacy.sidNoRefererCount,
+    empty_referer_count: emptyRefererCount,
     top_ip_ratio: ratio(maxIpRequests, pv),
     single_ip_concentrated: pv >= 20 && ratio(maxIpRequests, pv) >= SINGLE_IP_RATIO_THRESHOLD,
     pv_uv_anomaly: pvUvRatio > thresholds.pv_uv_ratio_threshold, pv_uv_ratio: pvUvRatio, thresholds
@@ -525,11 +509,4 @@ async function scanAndNotify({ sendAdminAlert } = {}) {
   }
 }
 
-module.exports = {
-  analyzePartner,
-  analyzePartnerClients,
-  dashboardRiskReasons,
-  buildRiskAssessment,
-  calculateSourceLegitimacy,
-  scanAndNotify
-};
+module.exports = { analyzePartner, analyzePartnerClients, dashboardRiskReasons, buildRiskAssessment, scanAndNotify };
