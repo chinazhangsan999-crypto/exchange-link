@@ -96,10 +96,12 @@ if (FRONTEND_PROXY_SECRET && FRONTEND_PROXY_SECRET.length < 32) {
 }
 
 if (CONTROL_CENTER_ENABLED) {
-  if (!/^https:\/\//i.test(CONTROL_CENTER_URL)) {
+  // 地址和凭据也可由后台写入权限 600 的凭据文件；环境变量存在时仍严格校验，
+  // 但不再强迫运维把已经落入安全文件的密钥重复保存在 PM2 环境中。
+  if (CONTROL_CENTER_URL && !/^https:\/\//i.test(CONTROL_CENTER_URL)) {
     throw new Error('启用总后台后，CONTROL_CENTER_URL 必须是 HTTPS 地址。');
   }
-  if (!/^\d+\.[A-Za-z0-9_-]{20,128}$/.test(CONTROL_CENTER_SITE_CREDENTIAL)) {
+  if (CONTROL_CENTER_SITE_CREDENTIAL && !/^\d+\.[A-Za-z0-9_-]{20,128}$/.test(CONTROL_CENTER_SITE_CREDENTIAL)) {
     throw new Error('启用总后台后，必须配置有效的 CONTROL_CENTER_SITE_CREDENTIAL。');
   }
 }
