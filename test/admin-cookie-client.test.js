@@ -20,4 +20,8 @@ test('后台数据模块以 HttpOnly Cookie 会话状态启动加载', () => {
   const html = fs.readFileSync(path.join(directory, 'index.html'), 'utf8');
   assert.doesNotMatch(html, /webring_admin_token|webring_login_source/);
   assert.match(html, /credentials:opt\.credentials\|\|'same-origin'/);
+
+  const integrations = fs.readFileSync(path.join(directory, 'password.js'), 'utf8');
+  assert.match(integrations, /const form = event\.currentTarget;/);
+  assert.doesNotMatch(integrations, /await[^;]+;\s*event\.currentTarget\.elements/s);
 });

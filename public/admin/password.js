@@ -106,8 +106,9 @@
 
   async function saveIpIntelligence(event) {
     event.preventDefault();
-    const button = event.currentTarget.querySelector('button[type="submit"]');
-    try { setBusy(button, true, '保存中…'); await api('/api/admin/integrations/ip-intelligence', { method: 'PUT', body: JSON.stringify(ipPayload(event.currentTarget)) }); event.currentTarget.elements.secret.value = ''; notify('IP 情报接入已保存并即时生效'); await loadIntegrationStatus(); }
+    const form = event.currentTarget;
+    const button = form.querySelector('button[type="submit"]');
+    try { setBusy(button, true, '保存中…'); await api('/api/admin/integrations/ip-intelligence', { method: 'PUT', body: JSON.stringify(ipPayload(form)) }); form.elements.secret.value = ''; notify('IP 情报接入已保存并即时生效'); await loadIntegrationStatus(); }
     catch (error) { notify(error.message); }
     finally { setBusy(button, false); }
   }
