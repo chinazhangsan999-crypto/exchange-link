@@ -15,6 +15,7 @@ const { observeRequestRisk } = require('./middlewares/rateLimit');
 const { acceptTrustedFrontendProxy } = require('./middlewares/frontendProxy');
 const { requireAdminFrontendBoundary } = require('./middlewares/adminBoundary');
 const { publicRouter, adminRouter } = require('./routes');
+const setupRouter = require('./routes/setup');
 const ControlCenterAgentService = require('./services/ControlCenterAgentService');
 const { fail } = require('./utils/http');
 
@@ -60,6 +61,8 @@ app.use(session({
 }));
 
 app.use(observeRequestRisk);
+// 仅在尚未保存中央 Cloudflare 配置时开放的一次性初始化入口；成功后自动返回 404。
+app.use(setupRouter);
 
 // 必须早于原后台路由挂载，否则 /api/admin 的统一鉴权会拦截一次性 SSO 票据兑换。
 app.use('/api/admin/control-center', ControlCenterAgentService.router);

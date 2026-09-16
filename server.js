@@ -15,10 +15,14 @@ const { initializeSiteTrafficTable } = require('./src/models/SiteTrafficModel');
 const { initializePartnerPageViewTable } = require('./src/models/PartnerPageViewModel');
 const { initializeIpProfileTable } = require('./src/models/IpProfileModel');
 const { initializeFrontendOriginTable } = require('./src/models/FrontendOriginModel');
+const { initializeCloudflareFrontendTables } = require('./src/models/CloudflareFrontendModel');
 const SiteTrafficService = require('./src/services/SiteTrafficService');
 const PartnerPageViewService = require('./src/services/PartnerPageViewService');
 const IpIntelligenceService = require('./src/services/IpIntelligenceService');
 const ControlCenterAgentService = require('./src/services/ControlCenterAgentService');
+const CloudflareBootstrapAccessService = require('./src/services/CloudflareBootstrapAccessService');
+const CloudflareBootstrapService = require('./src/services/CloudflareBootstrapService');
+const CloudflarePublicFrontendService = require('./src/services/CloudflarePublicFrontendService');
 const IntegrationStateService = require('./src/services/IntegrationStateService');
 const { startJobs, stopJobs } = require('./src/jobs/cron');
 
@@ -43,11 +47,15 @@ initializeDatabase()
   .then(initializePartnerPageViewTable)
   .then(initializeIpProfileTable)
   .then(initializeFrontendOriginTable)
+  .then(initializeCloudflareFrontendTables)
+  .then(CloudflareBootstrapService.adoptStoredState)
+  .then(CloudflarePublicFrontendService.adoptStoredProfiles)
   .then(initializeSourceTokenTables)
   .then(initializeAdsTable)
   .then(initializeMirrorsTable)
   .then(IntegrationStateService.initialize)
   .then(ControlCenterAgentService.initialize)
+  .then(CloudflareBootstrapAccessService.initialize)
   .then(syncMirrorsToPartners)
   .then(ensureAllPartnersHaveSid)
   .then(() => {

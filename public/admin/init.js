@@ -16,7 +16,7 @@
 
   const hasSession = () => window.adminSessionActive === true;
   const activeKey = 'admin_active_tab';
-  const validTabs = new Set(['dashboard', 'partners', 'logs', 'rejected-logs', 'categories', 'review', 'settings', 'ads', 'mirrors']);
+  const validTabs = new Set(['dashboard', 'partners', 'logs', 'rejected-logs', 'categories', 'review', 'cloudflare', 'settings', 'ads', 'mirrors']);
   const aliases = { links: 'partners', 'inbound-logs': 'logs', 'unentered-logs': 'rejected-logs', audit: 'review' };
   const routes = { partners: 'links', logs: 'inbound-logs', 'rejected-logs': 'unentered-logs', review: 'audit' };
   const toast = message => { const el = document.querySelector('#toast'); if (!el) return; el.textContent = message; el.classList.add('show'); setTimeout(() => el.classList.remove('show'), 2400); };
@@ -96,6 +96,7 @@
       tabs.querySelector('[data-tab="partners"]'),
       tabs.querySelector('[data-tab="ads"]'),
       mirrorLink,
+      document.querySelector('#cloudflare-tab'),
       document.querySelector('#settings-tab'),
       logout
     ].filter(Boolean);
@@ -118,6 +119,7 @@
     if (tab === 'rejected-logs') return window.loadRejectedLogs?.();
     if (tab === 'categories') return window.loadCategories?.();
     if (tab === 'review') return window.fetchPendingCount?.();
+    if (tab === 'cloudflare') return window.loadCloudflareSettings?.();
     if (tab === 'settings') return window.loadAdminSettings?.();
     if (tab === 'ads') return window.loadAdminAds?.();
     if (tab === 'mirrors') return window.loadAdminMirrors?.();
@@ -172,8 +174,8 @@
   if (form) form.onsubmit = async event => { event.preventDefault(); const submit = form.querySelector('button[type="submit"],button:not([type])'); try { if (submit) { submit.disabled = true; submit.textContent = '登录中…'; } await requestLogin(Object.fromEntries(new FormData(form))); await handleLoginSuccess(); } catch (error) { toast(error.message || '登录失败，请稍后重试'); } finally { if (submit) { submit.disabled = false; submit.textContent = '登录管理后台'; } } };
   window.addEventListener('hashchange', () => { const tab = normalizeTab(window.location.hash.replace(/^#/, '')); if (validTabs.has(tab)) window.switchAdminTab(tab, { updateHash: false }); });
   bindTabs();
-  // review.js 在本文件之前创建审核/设置标签；赋予其路由标识并重新统一绑定。
-  document.querySelector('#review-tab')?.setAttribute('data-tab', 'review'); document.querySelector('#settings-tab')?.setAttribute('data-tab', 'settings'); bindTabs();
+  // review.js 在本文件之前创建审核、Cloudflare 与设置标签；赋予其路由标识并重新统一绑定。
+  document.querySelector('#review-tab')?.setAttribute('data-tab', 'review'); document.querySelector('#cloudflare-tab')?.setAttribute('data-tab', 'cloudflare'); document.querySelector('#settings-tab')?.setAttribute('data-tab', 'settings'); bindTabs();
   async function controlCenterStatus() {
     try {
       const response = await fetch('/api/admin/control-center/status', { credentials: 'same-origin' });

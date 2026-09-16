@@ -19,12 +19,16 @@ const AdModel = require('../models/AdsModel');
 const MirrorModel = require('../models/MirrorModel');
 const FrontendOriginModel = require('../models/FrontendOriginModel');
 const SourceTokenModel = require('../models/SourceTokenModel');
+const CloudflareFrontendModel = require('../models/CloudflareFrontendModel');
 const InspectionService = require('../services/InspectionService');
 const PingService = require('../services/PingService');
 const RiskService = require('../services/RiskService');
 const SiteTrafficService = require('../services/SiteTrafficService');
 const CacheService = require('../services/CacheService');
 const FrontendProxyService = require('../services/FrontendProxyService');
+const CloudflareApiEdgeService = require('../services/CloudflareApiEdgeService');
+const CloudflareBootstrapService = require('../services/CloudflareBootstrapService');
+const CloudflarePublicFrontendService = require('../services/CloudflarePublicFrontendService');
 const IntegrationState = require('../services/IntegrationStateService');
 const ControlCenterAgentService = require('../services/ControlCenterAgentService');
 const IpIntelligenceService = require('../services/IpIntelligenceService');
@@ -59,6 +63,13 @@ const ANALYTICS_ENABLED_KEYS = new Set([
 const INSPECTION_JOB_TTL_MS = 30 * 60 * 1000;
 const INSPECTION_JOB_LIMIT = 100;
 const inspectionJobs = new Map();
+
+function auditCloudflare(req, action, targetType, targetId, success, detail = null) {
+  return CloudflareFrontendModel.logAudit({
+    adminUsername: req.admin?.username || null, action, targetType, targetId, success, detail,
+    clientIp: req.ip || null
+  }).catch(error => console.error('写入 Cloudflare 审计日志失败：', error.message));
+}
 
 function cleanupInspectionJobs(now = Date.now()) {
   for (const [jobId, job] of inspectionJobs) {
@@ -382,7 +393,8 @@ async function getFrontendOrigins(req, res) {
     }));
     return ok(res, {
       origins,
-      frontendProxyConfigured: Boolean(FRONTEND_PROXY_SECRET)
+      frontendProxyConfigured: Boolean(FRONTEND_PROXY_SECRET),
+      edgeSync: CloudflareApiEdgeService.publicStatus()
     });
   } catch (error) {
     console.error('读取公共前端域名白名单失败：', error);
@@ -419,12 +431,240 @@ async function saveFrontendOrigins(req, res) {
       });
     }
 
-    const result = await FrontendOriginModel.replaceOrigins([...unique.values()]);
+    const origins = [...unique.values()];
+    // 先同步 Edge，成功后再提交本地可信来源表，避免两层白名单悄悄分叉。
+    // 未配置 Cloudflare 接入时保留原有本地保存能力，并明确回传待配置状态。
+    const edgeSync = await CloudflareApiEdgeService.syncAllowedOrigins(origins);
+    const result = await FrontendOriginModel.replaceOrigins(origins);
     FrontendProxyService.clearAllowedOriginCache();
-    return ok(res, result, '公共前端域名白名单已保存');
+    return ok(res, { ...result, edgeSync }, edgeSync.synchronized
+      ? '公共前端域名白名单已保存并同步到 API Edge'
+      : '公共前端域名白名单已保存；请配置 API Edge 自动同步');
   } catch (error) {
     console.error('保存公共前端域名白名单失败：', error);
     return fail(res, safeApiErrorMessage(error, '保存公共前端域名白名单失败'), 500);
+  }
+}
+
+async function getCloudflareApiEdgeIntegration(req, res) {
+  try { return ok(res, CloudflareApiEdgeService.publicStatus()); }
+  catch { return fail(res, '读取 API Edge 自动同步配置失败', 500); }
+}
+
+async function saveCloudflareApiEdgeIntegration(req, res) {
+  try {
+    const status = await CloudflareApiEdgeService.saveAndVerify(req.body || {});
+    // 保存时立即同步一次当前列表，确认 Token 不只是可读取 Worker，且确实拥有
+    // 后续自动同步所需的写入权限。
+    const edgeSync = await CloudflareApiEdgeService.syncAllowedOrigins(await FrontendOriginModel.listAllOrigins());
+    await CloudflareBootstrapService.verifyConnection({}).catch(error => {
+      console.error('中央 Token 已保存，但完整线路验证未通过：', error.message);
+    });
+    await auditCloudflare(req, 'central_token_update', 'central', status.accountId, true, { workerName: status.workerName });
+    return ok(res, { ...status, edgeSync }, 'API Edge 自动同步已验证、同步并安全保存');
+  } catch (error) {
+    await auditCloudflare(req, 'central_token_update', 'central', req.body?.accountId, false, { error: error.message });
+    console.error('保存 API Edge 自动同步配置失败：', error);
+    return fail(res, '保存失败：请核对 Account ID、Worker 名称和 API Token 权限', 400);
+  }
+}
+
+async function getCloudflareBootstrap(req, res) {
+  try { return ok(res, CloudflareBootstrapService.publicStatus()); }
+  catch { return fail(res, '读取 Cloudflare 首次建站状态失败', 500); }
+}
+
+async function deployCloudflareBootstrap(req, res) {
+  try {
+    const result = await CloudflareBootstrapService.deploy(req.body || {});
+    return ok(res, result, result.note);
+  } catch (error) {
+    console.error(`Cloudflare 首次建站部署失败：${String(error?.message || 'unknown')}`);
+    return fail(res, safeApiErrorMessage(error, '部署失败，请核对域名归属、Token 权限及 Cloudflare 状态'), 400);
+  }
+}
+
+async function getCloudflarePublicFrontendProfiles(req, res) {
+  try { return ok(res, { profiles: await CloudflarePublicFrontendService.listProfiles() }); }
+  catch { return fail(res, '读取公共前台账号配置失败', 500); }
+}
+
+async function saveCloudflarePublicFrontendProfile(req, res) {
+  try {
+    const profile = await CloudflarePublicFrontendService.saveProfile({ ...req.body, id: req.params.id });
+    return ok(res, { profile }, profile.initialization?.error
+      ? '账号已验证并保存；首个 Worker 创建失败，请检查 Token 的 Workers Scripts Write 权限'
+      : '公共前台账号已验证、保存，并已自动创建首个 Worker');
+  } catch (error) {
+    console.error('保存公共前台账号失败：', error);
+    return fail(res, '保存失败：请核对账号、Worker 前缀和 API Token 权限', 400);
+  }
+}
+
+async function createPublicFrontend(req, res) {
+  let frontend = null;
+  let previousOrigins = [];
+  try {
+    const hostname = String(req.body?.hostname || '').trim();
+    if (!hostname) return fail(res, '请填写新前台域名');
+
+    previousOrigins = await FrontendOriginModel.listAllOrigins();
+    frontend = await CloudflarePublicFrontendService.createDedicatedFrontend(hostname);
+    const origin = `https://${frontend.hostname}`;
+    const nextByOrigin = new Map(previousOrigins.map(item => [item.origin, {
+      origin: item.origin,
+      enabled: Number(item.enabled) === 1,
+      expiresAt: item.expires_at || null
+    }]));
+    nextByOrigin.set(origin, { origin, enabled: true, expiresAt: null });
+    const nextOrigins = [...nextByOrigin.values()];
+
+    const edgeSync = await CloudflareApiEdgeService.syncAllowedOrigins(nextOrigins);
+    try {
+      await FrontendOriginModel.replaceOrigins(nextOrigins);
+      FrontendProxyService.clearAllowedOriginCache();
+    } catch (error) {
+      // 本地提交失败时，尽力回滚刚才的 Edge 设置，避免形成未知的半完成状态。
+      await CloudflareApiEdgeService.syncAllowedOrigins(previousOrigins).catch(rollbackError => {
+        console.error('回滚 API Edge 白名单失败：', rollbackError);
+      });
+      throw error;
+    }
+
+    const health = await CloudflarePublicFrontendService.checkHealth(frontend.hostname);
+    await CloudflarePublicFrontendService.finalizeDedicatedFrontend(frontend, health);
+    return ok(res, {
+      hostname: frontend.hostname,
+      url: `https://${frontend.hostname}/`,
+      service: frontend.workerName,
+      zone: frontend.zone,
+      created: true,
+      edgeSync,
+      health,
+      state: health.healthy ? 'ready' : 'provisioning'
+    }, health.healthy ? '新公共前台已创建并通过健康检查' : '域名已创建并加入白名单，正在等待 Cloudflare 证书或路由生效');
+  } catch (error) {
+    if (frontend) {
+      await CloudflarePublicFrontendService.rollbackDedicatedFrontend(frontend, error.message).catch(rollbackError => {
+        console.error('回滚新公共前台域名失败：', rollbackError);
+      });
+    }
+    console.error('创建新公共前台失败：', error);
+    return fail(res, safeApiErrorMessage(error, '创建新公共前台失败'), 400);
+  }
+}
+
+async function getCloudflareOverview(req, res) {
+  try {
+    const [central, profiles, origins, migrations] = await Promise.all([
+      CloudflareBootstrapService.overview(),
+      CloudflarePublicFrontendService.listProfiles(),
+      FrontendOriginModel.listAllOrigins(),
+      CloudflareFrontendModel.listMigrations()
+    ]);
+    const workers = profiles.flatMap(profile => profile.workers.map(worker => ({
+      ...worker, accountProfileId: profile.id, accountLabel: profile.label, accountId: profile.accountId
+    })));
+    return ok(res, { central, accounts: profiles, workers, origins, migrations });
+  } catch (error) {
+    console.error('读取 Cloudflare 管理概览失败：', error);
+    return fail(res, safeApiErrorMessage(error, '读取 Cloudflare 管理概览失败'), 500);
+  }
+}
+
+async function verifyCloudflareCentral(req, res) {
+  try { return ok(res, await CloudflareBootstrapService.verifyConnection(req.body || {}), '中央线路验证通过'); }
+  catch (error) { return fail(res, safeApiErrorMessage(error, '中央线路验证失败'), 400); }
+}
+
+async function redeployCloudflareCentral(req, res) {
+  try { return ok(res, await CloudflareBootstrapService.redeployTarget(req.params.target), '中央 Worker 已重新部署'); }
+  catch (error) { return fail(res, safeApiErrorMessage(error, '中央 Worker 重新部署失败'), 400); }
+}
+
+async function syncCloudflareOrigins(req, res) {
+  try {
+    const result = await CloudflareApiEdgeService.syncAllowedOrigins(await FrontendOriginModel.listAllOrigins());
+    if (!result.synchronized) return fail(res, 'API Edge 尚未配置', 409);
+    return ok(res, result, '全部公共前台白名单已同步');
+  } catch (error) { return fail(res, safeApiErrorMessage(error, '同步前台白名单失败'), 400); }
+}
+
+async function verifyCloudflareFrontendAccount(req, res) {
+  try { return ok(res, await CloudflarePublicFrontendService.verifyAccount(req.params.id), 'Cloudflare 账号验证通过'); }
+  catch (error) { return fail(res, safeApiErrorMessage(error, 'Cloudflare 账号验证失败'), 400); }
+}
+
+async function updateCloudflareFrontendAccountToken(req, res) {
+  try {
+    const apiToken = String(req.body?.apiToken || '');
+    if (!apiToken) return fail(res, '请填写新的 Cloudflare API Token');
+    const profile = await CloudflarePublicFrontendService.updateAccountToken(req.params.id, apiToken);
+    await auditCloudflare(req, 'account_token_update', 'account', req.params.id, true);
+    return ok(res, { profile }, 'Token 已验证并替换；Account ID 保持不变');
+  } catch (error) { await auditCloudflare(req, 'account_token_update', 'account', req.params.id, false, { error: error.message }); return fail(res, safeApiErrorMessage(error, 'Token 更新失败，原 Token 已保留'), 400); }
+}
+
+async function reconcileCloudflareFrontendAccount(req, res) {
+  try { return ok(res, await CloudflarePublicFrontendService.reconcileAccount(req.params.id), 'Cloudflare 远端资源对账完成'); }
+  catch (error) { return fail(res, safeApiErrorMessage(error, 'Cloudflare 资源对账失败'), 400); }
+}
+
+async function updateCloudflareFrontendAccountAllocation(req, res) {
+  try {
+    const enabled = req.body?.enabled === true || Number(req.body?.enabled) === 1;
+    return ok(res, await CloudflarePublicFrontendService.setAccountAllocation(req.params.id, enabled), enabled ? '账号已恢复分配' : '账号已停止分配新前台');
+  } catch (error) { return fail(res, safeApiErrorMessage(error, '更新账号分配状态失败'), 400); }
+}
+
+async function healthCloudflareFrontend(req, res) {
+  try { return ok(res, await CloudflarePublicFrontendService.healthCheckWorker(Number(req.params.id)), '前台健康检查完成'); }
+  catch (error) { return fail(res, safeApiErrorMessage(error, '前台健康检查失败'), 400); }
+}
+
+async function redeployCloudflareFrontend(req, res) {
+  try { return ok(res, await CloudflarePublicFrontendService.redeployWorker(Number(req.params.id)), '前台 Worker 已重新部署'); }
+  catch (error) { return fail(res, safeApiErrorMessage(error, '前台 Worker 重新部署失败'), 400); }
+}
+
+async function prepareCloudflareMigration(req, res) {
+  try { const result = await CloudflarePublicFrontendService.prepareMigration(req.body || {}); await auditCloudflare(req, 'migration_prepare', 'migration', result.migrationId, true, { hostname: result.hostname }); return ok(res, result, '目标账号 Worker 已准备，旧站未改动'); }
+  catch (error) { await auditCloudflare(req, 'migration_prepare', 'migration', null, false, { error: error.message }); return fail(res, safeApiErrorMessage(error, '准备迁移失败'), 400); }
+}
+
+async function cutoverCloudflareMigration(req, res) {
+  try {
+    const result = await CloudflarePublicFrontendService.cutoverMigration(Number(req.params.id));
+    await CloudflareApiEdgeService.syncAllowedOrigins(await FrontendOriginModel.listAllOrigins());
+    await auditCloudflare(req, 'migration_cutover', 'migration', req.params.id, true, { hostname: result.hostname });
+    return ok(res, result, '新账号域名已切换，旧 Worker 资源继续保留');
+  } catch (error) { await auditCloudflare(req, 'migration_cutover', 'migration', req.params.id, false, { error: error.message }); return fail(res, safeApiErrorMessage(error, '迁移切换失败'), 400); }
+}
+
+async function rollbackCloudflareMigration(req, res) {
+  try { const result = await CloudflarePublicFrontendService.rollbackMigration(Number(req.params.id)); await auditCloudflare(req, 'migration_rollback', 'migration', req.params.id, true); return ok(res, result, '未切换的新 Worker 已回滚，旧站不受影响'); }
+  catch (error) { await auditCloudflare(req, 'migration_rollback', 'migration', req.params.id, false, { error: error.message }); return fail(res, safeApiErrorMessage(error, '迁移回滚失败'), 400); }
+}
+
+async function completeCloudflareMigration(req, res) {
+  try { const result = await CloudflarePublicFrontendService.completeMigration(Number(req.params.id)); await auditCloudflare(req, 'migration_complete', 'migration', req.params.id, true); return ok(res, result, '迁移已完成，旧资源保持保留'); }
+  catch (error) { await auditCloudflare(req, 'migration_complete', 'migration', req.params.id, false, { error: error.message }); return fail(res, safeApiErrorMessage(error, '完成迁移失败'), 400); }
+}
+
+async function deleteCloudflareRemoteFrontend(req, res) {
+  try {
+    const password = String(req.body?.password || ''), confirmHostname = String(req.body?.confirmHostname || '').trim().toLowerCase();
+    const worker = await CloudflareFrontendModel.getWorker(Number(req.params.id));
+    if (!worker) return fail(res, '前台 Worker 不存在', 404);
+    if (!worker.hostname || confirmHostname !== String(worker.hostname).toLowerCase()) return fail(res, '必须输入完整前台域名确认', 400);
+    const admin = await SystemModel.getAdminByUsername(req.admin.username, 'password');
+    if (!admin || !password || !(await bcrypt.compare(password, admin.password_hash))) return fail(res, '管理员密码不正确', 403);
+    const result = await CloudflarePublicFrontendService.deleteRemoteWorker(Number(req.params.id));
+    await auditCloudflare(req, 'remote_worker_delete', 'worker', req.params.id, true, { hostname: worker.hostname });
+    return ok(res, result, '远端 Worker 已删除；本地审计记录仍保留');
+  } catch (error) {
+    await auditCloudflare(req, 'remote_worker_delete', 'worker', req.params.id, false, { error: error.message });
+    return fail(res, safeApiErrorMessage(error, '删除远端 Worker 失败'), 400);
   }
 }
 
@@ -1900,6 +2140,28 @@ module.exports = {
   getRiskControlSettings,
   getFrontendOrigins,
   saveFrontendOrigins,
+  getCloudflareApiEdgeIntegration,
+  saveCloudflareApiEdgeIntegration,
+  getCloudflareBootstrap,
+  deployCloudflareBootstrap,
+  getCloudflarePublicFrontendProfiles,
+  saveCloudflarePublicFrontendProfile,
+  createPublicFrontend,
+  getCloudflareOverview,
+  verifyCloudflareCentral,
+  redeployCloudflareCentral,
+  syncCloudflareOrigins,
+  verifyCloudflareFrontendAccount,
+  updateCloudflareFrontendAccountToken,
+  reconcileCloudflareFrontendAccount,
+  updateCloudflareFrontendAccountAllocation,
+  healthCloudflareFrontend,
+  redeployCloudflareFrontend,
+  prepareCloudflareMigration,
+  cutoverCloudflareMigration,
+  rollbackCloudflareMigration,
+  completeCloudflareMigration,
+  deleteCloudflareRemoteFrontend,
   saveSettings,
   uploadSiteLogo,
   testWebhook,

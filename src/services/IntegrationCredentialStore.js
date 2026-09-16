@@ -22,7 +22,10 @@ function resolveCredentialPath(configuredPath, fallbackName) {
 
 const paths = {
   controlCenter: resolveCredentialPath(CONTROL_CENTER_CREDENTIAL_FILE, 'control-center-site.json'),
-  ipIntelligence: resolveCredentialPath(IP_INTELLIGENCE_CREDENTIAL_FILE, 'ip-intelligence.json')
+  ipIntelligence: resolveCredentialPath(IP_INTELLIGENCE_CREDENTIAL_FILE, 'ip-intelligence.json'),
+  // Cloudflare API Token 仅用于把后台维护的前端 Origin 同步到 API Edge Worker。
+  // 与其他外部接入凭据一致，生产环境保存在权限 600 的独立文件中，而非 SQLite。
+  cloudflareApiEdge: resolveCredentialPath('', 'cloudflare-api-edge.json')
 };
 
 function readJson(file) {
@@ -59,6 +62,32 @@ function ipIntelligenceConfig() {
   };
 }
 
+function cloudflareApiEdgeConfig() {
+  const stored = readJson(paths.cloudflareApiEdge) || {};
+  return {
+    accountId: String(stored.account_id || stored.accountId || '').trim(),
+    workerName: String(stored.worker_name || stored.workerName || '').trim(),
+    apiToken: String(stored.api_token || stored.apiToken || '').trim()
+  };
+}
+
+function cloudflareBootstrapConfig() {
+  const stored = readJson(paths.cloudflareApiEdge) || {};
+  const bootstrap = stored.bootstrap || {};
+  return {
+    originUrl: String(bootstrap.origin_url || bootstrap.originUrl || '').trim().replace(/\/$/, ''),
+    apiDomain: String(bootstrap.api_domain || bootstrap.apiDomain || '').trim().toLowerCase(),
+    apiWorkerName: String(bootstrap.api_worker_name || bootstrap.apiWorkerName || '').trim(),
+    adminDomain: String(bootstrap.admin_domain || bootstrap.adminDomain || '').trim().toLowerCase(),
+    adminWorkerName: String(bootstrap.admin_worker_name || bootstrap.adminWorkerName || '').trim()
+  };
+}
+
+function cloudflarePublicFrontendProfiles() {
+  const stored = readJson(paths.cloudflareApiEdge) || {};
+  return Array.isArray(stored.public_frontend_profiles) ? stored.public_frontend_profiles : [];
+}
+
 async function saveControlCenter(config) {
   await writeJsonAtomic(paths.controlCenter, { url: config.url, credential: config.credential });
 }
@@ -72,10 +101,48 @@ async function saveIpIntelligence(config) {
   });
 }
 
+async function saveCloudflareApiEdge(config) {
+  const stored = readJson(paths.cloudflareApiEdge) || {};
+  await writeJsonAtomic(paths.cloudflareApiEdge, {
+    ...stored,
+    account_id: config.accountId,
+    worker_name: config.workerName,
+    api_token: config.apiToken
+  });
+}
+
+async function saveCloudflareBootstrap(config) {
+  const stored = readJson(paths.cloudflareApiEdge) || {};
+  await writeJsonAtomic(paths.cloudflareApiEdge, {
+    ...stored,
+    bootstrap: {
+      origin_url: config.originUrl,
+      api_domain: config.apiDomain,
+      api_worker_name: config.apiWorkerName,
+      admin_domain: config.adminDomain,
+      admin_worker_name: config.adminWorkerName
+    }
+  });
+}
+
+async function saveCloudflarePublicFrontendProfiles(profiles) {
+  const stored = readJson(paths.cloudflareApiEdge) || {};
+  await writeJsonAtomic(paths.cloudflareApiEdge, {
+    ...stored,
+    public_frontend_profiles: profiles
+  });
+}
+
 module.exports = {
   paths,
   controlCenterConfig,
   ipIntelligenceConfig,
+  cloudflareApiEdgeConfig,
+  cloudflareBootstrapConfig,
+  cloudflarePublicFrontendProfiles,
   saveControlCenter,
-  saveIpIntelligence
+  saveIpIntelligence,
+  saveCloudflareApiEdge,
+  saveCloudflareBootstrap,
+  saveCloudflarePublicFrontendProfiles
 };

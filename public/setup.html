@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>首次建站初始化</title>
+  <style>
+    :root{color-scheme:light;--bg:#f4f7ff;--surface:#fff;--text:#14213d;--muted:#60708f;--line:#dce4f3;--primary:#315bea;--danger:#b42318;--success:#067647}*{box-sizing:border-box}body{margin:0;min-height:100dvh;background:linear-gradient(145deg,#eef3ff,#fbfcff 55%,#edf7ff);color:var(--text);font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}.shell{width:min(820px,calc(100% - 32px));margin:48px auto;padding:32px;background:var(--surface);border:1px solid var(--line);border-radius:20px;box-shadow:0 18px 50px rgba(44,68,130,.12)}h1{margin:0 0 8px;font-size:clamp(26px,5vw,36px)}.lead{margin:0 0 24px;color:var(--muted)}.notice{padding:14px 16px;border-radius:12px;background:#eef5ff;border:1px solid #cbdafa;color:#274377}.form-section{margin:24px 0 0;padding:22px;border:1px solid var(--line);border-radius:14px;display:grid;grid-template-columns:1fr 1fr;gap:18px}.form-section legend{padding:0 9px;font-size:18px;font-weight:750}.form-section[hidden]{display:none}label{display:grid;gap:7px;font-weight:650}.wide{grid-column:1/-1}.check-line{display:flex;align-items:flex-start;gap:10px}.check-line input{width:20px;min-height:20px;margin:3px 0 0;flex:0 0 auto}small{display:block;color:var(--muted);font-weight:400}input{width:100%;min-height:48px;padding:11px 13px;border:1px solid #bfcbe0;border-radius:10px;background:#fff;color:var(--text);font:inherit}input:focus{outline:3px solid rgba(49,91,234,.2);border-color:var(--primary)}button{width:100%;min-height:50px;margin-top:24px;padding:12px 20px;border:0;border-radius:11px;background:var(--primary);color:#fff;font:700 16px/1.2 inherit;cursor:pointer}button:disabled{cursor:wait;opacity:.48}.status{min-height:28px;margin:18px 0 0;color:var(--muted);overflow-wrap:anywhere}.status.error{color:var(--danger)}.status.success{color:var(--success)}.result-links{display:flex;flex-wrap:wrap;gap:16px}.result-link{display:inline-block;margin-top:10px;color:var(--primary);font-weight:700}@media(max-width:640px){.shell{margin:16px auto;padding:22px}.form-section{grid-template-columns:1fr;padding:18px}.wide{grid-column:auto}}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <h1>首次建站初始化</h1>
+    <p class="lead">一次完成中央 API Worker、后台 Worker 和第一个独立公共前台 Worker。</p>
+    <p class="notice">无需初始化码。只有整套部署全部完成后，此页面才会永久关闭；中途失败可直接修正并重试。</p>
+    <form id="setup-form">
+      <fieldset class="form-section">
+        <legend>中央 API 与管理后台</legend>
+        <label>Cloudflare Account ID<input name="accountId" autocomplete="off" required></label>
+        <label>Cloudflare API Token<input name="apiToken" type="password" autocomplete="new-password" required></label>
+        <label class="wide">源站地址<input name="originUrl" type="url" value="https://origin-link.chinazhangsan.ccwu.cc" required><small>填写 Caddy 对外的 HTTPS 源站，不是公共前台地址。</small></label>
+        <label>API 域名<input name="apiDomain" value="api-link.chinazhangsan.ccwu.cc" required></label>
+        <label>API Worker 名称<input name="apiWorkerName" value="webring-api-test" required></label>
+        <label>后台域名<input name="adminDomain" value="houtai.chinazhangsan.ccwu.cc" required></label>
+        <label>后台 Worker 名称<input name="adminWorkerName" value="webring-admin-edge" required></label>
+      </fieldset>
+      <fieldset class="form-section">
+        <legend>第一个公共前台</legend>
+        <label class="wide">前台域名<input name="frontendHostname" placeholder="例如：www.example.com" required><small>必须是 Cloudflare 账号中处于 Active 状态根域名下的子域名。</small></label>
+        <label>前台 Worker 前缀<input name="frontendWorkerPrefix" value="webring-public" required></label>
+        <label>账号配置标识<input name="frontendProfileId" value="cf-first" required></label>
+        <label class="wide">账号显示名称<input name="frontendLabel" value="首次前台账号" required></label>
+        <label class="wide check-line"><input id="same-account" name="sameCloudflareAccount" type="checkbox" value="true" checked><span>公共前台使用上方同一个 Cloudflare 账号<small>如果前台根域名位于另一个账号，请取消勾选并填写该账号凭据。</small></span></label>
+      </fieldset>
+      <fieldset id="frontend-account-fields" class="form-section" hidden>
+        <legend>公共前台的 Cloudflare 账号</legend>
+        <label>Cloudflare Account ID<input name="frontendAccountId" autocomplete="off"></label>
+        <label>Cloudflare API Token<input name="frontendApiToken" type="password" autocomplete="new-password"></label>
+      </fieldset>
+      <button id="deploy-button" type="submit">创建整套站点</button>
+    </form>
+    <p id="setup-status" class="status" role="status" aria-live="polite">正在确认初始化入口状态…</p>
+    <div id="setup-result"></div>
+  </main>
+  <script src="/setup/client.js" defer></script>
+</body>
+</html>
