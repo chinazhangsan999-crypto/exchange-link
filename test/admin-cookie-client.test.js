@@ -33,6 +33,10 @@ test('后台数据模块以 HttpOnly Cookie 会话状态启动加载', () => {
   assert.match(review, /cloudflare-central-summary/);
   assert.match(review, /cloudflare-account-body/);
   assert.match(review, /cloudflare-worker-body/);
+  assert.match(review, /cloudflare-central-access-form/);
+  assert.match(review, /cloudflare-bootstrap\/adopt/);
+  assert.doesNotMatch(review, /id="api-edge-sync-form"/);
+  assert.doesNotMatch(review, /id="cloudflare-bootstrap-form"/);
   assert.match(review, /settings\.append\(analytics, matrix\)/);
   assert.match(review, /window\.loadCloudflareSettings = loadCloudflareSettings/);
   assert.doesNotMatch(review, /loadAllSettings\(\)[^{]+\{[^}]+loadFrontendOrigins/s);

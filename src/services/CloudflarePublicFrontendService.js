@@ -50,12 +50,23 @@ function normalizeProfile(input = {}, existing = {}) {
   return { id, label, accountId, workerPrefix, apiToken };
 }
 
+function resolveProfileCredential(profile) {
+  if (profile?.credentialSource !== 'central') return profile;
+  const central = CredentialStore.cloudflareApiEdgeConfig();
+  return { ...profile, accountId: central.accountId, apiToken: central.apiToken };
+}
+
+function runtimeProfiles() {
+  return CredentialStore.cloudflarePublicFrontendProfiles().map(resolveProfileCredential);
+}
+
 function publicProfile(profile, account = null, workers = []) {
   return {
     id: profile.id,
     label: profile.label,
     accountId: profile.accountId,
     workerPrefix: profile.workerPrefix || profile.workerName || '',
+    credentialSource: profile.credentialSource || 'account',
     apiTokenConfigured: Boolean(profile.apiToken),
     tokenFingerprint: account?.token_fingerprint || (profile.apiToken ? tokenFingerprint(profile.apiToken) : null),
     tokenStatus: account?.token_status || 'unverified',
@@ -87,11 +98,11 @@ function publicProfile(profile, account = null, workers = []) {
 async function listProfiles() {
   const [accounts, workers] = await Promise.all([CloudflareFrontendModel.listAccounts(), CloudflareFrontendModel.listWorkers()]);
   const accountMap = new Map(accounts.map(account => [account.id, account]));
-  return CredentialStore.cloudflarePublicFrontendProfiles().map(profile => publicProfile(profile, accountMap.get(profile.id), workers));
+  return runtimeProfiles().map(profile => publicProfile(profile, accountMap.get(profile.id), workers));
 }
 
 async function adoptStoredProfiles() {
-  for (const [index, profile] of CredentialStore.cloudflarePublicFrontendProfiles().entries()) {
+  for (const [index, profile] of runtimeProfiles().entries()) {
     if (await CloudflareFrontendModel.getAccount(profile.id)) continue;
     await CloudflareFrontendModel.upsertAccount({
       ...profile, tokenFingerprint: tokenFingerprint(profile.apiToken), tokenStatus: 'unverified',
@@ -139,7 +150,7 @@ async function verifyProfile(profile) {
 }
 
 function findProfile(id) {
-  const profile = CredentialStore.cloudflarePublicFrontendProfiles().find(item => item.id === id);
+  const profile = runtimeProfiles().find(item => item.id === id);
   if (!profile) throw new Error('公共前台 Cloudflare 账号不存在');
   return profile;
 }
@@ -233,8 +244,15 @@ async function initializeProfile(profile) {
 
 async function saveProfile(input = {}, options = {}) {
   const profiles = CredentialStore.cloudflarePublicFrontendProfiles();
-  const existing = profiles.find(profile => profile.id === String(input.id || '').trim().toLowerCase()) || {};
-  const profile = normalizeProfile(input, existing);
+  const storedExisting = profiles.find(profile => profile.id === String(input.id || '').trim().toLowerCase()) || {};
+  const existing = resolveProfileCredential(storedExisting);
+  let profileInput = input;
+  if (input.reuseCentralCredential === true) {
+    const central = CredentialStore.cloudflareApiEdgeConfig();
+    if (!central.accountId || !central.apiToken) throw new Error('中央 Cloudflare 凭据尚未配置，无法复用');
+    profileInput = { ...input, accountId: central.accountId, apiToken: central.apiToken };
+  }
+  const profile = normalizeProfile(profileInput, existing);
   const storedAccount = await CloudflareFrontendModel.getAccount(profile.id);
   if (storedAccount && storedAccount.account_id !== profile.accountId) {
     const hasWorkers = (await CloudflareFrontendModel.listWorkers()).some(worker => worker.account_profile_id === profile.id);
@@ -242,7 +260,9 @@ async function saveProfile(input = {}, options = {}) {
   }
   const activeZones = await verifyProfile(profile);
   const next = profiles.filter(item => item.id !== profile.id);
-  next.push(profile);
+  next.push(input.reuseCentralCredential === true
+    ? { ...profile, apiToken: '', credentialSource: 'central' }
+    : { ...profile, credentialSource: 'account' });
   await CredentialStore.saveCloudflarePublicFrontendProfiles(next);
   let upserted;
   try {
@@ -266,7 +286,7 @@ async function saveProfile(input = {}, options = {}) {
 }
 
 async function resolveProfileForHostname(hostname, preferredProfileId = null) {
-  const profiles = CredentialStore.cloudflarePublicFrontendProfiles();
+  const profiles = runtimeProfiles();
   const candidates = [];
   for (const profile of profiles) {
     if (preferredProfileId && profile.id !== preferredProfileId) continue;

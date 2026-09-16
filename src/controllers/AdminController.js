@@ -484,6 +484,22 @@ async function deployCloudflareBootstrap(req, res) {
   }
 }
 
+async function adoptCloudflareBootstrap(req, res) {
+  try {
+    const result = await CloudflareBootstrapService.adopt(req.body || {});
+    const edgeSync = await CloudflareApiEdgeService.syncAllowedOrigins(await FrontendOriginModel.listAllOrigins());
+    await auditCloudflare(req, 'central_adopt', 'central', result.accountId, true, {
+      apiWorkerName: result.apiWorkerName,
+      adminWorkerName: result.adminWorkerName
+    });
+    return ok(res, { ...result, edgeSync }, '现有 API 与后台 Worker 已验证并接管');
+  } catch (error) {
+    await auditCloudflare(req, 'central_adopt', 'central', req.body?.accountId, false, { error: error.message });
+    console.error(`Cloudflare 现有中央线路接管失败：${String(error?.message || 'unknown')}`);
+    return fail(res, safeApiErrorMessage(error, '接管失败，请核对账号、Token、域名和 Worker 绑定'), 400);
+  }
+}
+
 async function getCloudflarePublicFrontendProfiles(req, res) {
   try { return ok(res, { profiles: await CloudflarePublicFrontendService.listProfiles() }); }
   catch { return fail(res, '读取公共前台账号配置失败', 500); }
@@ -2144,6 +2160,7 @@ module.exports = {
   saveCloudflareApiEdgeIntegration,
   getCloudflareBootstrap,
   deployCloudflareBootstrap,
+  adoptCloudflareBootstrap,
   getCloudflarePublicFrontendProfiles,
   saveCloudflarePublicFrontendProfile,
   createPublicFrontend,

@@ -26,6 +26,10 @@ test('网页向导在服务端部署 API 与后台 Worker，且不回传 Cloudfl
   CredentialStore.cloudflareBootstrapConfig = () => bootstrap;
   CredentialStore.saveCloudflareApiEdge = async value => { edge = { ...value }; };
   CredentialStore.saveCloudflareBootstrap = async value => { bootstrap = { ...value }; };
+  CredentialStore.saveCloudflareCentral = async value => {
+    edge = { accountId: value.accountId, workerName: value.apiWorkerName, apiToken: value.apiToken };
+    bootstrap = { originUrl: value.originUrl, apiDomain: value.apiDomain, apiWorkerName: value.apiWorkerName, adminDomain: value.adminDomain, adminWorkerName: value.adminWorkerName };
+  };
   FrontendOriginModel.listAllOrigins = async () => [
     { origin: 'https://front-a.example.com', enabled: 1 },
     { origin: 'https://disabled.example.com', enabled: 0 }
@@ -38,7 +42,10 @@ test('网页向导在服务端部署 API 与后台 Worker，且不回传 Cloudfl
     if (!String(url).startsWith('https://api.cloudflare.com/')) return new Response('', { status: 200 });
     let result = {};
     if (String(url).includes('/zones?')) result = [{ name: 'example.com' }];
-    if (String(url).endsWith('/workers/domains') && (options.method || 'GET') === 'GET') result = [];
+    if (String(url).endsWith('/workers/domains') && (options.method || 'GET') === 'GET') result = [
+      { hostname: 'api.example.com', service: 'api-worker' },
+      { hostname: 'admin.example.com', service: 'admin-worker' }
+    ];
     return new Response(JSON.stringify({ success: true, result }), {
       status: 200,
       headers: { 'Content-Type': 'application/json' }
@@ -68,6 +75,19 @@ test('网页向导在服务端部署 API 与后台 Worker，且不回传 Cloudfl
     assert.equal(calls.filter(call => call.method === 'PUT' && call.url.endsWith('/workers/domains')).length, 2);
     assert.equal(edge.workerName, 'api-worker');
     assert.equal(bootstrap.adminWorkerName, 'admin-worker');
+
+    const scriptWritesBeforeAdopt = calls.filter(call => call.method === 'PUT' && /workers\/scripts\/(api-worker|admin-worker)$/.test(call.url)).length;
+    const adopted = await service.adopt({
+      accountId: 'a'.repeat(32),
+      apiToken: 'token-012345678901234567890123456789',
+      originUrl: 'https://origin.example.com',
+      apiDomain: 'api.example.com',
+      apiWorkerName: 'api-worker',
+      adminDomain: 'admin.example.com',
+      adminWorkerName: 'admin-worker'
+    });
+    assert.equal(adopted.adopted, true);
+    assert.equal(calls.filter(call => call.method === 'PUT' && /workers\/scripts\/(api-worker|admin-worker)$/.test(call.url)).length, scriptWritesBeforeAdopt);
   } finally {
     global.fetch = originalFetch;
   }

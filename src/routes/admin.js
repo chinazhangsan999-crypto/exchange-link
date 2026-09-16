@@ -35,6 +35,7 @@ router.get('/api/admin/integrations/cloudflare-api-edge', AdminController.getClo
 router.put('/api/admin/integrations/cloudflare-api-edge', AdminController.saveCloudflareApiEdgeIntegration);
 router.get('/api/admin/integrations/cloudflare-bootstrap', AdminController.getCloudflareBootstrap);
 router.post('/api/admin/integrations/cloudflare-bootstrap/deploy', AdminController.deployCloudflareBootstrap);
+router.post('/api/admin/integrations/cloudflare-bootstrap/adopt', AdminController.adoptCloudflareBootstrap);
 router.get('/api/admin/integrations/cloudflare-public-frontends', AdminController.getCloudflarePublicFrontendProfiles);
 router.put('/api/admin/integrations/cloudflare-public-frontends/:id', AdminController.saveCloudflarePublicFrontendProfile);
 router.post('/api/admin/public-frontends', AdminController.createPublicFrontend);

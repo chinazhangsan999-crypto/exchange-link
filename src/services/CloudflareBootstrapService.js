@@ -161,6 +161,16 @@ async function ensureDomainAvailable(config, hostname, workerName) {
   }
 }
 
+async function assertExistingWorkerDomain(config, hostname, workerName, domains) {
+  await request(config, 'GET', `/accounts/${encodeURIComponent(config.accountId)}/workers/scripts/${encodeURIComponent(workerName)}/settings`);
+  const current = domains.find(item => String(item.hostname || '').toLowerCase() === hostname);
+  const currentService = String(current?.service || current?.script || '');
+  if (!current) throw new Error(`${hostname} 尚未绑定 Cloudflare Worker`);
+  if (currentService !== workerName) {
+    throw new Error(`${hostname} 当前绑定的是 ${currentService || '未知 Worker'}，与填写的 ${workerName} 不一致`);
+  }
+}
+
 async function uploadWorker(config, workerName, sourceFile, bindings) {
   const source = await fs.promises.readFile(sourceFile, 'utf8');
   const metadata = { main_module: 'worker.js', compatibility_date: '2026-09-14', bindings };
@@ -228,8 +238,7 @@ async function deploy(input = {}) {
   await attachDomain(config, config.adminDomain, config.adminWorkerName, adminZone);
   steps.push({ key: 'admin_domain', label: '后台自定义域名', ok: true });
 
-  await CredentialStore.saveCloudflareApiEdge({ accountId: config.accountId, workerName: config.apiWorkerName, apiToken: config.apiToken });
-  await CredentialStore.saveCloudflareBootstrap(config);
+  await CredentialStore.saveCloudflareCentral(config);
   const [apiHealth, adminHealth] = await Promise.all([
     checkUrl(`https://${config.apiDomain}/api/health`),
     checkUrl(`https://${config.adminDomain}/admin`)
@@ -247,6 +256,41 @@ async function deploy(input = {}) {
     adminHealth,
     note: apiHealth.reachable && adminHealth.reachable ? '两个入口已可访问' : '部署已完成，DNS 或证书可能仍在生效'
   };
+}
+
+async function adopt(input = {}) {
+  await ensureModelReady();
+  const config = normalizeInput(input);
+  const existingEdge = CredentialStore.cloudflareApiEdgeConfig();
+  if (existingEdge.accountId && config.accountId !== existingEdge.accountId) {
+    throw new Error('中央线路 Account ID 已锁定；不能通过接管操作覆盖现有账号');
+  }
+
+  await request(config, 'GET', '/user/tokens/verify');
+  const [zones, domains] = await Promise.all([
+    listZones(config),
+    request(config, 'GET', `/accounts/${encodeURIComponent(config.accountId)}/workers/domains`)
+  ]);
+  if (!zoneForHostname(config.apiDomain, zones)) throw new Error(`API 域名 ${config.apiDomain} 不属于此账号的 Active Zone`);
+  if (!zoneForHostname(config.adminDomain, zones)) throw new Error(`后台域名 ${config.adminDomain} 不属于此账号的 Active Zone`);
+  const domainRows = Array.isArray(domains) ? domains : [];
+  await Promise.all([
+    assertExistingWorkerDomain(config, config.apiDomain, config.apiWorkerName, domainRows),
+    assertExistingWorkerDomain(config, config.adminDomain, config.adminWorkerName, domainRows)
+  ]);
+
+  await CredentialStore.saveCloudflareCentral(config);
+  const [apiHealth, adminHealth] = await Promise.all([
+    checkUrl(`https://${config.apiDomain}/api/health`),
+    checkUrl(`https://${config.adminDomain}/admin`)
+  ]);
+  await CloudflareFrontendModel.saveCentralState({
+    accountId: config.accountId, apiWorkerName: config.apiWorkerName, apiDomain: config.apiDomain,
+    adminWorkerName: config.adminWorkerName, adminDomain: config.adminDomain, originUrl: config.originUrl,
+    tokenFingerprint: tokenFingerprint(config.apiToken), tokenStatus: 'valid',
+    apiHealth, adminHealth, verified: true, deployed: true
+  });
+  return { ...publicStatus(), adopted: true, apiHealth, adminHealth };
 }
 
 async function verifyConnection(input = {}) {
@@ -310,4 +354,4 @@ async function redeployTarget(target) {
   return { target, ...checked };
 }
 
-module.exports = { publicStatus, overview, adoptStoredState, normalizeInput, deploy, verifyConnection, redeployTarget };
+module.exports = { publicStatus, overview, adoptStoredState, normalizeInput, deploy, adopt, verifyConnection, redeployTarget };

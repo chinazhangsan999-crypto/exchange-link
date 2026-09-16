@@ -125,6 +125,23 @@ async function saveCloudflareBootstrap(config) {
   });
 }
 
+async function saveCloudflareCentral(config) {
+  const stored = readJson(paths.cloudflareApiEdge) || {};
+  await writeJsonAtomic(paths.cloudflareApiEdge, {
+    ...stored,
+    account_id: config.accountId,
+    worker_name: config.apiWorkerName,
+    api_token: config.apiToken,
+    bootstrap: {
+      origin_url: config.originUrl,
+      api_domain: config.apiDomain,
+      api_worker_name: config.apiWorkerName,
+      admin_domain: config.adminDomain,
+      admin_worker_name: config.adminWorkerName
+    }
+  });
+}
+
 async function saveCloudflarePublicFrontendProfiles(profiles) {
   const stored = readJson(paths.cloudflareApiEdge) || {};
   await writeJsonAtomic(paths.cloudflareApiEdge, {
@@ -144,5 +161,6 @@ module.exports = {
   saveIpIntelligence,
   saveCloudflareApiEdge,
   saveCloudflareBootstrap,
+  saveCloudflareCentral,
   saveCloudflarePublicFrontendProfiles
 };
