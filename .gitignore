@@ -3,7 +3,6 @@ node_modules/
 
 # Runtime databases and SQLite sidecar files
 *.db
-!webring.db
 *.db-shm
 *.db-wal
 *.sqlite

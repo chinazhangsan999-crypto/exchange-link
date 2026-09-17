@@ -469,25 +469,6 @@ async function initializeDatabase() {
   await run('CREATE INDEX IF NOT EXISTS idx_webhook_delivery_created ON webhook_delivery_logs(created_at DESC)');
   await run('CREATE INDEX IF NOT EXISTS idx_webhook_delivery_provider_success_time ON webhook_delivery_logs(provider, success, created_at DESC)');
 
-  const existing = await get('SELECT COUNT(*) AS count FROM partners');
-  if (existing.count === 0) {
-    const categories = ['常用推荐', '常用网站', '学术与科研', 'AI工具'];
-    for (let index = 0; index < categories.length; index += 1) {
-      await run('INSERT INTO categories(name, sort_order) VALUES(?, ?)', [categories[index], index]);
-    }
-    const samples = [
-      ['GitHub', 'github.com', 'https://github.com', '常用推荐'],
-      ['哔哩哔哩', 'bilibili.com', 'https://www.bilibili.com', '常用网站'],
-      ['Google Scholar', 'scholar.google.com', 'https://scholar.google.com', '学术与科研'],
-      ['OpenAI', 'openai.com', 'https://openai.com', 'AI工具'],
-      ['arXiv', 'arxiv.org', 'https://arxiv.org', '学术与科研'],
-      ['Hugging Face', 'huggingface.co', 'https://huggingface.co', 'AI工具']
-    ];
-    for (const sample of samples) {
-      await run('INSERT INTO partners(name, domain, url, category, is_approved) VALUES (?, ?, ?, ?, 1)', sample);
-    }
-  }
-
   const initialPassword = INITIAL_ADMIN_PASSWORD || 'admin123';
   const adminCount = await get('SELECT COUNT(*) AS count FROM admins');
   if (Number(adminCount.count) === 0) {
