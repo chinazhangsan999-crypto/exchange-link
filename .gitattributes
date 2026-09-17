@@ -3,3 +3,11 @@ webring.db export-ignore
 *.db-shm export-ignore
 *.db-wal export-ignore
 .playwright-cli/ export-ignore
+
+# Linux 运维文件必须保持 LF，否则 systemd / bash 会把 CR 当作参数内容。
+*.sh text eol=lf
+*.service text eol=lf
+*.timer text eol=lf
+*.caddy text eol=lf
+ops/Caddyfile text eol=lf
+ops/webring-cloudflare-ip-sync text eol=lf
