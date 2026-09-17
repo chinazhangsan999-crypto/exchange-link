@@ -93,6 +93,18 @@ test('API 服务仅接受可信边缘请求并保留入站 Claim 到 3 秒心跳
     })).status, 200);
     assert.equal(await requestStatusWithHost('/api/mirrors', 'api-link.example.test'), 404);
     assert.equal(await requestStatusWithHost('/api/health', 'api-link.example.test'), 200);
+    assert.equal(await requestStatusWithHost('/.well-known/route-health.gif', 'api-link.example.test'), 404);
+
+    const routeHealthPath = '/.well-known/route-health.gif';
+    const routeHealth = await fetch(`${baseUrl}${routeHealthPath}`, {
+      headers: proxyHeaders('GET', routeHealthPath)
+    });
+    assert.equal(routeHealth.status, 200);
+    assert.equal(routeHealth.headers.get('content-type'), 'image/gif');
+    assert.match(routeHealth.headers.get('cache-control') || '', /no-store/);
+    const routeHealthBody = Buffer.from(await routeHealth.arrayBuffer());
+    assert.equal(routeHealthBody.subarray(0, 6).toString('ascii'), 'GIF89a');
+    assert.equal(routeHealthBody.length, 34);
 
     const directAdminLogin = await fetch(`${baseUrl}/api/admin/login`, {
       method: 'POST',

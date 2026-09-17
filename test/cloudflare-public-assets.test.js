@@ -56,6 +56,8 @@ test('多批静态资源共用上传 JWT，并仅在最后一批接收完成 JWT
       const metadata = JSON.parse(await options.body.get('metadata').text());
       assert.equal(metadata.assets.jwt, 'completion-token');
       assert.equal(options.body.get('worker.js').type, 'application/javascript+module');
+      assert.ok(metadata.assets.config.run_worker_first.includes('/.well-known/route-health.gif'));
+      assert.match(await options.body.get('worker.js').text(), /'\/.well-known\/route-health\.gif'/);
       return response({});
     }
     if (target.endsWith('/secrets')) return response({});

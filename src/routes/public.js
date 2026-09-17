@@ -28,6 +28,7 @@ const readBootstrapRateLimiter = createVisitorRateLimiter('read-bootstrap', 60 *
 const readProofRateLimiter = createVisitorRateLimiter('read-proof', 60 * 1000, 6, 600);
 
 router.get('/api/health', PublicController.health);
+router.get('/.well-known/route-health.gif', PublicController.routeHealthGif);
 // 仅供经过 HMAC 验签的静态前端边缘代理调用；浏览器无法直接伪造来源或客户端 IP。
 router.post('/internal/frontend/landing', requireTrustedFrontendProxy, PublicController.prepareFrontendLanding);
 router.use(requireFrontendProxy);

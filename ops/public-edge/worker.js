@@ -2,6 +2,7 @@ const PROXIED_PATHS = [
   '/api/',
   '/go',
   '/favicon.ico',
+  '/.well-known/route-health.gif',
   '/uploads/logo/'
 ];
 

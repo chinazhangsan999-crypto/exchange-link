@@ -14,6 +14,7 @@ const ALLOWED_PATH_PREFIXES = [
 const ALLOWED_EXACT_PATHS = new Set([
   '/go',
   '/favicon.ico',
+  '/.well-known/route-health.gif',
   '/internal/frontend/landing'
 ]);
 

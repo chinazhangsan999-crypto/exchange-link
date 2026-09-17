@@ -17,7 +17,7 @@ const HOSTNAME_PATTERN = /^(?=.{3,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\
 const PROFILE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const WORKER_PREFIX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,54}$/;
 const MIME_TYPES = { '.css': 'text/css', '.gif': 'image/gif', '.html': 'text/html', '.ico': 'image/x-icon', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg', '.js': 'application/javascript', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.txt': 'text/plain', '.webp': 'image/webp', '.woff': 'font/woff', '.woff2': 'font/woff2' };
-const RUN_WORKER_FIRST = ['/', '/index.html', '/r/*', '/api/*', '/go', '/favicon.ico', '/uploads/logo/*'];
+const RUN_WORKER_FIRST = ['/', '/index.html', '/r/*', '/api/*', '/go', '/favicon.ico', '/.well-known/route-health.gif', '/uploads/logo/*'];
 const ZONE_SECURITY_SETTINGS = [
   ['tls_1_3', 'on'],
   ['min_tls_version', '1.2'],

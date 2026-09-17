@@ -3,6 +3,7 @@
 const crypto = require('crypto');
 const path = require('path');
 const { dbWriteCoordinator } = require('../services/DbWriteCoordinator');
+const { get: databaseGet } = require('../config/database');
 const jwt = require('jsonwebtoken');
 const svgCaptcha = require('svg-captcha');
 const { Mutex } = require('async-mutex');
@@ -50,6 +51,10 @@ const { sendAdminAlert, formatAlertLink, formatContactLine } = require('../servi
 
 const ATTRIBUTION_COOKIE = 'inflow_visit';
 const ATTRIBUTION_TTL_SECONDS = 30 * 60;
+const ROUTE_HEALTH_GIF = Buffer.from(
+  'R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==',
+  'base64'
+);
 const ANALYTICS_CONFIG_KEYS = [
   'umami_enabled',
   'umami_script_url',
@@ -373,6 +378,26 @@ function health(req, res) {
     timestamp: Date.now(),
     dbWriteQueue: dbWriteCoordinator.getStats()
   });
+}
+
+async function routeHealthGif(req, res) {
+  try {
+    const database = await databaseGet('SELECT 1 AS healthy');
+    if (Number(database?.healthy) !== 1) throw new Error('database unavailable');
+    res.set({
+      'Content-Type': 'image/gif',
+      'Content-Length': String(ROUTE_HEALTH_GIF.length),
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      Pragma: 'no-cache'
+    });
+    return res.status(200).end(ROUTE_HEALTH_GIF);
+  } catch {
+    res.set({
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'no-store'
+    });
+    return res.status(503).send('unavailable');
+  }
 }
 
 function headRoot(req, res) {
@@ -1035,6 +1060,7 @@ module.exports = {
   recordPostEntryPageView,
   trackInflow,
   health,
+  routeHealthGif,
   headRoot,
   favicon,
   initVerification,

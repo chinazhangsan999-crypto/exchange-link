@@ -9,7 +9,7 @@ routes = [
 [assets]
 directory = "../../dist/public-frontend"
 binding = "ASSETS"
-run_worker_first = ["/", "/index.html", "/r/*", "/api/*", "/go", "/favicon.ico", "/uploads/logo/*"]
+run_worker_first = ["/", "/index.html", "/r/*", "/api/*", "/go", "/favicon.ico", "/.well-known/route-health.gif", "/uploads/logo/*"]
 
 [vars]
 API_ORIGIN = "https://api-link.chinazhangsan.ccwu.cc"
