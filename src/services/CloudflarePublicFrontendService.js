@@ -161,7 +161,7 @@ function withProvisioningLock(work) {
   return next;
 }
 
-function collectAssets(directory = PUBLIC_DIRECTORY) {
+function collectAssets(directory = PUBLIC_DIRECTORY, hashSalt = '') {
   const assets = [];
   function walk(current, relative = '') {
     for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
@@ -172,7 +172,11 @@ function collectAssets(directory = PUBLIC_DIRECTORY) {
       }
       if (!entry.isFile() || nextRelative.toLowerCase().endsWith('.map')) continue;
       const content = fs.readFileSync(path.join(current, entry.name));
-      const hash = crypto.createHash('sha256').update(content).digest('hex').slice(0, 32);
+      // Cloudflare 会按 hash 复用已上传的资源及其 MIME。将 Worker 名与
+      // 路径加入稳定 hash，既隔离不同前台，也避免复用旧的错误 MIME。
+      const hash = crypto.createHash('sha256')
+        .update(String(hashSalt)).update('\0').update(nextRelative).update('\0').update(content)
+        .digest('hex').slice(0, 32);
       assets.push({ path: `/${nextRelative}`, hash, content, contentType: MIME_TYPES[path.extname(entry.name).toLowerCase()] || 'application/octet-stream' });
     }
   }
@@ -184,25 +188,32 @@ function collectAssets(directory = PUBLIC_DIRECTORY) {
 async function uploadAndDeploy(profile, workerName) {
   if (!FRONTEND_PROXY_SECRET || FRONTEND_PROXY_SECRET.length < 32) throw new Error('源站未配置 FRONTEND_PROXY_SECRET，已拒绝创建前台 Worker');
   const source = await fs.promises.readFile(PUBLIC_WORKER_SOURCE, 'utf8');
-  const assets = collectAssets();
+  const assets = collectAssets(PUBLIC_DIRECTORY, workerName);
   const byHash = new Map(assets.map(asset => [asset.hash, asset]));
   const manifest = Object.fromEntries(assets.map(asset => [asset.path, { hash: asset.hash, size: asset.content.length }]));
   const session = await request(profile, 'POST', `/accounts/${encodeURIComponent(profile.accountId)}/workers/scripts/${encodeURIComponent(workerName)}/assets-upload-session`, {
     body: JSON.stringify({ manifest }), headers: { 'Content-Type': 'application/json' }
   });
-  let completionJwt = String(session.jwt || '');
-  if (!completionJwt) throw new Error('Cloudflare 未返回静态资源上传凭据');
-  for (const bucket of (session.buckets || [])) {
+  const uploadJwt = String(session.jwt || '');
+  if (!uploadJwt) throw new Error('Cloudflare 未返回静态资源上传凭据');
+  const buckets = Array.isArray(session.buckets) ? session.buckets : [];
+  // 无需上传新文件时，session JWT 可直接用于部署；有多个 bucket 时，
+  // Cloudflare 只在最后一批完成后返回 completion JWT。所有 bucket 都必须
+  // 继续使用同一枚 upload-session JWT 认证，不能要求每批都返回新 JWT。
+  let completionJwt = buckets.length ? '' : uploadJwt;
+  for (const bucket of buckets) {
     const form = new FormData();
     for (const hash of bucket) {
       const asset = byHash.get(hash);
       if (!asset) throw new Error('Cloudflare 返回了未知的静态资源上传任务');
+      // base64=true 要求字段内容为 Base64；Blob 的 type 会成为该静态
+      // 资源最终的 Content-Type，不能退化成普通字符串字段。
       form.append(hash, new Blob([asset.content.toString('base64')], { type: asset.contentType }), asset.path.slice(1));
     }
-    const uploaded = await request({ apiToken: completionJwt }, 'POST', `/accounts/${encodeURIComponent(profile.accountId)}/workers/assets/upload?base64=true`, { body: form });
-    completionJwt = String(uploaded.jwt || '');
-    if (!completionJwt) throw new Error('Cloudflare 未返回静态资源完成凭据');
+    const uploaded = await request({ apiToken: uploadJwt }, 'POST', `/accounts/${encodeURIComponent(profile.accountId)}/workers/assets/upload?base64=true`, { body: form });
+    if (uploaded.jwt) completionJwt = String(uploaded.jwt);
   }
+  if (!completionJwt) throw new Error('Cloudflare 已接收静态资源，但未返回最终部署凭据');
   const metadata = {
     main_module: 'worker.js',
     compatibility_date: '2026-09-14',
@@ -214,7 +225,9 @@ async function uploadAndDeploy(profile, workerName) {
   };
   const deployment = new FormData();
   deployment.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }), 'metadata.json');
-  deployment.append('worker.js', new Blob([source], { type: 'application/javascript' }), 'worker.js');
+  // worker.js 使用 export default 的 ES Module 语法，必须以 module
+  // MIME 上传；否则 Cloudflare 会按 Service Worker 脚本解析并拒绝 export。
+  deployment.append('worker.js', new Blob([source], { type: 'application/javascript+module' }), 'worker.js');
   await request(profile, 'PUT', `/accounts/${encodeURIComponent(profile.accountId)}/workers/scripts/${encodeURIComponent(workerName)}`, { body: deployment });
   await request(profile, 'PUT', `/accounts/${encodeURIComponent(profile.accountId)}/workers/scripts/${encodeURIComponent(workerName)}/secrets`, {
     body: JSON.stringify({ name: 'FRONTEND_PROXY_SECRET', text: FRONTEND_PROXY_SECRET, type: 'secret_text' }),

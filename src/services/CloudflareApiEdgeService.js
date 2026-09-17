@@ -37,13 +37,14 @@ async function cloudflareRequest(config, method, path, body) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 10_000);
   try {
+    const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
     const response = await fetch(`${API_BASE}/accounts/${encodeURIComponent(config.accountId)}${path}`, {
       method,
       headers: {
         Authorization: `Bearer ${config.apiToken}`,
-        ...(body ? { 'Content-Type': 'application/json' } : {})
+        ...(body && !isFormData ? { 'Content-Type': 'application/json' } : {})
       },
-      body: body ? JSON.stringify(body) : undefined,
+      body: body ? (isFormData ? body : JSON.stringify(body)) : undefined,
       signal: controller.signal
     });
     const payload = await response.json().catch(() => null);
@@ -108,9 +109,12 @@ async function syncAllowedOrigins(items) {
     text: bindingOrigins(items).join(',')
   });
 
-  // PATCH 只更新 Worker 设置中的 bindings；从 Cloudflare 读取的其余 bindings
-  // 原样保留，避免覆盖 API_ORIGIN、secret_text 等既有配置。
-  await cloudflareRequest(config, 'PATCH', `/workers/scripts/${encodeURIComponent(config.workerName)}/settings`, { bindings: nextBindings });
+  // Cloudflare 的 Worker Settings PATCH 接口只接受 multipart/form-data，
+  // settings 字段内再携带 JSON。不要手动设置 Content-Type，由 FormData
+  // 生成带 boundary 的完整请求头。
+  const form = new FormData();
+  form.append('settings', new Blob([JSON.stringify({ bindings: nextBindings })], { type: 'application/json' }), 'settings.json');
+  await cloudflareRequest(config, 'PATCH', `/workers/scripts/${encodeURIComponent(config.workerName)}/settings`, form);
   return { synchronized: true, origins: bindingOrigins(items) };
 }
 
