@@ -2,7 +2,7 @@
 
 const express = require('express');
 const { get, run, all, withTransaction } = require('../config/database');
-const { CONTROL_CENTER_SYNC_INTERVAL_MS, ADMIN_FRONTEND_ORIGIN } = require('../config/env');
+const { CONTROL_CENTER_SYNC_INTERVAL_MS } = require('../config/env');
 const { issueAdminToken } = require('../middlewares/auth');
 const { createControlCenterAgent } = require('../../packages/site-agent');
 const { createWebringConfigApplier } = require('../../packages/site-agent/webring-adapter');
@@ -10,6 +10,7 @@ const MirrorModel = require('../models/MirrorModel');
 const CacheService = require('./CacheService');
 const CredentialStore = require('./IntegrationCredentialStore');
 const IntegrationState = require('./IntegrationStateService');
+const AdminFrontendOriginService = require('./AdminFrontendOriginService');
 
 const router = express.Router();
 let agent = null;
@@ -32,11 +33,12 @@ function validateConfig(input = {}) {
 }
 
 function buildAgent(config) {
+  const adminOrigin = AdminFrontendOriginService.currentOrigin();
   return createControlCenterAgent({
     controlCenterUrl: config.url,
     credential: config.credential,
     intervalMs: CONTROL_CENTER_SYNC_INTERVAL_MS,
-    adminPath: ADMIN_FRONTEND_ORIGIN ? `${ADMIN_FRONTEND_ORIGIN}/admin` : '/admin',
+    adminPath: adminOrigin ? `${adminOrigin}/admin` : '/admin',
     applyConfig: snapshot => adapter.applyConfig(snapshot),
     issueAdminToken: async (_centralAdmin, context = {}) => {
       const admin = await get("SELECT id, username, session_version FROM admins WHERE username='admin' ORDER BY id LIMIT 1");

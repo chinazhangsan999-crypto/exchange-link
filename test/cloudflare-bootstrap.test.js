@@ -30,10 +30,16 @@ test('网页向导在服务端部署 API 与后台 Worker，且不回传 Cloudfl
     edge = { accountId: value.accountId, workerName: value.apiWorkerName, apiToken: value.apiToken };
     bootstrap = { originUrl: value.originUrl, apiDomain: value.apiDomain, apiWorkerName: value.apiWorkerName, adminDomain: value.adminDomain, adminWorkerName: value.adminWorkerName };
   };
+  let savedOrigins = [];
+  FrontendOriginModel.initializeFrontendOriginTable = async () => undefined;
   FrontendOriginModel.listAllOrigins = async () => [
     { origin: 'https://front-a.example.com', enabled: 1 },
     { origin: 'https://disabled.example.com', enabled: 0 }
   ];
+  FrontendOriginModel.replaceOrigins = async items => {
+    savedOrigins = items;
+    return { count: items.length };
+  };
 
   const calls = [];
   const originalFetch = global.fetch;
@@ -75,6 +81,9 @@ test('网页向导在服务端部署 API 与后台 Worker，且不回传 Cloudfl
     assert.equal(calls.filter(call => call.method === 'PUT' && call.url.endsWith('/workers/domains')).length, 2);
     assert.equal(edge.workerName, 'api-worker');
     assert.equal(bootstrap.adminWorkerName, 'admin-worker');
+    assert.deepEqual(savedOrigins.find(item => item.origin === 'https://admin.example.com'), {
+      origin: 'https://admin.example.com', enabled: true, expiresAt: null
+    });
 
     const scriptWritesBeforeAdopt = calls.filter(call => call.method === 'PUT' && /workers\/scripts\/(api-worker|admin-worker)$/.test(call.url)).length;
     const adopted = await service.adopt({

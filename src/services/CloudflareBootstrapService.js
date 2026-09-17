@@ -6,8 +6,10 @@ const { Blob } = require('buffer');
 const CredentialStore = require('./IntegrationCredentialStore');
 const CloudflareApiEdgeService = require('./CloudflareApiEdgeService');
 const CloudflareFrontendModel = require('../models/CloudflareFrontendModel');
+const AdminFrontendOriginService = require('./AdminFrontendOriginService');
 const crypto = require('crypto');
 const FrontendOriginModel = require('../models/FrontendOriginModel');
+const FrontendProxyService = require('./FrontendProxyService');
 const { FRONTEND_PROXY_SECRET } = require('../config/env');
 
 const API_BASE = 'https://api.cloudflare.com/client/v4';
@@ -106,13 +108,16 @@ async function overview() {
 async function adoptStoredState() {
   await ensureModelReady();
   const status = publicStatus();
-  if (!status.configured || await CloudflareFrontendModel.getCentralState()) return status;
-  const edge = CredentialStore.cloudflareApiEdgeConfig();
-  await CloudflareFrontendModel.saveCentralState({
-    accountId: status.accountId, apiWorkerName: status.apiWorkerName, apiDomain: status.apiDomain,
-    adminWorkerName: status.adminWorkerName, adminDomain: status.adminDomain,
-    originUrl: status.originUrl, tokenFingerprint: tokenFingerprint(edge.apiToken), tokenStatus: 'unverified'
-  });
+  if (!status.configured) return status;
+  if (!await CloudflareFrontendModel.getCentralState()) {
+    const edge = CredentialStore.cloudflareApiEdgeConfig();
+    await CloudflareFrontendModel.saveCentralState({
+      accountId: status.accountId, apiWorkerName: status.apiWorkerName, apiDomain: status.apiDomain,
+      adminWorkerName: status.adminWorkerName, adminDomain: status.adminDomain,
+      originUrl: status.originUrl, tokenFingerprint: tokenFingerprint(edge.apiToken), tokenStatus: 'unverified'
+    });
+  }
+  await activateAdminDomain(status.adminDomain);
   return status;
 }
 
@@ -202,6 +207,22 @@ async function checkUrl(url) {
   } finally { clearTimeout(timeout); }
 }
 
+async function activateAdminDomain(adminDomain) {
+  const adminOrigin = `https://${adminDomain}`;
+  await FrontendOriginModel.initializeFrontendOriginTable();
+  const current = await FrontendOriginModel.listAllOrigins();
+  const next = new Map(current.map(item => [item.origin, {
+    origin: item.origin,
+    enabled: Number(item.enabled) === 1,
+    expiresAt: item.expires_at || null
+  }]));
+  next.set(adminOrigin, { origin: adminOrigin, enabled: true, expiresAt: null });
+  await FrontendOriginModel.replaceOrigins([...next.values()]);
+  FrontendProxyService.clearAllowedOriginCache();
+  AdminFrontendOriginService.setStoredDomain(adminDomain);
+  return adminOrigin;
+}
+
 async function deploy(input = {}) {
   await ensureModelReady();
   if (input.confirmOverwrite !== true) throw new Error('请先确认允许创建或更新指定的两个 Worker');
@@ -239,6 +260,7 @@ async function deploy(input = {}) {
   steps.push({ key: 'admin_domain', label: '后台自定义域名', ok: true });
 
   await CredentialStore.saveCloudflareCentral(config);
+  await activateAdminDomain(config.adminDomain);
   const [apiHealth, adminHealth] = await Promise.all([
     checkUrl(`https://${config.apiDomain}/api/health`),
     checkUrl(`https://${config.adminDomain}/admin`)
@@ -280,6 +302,7 @@ async function adopt(input = {}) {
   ]);
 
   await CredentialStore.saveCloudflareCentral(config);
+  await activateAdminDomain(config.adminDomain);
   const [apiHealth, adminHealth] = await Promise.all([
     checkUrl(`https://${config.apiDomain}/api/health`),
     checkUrl(`https://${config.adminDomain}/admin`)

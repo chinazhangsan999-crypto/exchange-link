@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const {
   IS_PRODUCTION,
@@ -16,7 +17,7 @@ const {
 
 function resolveCredentialPath(configuredPath, fallbackName) {
   if (configuredPath) return path.resolve(configuredPath);
-  if (IS_PRODUCTION) return `/home/niaiwo/app-secrets/${fallbackName}`;
+  if (IS_PRODUCTION) return path.join(os.homedir(), 'app-secrets', fallbackName);
   return path.join(__dirname, '..', '..', 'data', 'secrets', fallbackName);
 }
 

@@ -87,9 +87,6 @@ const ADMIN_ORIGIN_PATTERN = IS_PRODUCTION ? /^https:\/\/[^/]+$/i : /^https?:\/\
 if (ADMIN_FRONTEND_ORIGIN && !ADMIN_ORIGIN_PATTERN.test(ADMIN_FRONTEND_ORIGIN)) {
   throw new Error('ADMIN_FRONTEND_ORIGIN 必须是有效 Origin；生产环境仅允许 HTTPS。');
 }
-if (IS_PRODUCTION && !ADMIN_FRONTEND_ORIGIN) {
-  throw new Error('生产环境启动失败：必须配置 ADMIN_FRONTEND_ORIGIN 以隔离后台入口。');
-}
 
 if (FRONTEND_PROXY_SECRET && FRONTEND_PROXY_SECRET.length < 32) {
   throw new Error('FRONTEND_PROXY_SECRET 长度不得少于 32 位。');

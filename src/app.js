@@ -42,7 +42,7 @@ app.use(express.json({
 }));
 // 缺少代理头时保持原同源模式；只有携带完整代理上下文时才执行严格验签。
 app.use(acceptTrustedFrontendProxy);
-// 设置 ADMIN_FRONTEND_ORIGIN 后，主站仅作为受信上游，拒绝直连后台路径。
+// 后台域名可由首次建站向导写入；生产环境未配置时也会默认拒绝直连后台路径。
 app.use(requireAdminFrontendBoundary);
 app.use(session({
   store: sessionStore,

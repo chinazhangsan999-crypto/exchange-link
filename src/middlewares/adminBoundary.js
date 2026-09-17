@@ -1,6 +1,7 @@
 'use strict';
 
-const { ADMIN_FRONTEND_ORIGIN } = require('../config/env');
+const { IS_PRODUCTION } = require('../config/env');
+const AdminFrontendOriginService = require('../services/AdminFrontendOriginService');
 
 function isAdminSurface(req) {
   const path = String(req.path || '');
@@ -23,9 +24,13 @@ function isControlCenterSsoBridge(req) {
  * 通过 HMAC 验证并写入 trustedFrontendOrigin 后，才允许访问后台页面或 API。
  */
 function requireAdminFrontendBoundary(req, res, next) {
-  if (!ADMIN_FRONTEND_ORIGIN || !isAdminSurface(req)) return next();
+  if (!isAdminSurface(req)) return next();
   if (isControlCenterSsoBridge(req)) return next();
-  if (req.trustedFrontendOrigin === ADMIN_FRONTEND_ORIGIN) return next();
+  const adminOrigin = AdminFrontendOriginService.currentOrigin();
+  // 首次建站前只允许一次性 /setup；生产源站不能因尚未填写
+  // 后台域名而直接暴露 /admin 与 /api/admin。
+  if (!adminOrigin) return IS_PRODUCTION ? res.status(404).end() : next();
+  if (req.trustedFrontendOrigin === adminOrigin) return next();
   return res.status(404).end();
 }
 
