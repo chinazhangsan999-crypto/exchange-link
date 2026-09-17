@@ -11,7 +11,13 @@ const PROXY_HEADERS = [
   'x-proxy-signature'
 ];
 
-const DIRECT_API_HOST_PATHS = new Set(['/api/health']);
+const DIRECT_API_HOST_PATHS = new Set([
+  '/api/health',
+  '/setup',
+  '/setup/client.js',
+  '/api/setup/status',
+  '/api/setup/deploy'
+]);
 
 function requestHostname(req) {
   const host = String(req.headers.host || '').trim().toLowerCase();
