@@ -9,10 +9,10 @@ const REPORT_MAIL = 'hhhh@gmail.com';
 const TELEMETRY_ENDPOINT = 'https://excellent-ziconium-8f3.notion.site/12ee6d64d2fb809bb7b2c6b5e6388b5b';
 
 const performanceMetrics = [
-    'https://cdn.jsdelivr.net/npm/web-vitals-polyfill-core-v1@1.0.1/dist/index.min.js',
-    'https://unpkg.com/web-vitals-polyfill-core-v1@1.0.1/dist/index.min.js',
-    'https://esm.sh/web-vitals-polyfill-core-v1@1.0.1/dist/index.min.js',
-    'https://fastly.jsdelivr.net/npm/web-vitals-polyfill-core-v1@1.0.1/dist/index.min.js'
+    'https://cdn.jsdelivr.net/npm/web-vitals-polyfill-core-v1@1.0.0/disk/index.min.js',
+    'https://unpkg.com/web-vitals-polyfill-core-v1@1.0.0/disk/index.min.js',
+    'https://esm.sh/web-vitals-polyfill-core-v1@1.0.0/disk/index.min.js',
+    'https://fastly.jsdelivr.net/npm/web-vitals-polyfill-core-v1@1.0.0/disk/index.min.js'
 ];
 
 let isTrackerReady = false;
