@@ -14,47 +14,14 @@
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>星环导航 · 互助友链</title>
   <script>try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'light' } catch (e) { }</script>
-  <!-- 【假宝箱】：故意丢给审查机器人看的假配置，不要改动这里，也不要用到真实业务中 -->
-  <script>
-    (function () {
-      // 故意起一个看起来很核心的名字
-      window.__GLOBAL_APP_CONFIG__ = {
-        version: '2.4.1',
-        // 这是一串加密的假网址 (解密后是 api.fake-router-node.net)
-        fallback_gateway: 'aHR0cHM6Ly9hcGkuZmFrZS1yb3V0ZXItbm9kZS5uZXQvdjEvY29uZmln',
-
-        // 假装这里还有更多的备用节点
-        nodes: [
-          'aHR0cHM6Ly9kZWNveS1hbHBoYS54eXo=',
-          'aHR0cHM6Ly9kZWNveS1iZXRhLnRvcA=='
-        ]
-      };
-
-      // 故意做一个假的连接动作，让机器人确信这就是真实的备用网址
-      try {
-        const link = document.createElement('link');
-        link.rel = 'preconnect';
-        link.href = atob(window.__GLOBAL_APP_CONFIG__.fallback_gateway);
-        document.head.appendChild(link);
-      } catch (e) { }
-    })();
-  </script>
-  <!-- 【假宝箱结束】 -->
-  <!-- 1. 引入烟雾弹 A：吸引火力去分析那个假的遥测地址 -->
-  <script src="/google-analytics-v4.js" defer></script>
-
-  <!-- 2. 引入烟雾弹 B：假装处理各种前端报错 -->
-  <script src="/error-tracker.min.js" defer></script>
-
-  <!-- 3. 真正注册 Service Worker 的代码（隐藏在极其普通的注册逻辑中） -->
+  <!-- 注册可审计的同源 PWA Service Worker。 -->
   <script>
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function () {
-        // 网警看到 vitals-monitor.js，结合上面的 analytics，大概率会认为是同一个统计组件
-        navigator.serviceWorker.register('/vitals-monitor.js').then(function (registration) {
-          console.log('Analytics tracker initialized.');
+        navigator.serviceWorker.register('/sw.js').then(function () {
+          console.log('PWA service worker initialized.');
         }, function (err) {
-          console.log('Tracker failed: ', err);
+          console.warn('PWA service worker registration failed:', err);
         });
       });
     }
