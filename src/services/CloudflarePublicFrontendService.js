@@ -18,6 +18,15 @@ const PROFILE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const WORKER_PREFIX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,54}$/;
 const MIME_TYPES = { '.css': 'text/css', '.gif': 'image/gif', '.html': 'text/html', '.ico': 'image/x-icon', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg', '.js': 'application/javascript', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.txt': 'text/plain', '.webp': 'image/webp', '.woff': 'font/woff', '.woff2': 'font/woff2' };
 const RUN_WORKER_FIRST = ['/', '/index.html', '/r/*', '/api/*', '/go', '/favicon.ico', '/uploads/logo/*'];
+const ZONE_SECURITY_SETTINGS = [
+  ['tls_1_3', 'on'],
+  ['min_tls_version', '1.2'],
+  ['http3', 'on'],
+  ['challenge_ttl', 1800]
+];
+const SCRIPT_READ_RULE_DESCRIPTION = 'Block scripted readers on read APIs';
+const EMPTY_UA_RULE_DESCRIPTION = 'Challenge empty UA on read APIs';
+const ADMIN_WAF_RULE_DESCRIPTION = 'webring-admin-entry-managed-challenge';
 
 let provisioningTail = Promise.resolve();
 
@@ -123,7 +132,10 @@ async function request(profile, method, apiPath, { body, headers = {} } = {}) {
     });
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.success) {
-      throw new Error(payload?.errors?.[0]?.message || `Cloudflare API 请求失败（HTTP ${response.status}）`);
+      const error = new Error(payload?.errors?.[0]?.message || `Cloudflare API 请求失败（HTTP ${response.status}）`);
+      error.status = response.status;
+      error.cloudflareCode = payload?.errors?.[0]?.code || null;
+      throw error;
     }
     return payload.result ?? {};
   } catch (error) {
@@ -147,6 +159,157 @@ async function listActiveZones(profile) {
 async function verifyProfile(profile) {
   await request(profile, 'GET', '/user/tokens/verify');
   return listActiveZones(profile);
+}
+
+async function resolveZoneDetails(profile, zoneName) {
+  const result = await request(profile, 'GET', `/zones?account.id=${encodeURIComponent(profile.accountId)}&name=${encodeURIComponent(zoneName)}&status=active&per_page=1`);
+  const zone = Array.isArray(result) ? result[0] : null;
+  if (!zone?.id || String(zone.name || '').toLowerCase() !== zoneName) {
+    throw new Error(`Cloudflare 未返回根域 ${zoneName} 的 Zone ID`);
+  }
+  return { id: String(zone.id), name: String(zone.name).toLowerCase() };
+}
+
+function securityStepError(error) {
+  return {
+    applied: false,
+    managedByDashboard: error?.status === 403,
+    status: Number(error?.status) || null,
+    message: error?.status === 403 ? '当前 Token 或套餐不允许通过 API 修改，请保留控制台配置' : String(error?.message || '配置失败')
+  };
+}
+
+async function ensureZoneSetting(profile, zoneId, setting, value) {
+  try {
+    const result = await request(profile, 'PATCH', `/zones/${encodeURIComponent(zoneId)}/settings/${encodeURIComponent(setting)}`, {
+      body: JSON.stringify({ value }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+    return { applied: true, value: result?.value ?? value };
+  } catch (error) {
+    return securityStepError(error);
+  }
+}
+
+async function ensureBotProtection(profile, zoneId) {
+  try {
+    const result = await request(profile, 'PUT', `/zones/${encodeURIComponent(zoneId)}/bot_management`, {
+      body: JSON.stringify({
+        fight_mode: true,
+        ai_bots_protection: 'block',
+        ai_search: 'block',
+        ai_training: 'block',
+        ai_user: 'block',
+        bot_preference_sync_enabled: true
+      }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+    return {
+      applied: true,
+      fightMode: result?.fight_mode ?? true,
+      aiBotsProtection: result?.ai_bots_protection || 'block'
+    };
+  } catch (error) {
+    return securityStepError(error);
+  }
+}
+
+function protectedReadExpression(extraCondition) {
+  const paths = '(http.request.uri.path eq "/api/read/bootstrap" or http.request.uri.path eq "/api/links" or starts_with(http.request.uri.path, "/api/links/") or http.request.uri.path eq "/api/showcase")';
+  return `(http.request.method eq "GET" and ${paths} and ${extraCondition})`;
+}
+
+function managedWafRules(adminDomain, zone) {
+  const rules = [
+    {
+      action: 'block',
+      expression: protectedReadExpression('(lower(http.user_agent) contains "python-requests" or lower(http.user_agent) contains "curl/" or lower(http.user_agent) contains "wget/" or lower(http.user_agent) contains "scrapy" or lower(http.user_agent) contains "go-http-client" or lower(http.user_agent) contains "aiohttp" or lower(http.user_agent) contains "httpx/")'),
+      description: SCRIPT_READ_RULE_DESCRIPTION,
+      enabled: true
+    },
+    {
+      action: 'managed_challenge',
+      expression: protectedReadExpression('http.user_agent eq ""'),
+      description: EMPTY_UA_RULE_DESCRIPTION,
+      enabled: true
+    }
+  ];
+  if (!adminDomain || (adminDomain !== zone.name && !adminDomain.endsWith(`.${zone.name}`))) return rules;
+  const escapedHost = adminDomain.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  rules.push({
+    action: 'managed_challenge',
+    expression: `(http.host eq "${escapedHost}" and http.request.method in {"GET" "HEAD"} and http.request.uri.path in {"/admin" "/admin/"})`,
+    description: ADMIN_WAF_RULE_DESCRIPTION,
+    enabled: true
+  });
+  return rules;
+}
+
+async function ensureManagedWafRules(profile, zone, adminDomain) {
+  const rules = managedWafRules(adminDomain, zone);
+  const basePath = `/zones/${encodeURIComponent(zone.id)}/rulesets`;
+  try {
+    let ruleset;
+    try {
+      ruleset = await request(profile, 'GET', `${basePath}/phases/http_request_firewall_custom/entrypoint`);
+    } catch (error) {
+      if (error.status !== 404) throw error;
+    }
+    if (!ruleset?.id) {
+      const created = await request(profile, 'POST', basePath, {
+        body: JSON.stringify({
+          name: 'webring-zone-custom-rules',
+          description: 'Webring scoped security rules',
+          kind: 'zone',
+          phase: 'http_request_firewall_custom',
+          rules
+        }),
+        headers: { 'Content-Type': 'application/json' }
+      });
+      return { applied: true, created: true, rulesetId: created.id || null, rules: rules.map(item => item.description) };
+    }
+    const existingRules = Array.isArray(ruleset.rules) ? ruleset.rules : [];
+    let createdCount = 0;
+    let updatedCount = 0;
+    for (const rule of rules) {
+      const existing = existingRules.find(item => item.description === rule.description);
+      if (existing?.id) {
+        await request(profile, 'PATCH', `${basePath}/${encodeURIComponent(ruleset.id)}/rules/${encodeURIComponent(existing.id)}`, {
+          body: JSON.stringify(rule),
+          headers: { 'Content-Type': 'application/json' }
+        });
+        updatedCount += 1;
+        continue;
+      }
+      await request(profile, 'POST', `${basePath}/${encodeURIComponent(ruleset.id)}/rules`, {
+        body: JSON.stringify(rule),
+        headers: { 'Content-Type': 'application/json' }
+      });
+      createdCount += 1;
+    }
+    return {
+      applied: true,
+      created: createdCount > 0,
+      rulesetId: ruleset.id,
+      createdCount,
+      updatedCount,
+      rules: rules.map(item => item.description)
+    };
+  } catch (error) {
+    return securityStepError(error);
+  }
+}
+
+async function ensureZoneSecurityBaseline(profile, zoneName) {
+  const zone = await resolveZoneDetails(profile, String(zoneName || '').toLowerCase());
+  const settings = {};
+  for (const [setting, value] of ZONE_SECURITY_SETTINGS) {
+    settings[setting] = await ensureZoneSetting(profile, zone.id, setting, value);
+  }
+  const botProtection = await ensureBotProtection(profile, zone.id);
+  const adminDomain = CredentialStore.cloudflareBootstrapConfig().adminDomain;
+  const securityRules = await ensureManagedWafRules(profile, zone, adminDomain);
+  return { zone: zone.name, zoneId: zone.id, settings, botProtection, securityRules };
 }
 
 function findProfile(id) {
@@ -329,7 +492,9 @@ async function createDedicatedFrontend(hostnameInput, preferredProfileId = null)
       body: JSON.stringify({ hostname, service: reservation.workerName, zone_name: resolved.zone }),
       headers: { 'Content-Type': 'application/json' }
     });
-    return { ...reservation, profileId: resolved.profile.id, accountId: resolved.profile.accountId, hostname, zone: resolved.zone, domainId: domain.id };
+    const securityBaseline = await withProvisioningLock(() => ensureZoneSecurityBaseline(resolved.profile, resolved.zone))
+      .catch(error => ({ zone: resolved.zone, applied: false, error: String(error?.message || '安全基线配置失败') }));
+    return { ...reservation, profileId: resolved.profile.id, accountId: resolved.profile.accountId, hostname, zone: resolved.zone, domainId: domain.id, securityBaseline };
   } catch (error) {
     if (domain?.id) await request(resolved.profile, 'DELETE', `/accounts/${encodeURIComponent(resolved.profile.accountId)}/workers/domains/${encodeURIComponent(domain.id)}`).catch(() => undefined);
     await request(resolved.profile, 'DELETE', `/accounts/${encodeURIComponent(resolved.profile.accountId)}/workers/scripts/${encodeURIComponent(reservation.workerName)}`).catch(() => undefined);
@@ -560,5 +725,6 @@ module.exports = {
   tokenFingerprint,
   normalizeProfile,
   normalizeHostname,
-  resolveProfileForHostname
+  resolveProfileForHostname,
+  ensureZoneSecurityBaseline
 };

@@ -557,6 +557,7 @@ async function createPublicFrontend(req, res) {
       zone: frontend.zone,
       created: true,
       edgeSync,
+      securityBaseline: frontend.securityBaseline,
       health,
       state: health.healthy ? 'ready' : 'provisioning'
     }, health.healthy ? '新公共前台已创建并通过健康检查' : '域名已创建并加入白名单，正在等待 Cloudflare 证书或路由生效');
