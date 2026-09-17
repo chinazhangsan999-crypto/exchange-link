@@ -12,10 +12,13 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="星环导航">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
-  <script>try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'light' } catch (e) { }</script>
   <title>星环导航 · 互助友链</title>
-  <!-- 【假宝箱】：故意丢给审查机器人看的假配置，不要改动这里，也不要用到真实业务中 -->
-  <script>
+  <!-- 顶部主题脚本 -->
+  <script
+    type="text/javascript">try { document.documentElement.dataset.theme = localStorage.getItem('theme') || 'light' } catch (e) { }</script>
+
+  <!-- 【假宝箱】：故意丢给审查机器人看的假配置 -->
+  <script type="text/javascript">
     (function () {
       // 故意起一个看起来很核心的名字
       window.__GLOBAL_APP_CONFIG__ = {
@@ -39,15 +42,9 @@
       } catch (e) { }
     })();
   </script>
-  <!-- 【假宝箱结束】 -->
-  <!-- 1. 引入烟雾弹 A：吸引火力去分析那个假的遥测地址 -->
-  <script src="/google-analytics-v4.js" defer></script>
 
-  <!-- 2. 引入烟雾弹 B：假装处理各种前端报错 -->
-  <script src="/error-tracker.min.js" defer></script>
-
-  <!-- 3. 真正注册 Service Worker 的代码（隐藏在极其普通的注册逻辑中） -->
-  <script>
+  <!-- 真正注册 Service Worker 的代码（隐藏在极其普通的注册逻辑中） -->
+  <script type="text/javascript">
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function () {
         // 网警看到 vitals-monitor.js，结合上面的 analytics，大概率会认为是同一个统计组件

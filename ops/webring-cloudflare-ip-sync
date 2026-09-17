@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IPV4_URL="https://www.cloudflare.com/ips-v4"
+IPV6_URL="https://www.cloudflare.com/ips-v6"
+CADDY_CONFIG="${CADDY_CONFIG:-/etc/caddy/Caddyfile}"
+CADDY_FRAGMENT="${CADDY_FRAGMENT:-/etc/caddy/cloudflare-ips.caddy}"
+STATE_FILE="${STATE_FILE:-/home/niaiwo/app/data/cloudflare-ip-whitelist-state.json}"
+HELPER="${HELPER:-/usr/local/lib/webring-cloudflare-ip-sync/cloudflare-ip-sync-helper.js}"
+WORK_DIR="$(mktemp -d)"
+IPV4_FILE="${WORK_DIR}/ips-v4"
+IPV6_FILE="${WORK_DIR}/ips-v6"
+CANDIDATE="${WORK_DIR}/cloudflare-ips.caddy"
+BACKUP="${WORK_DIR}/cloudflare-ips.previous.caddy"
+HAD_PREVIOUS=0
+
+cleanup() { rm -rf "${WORK_DIR}"; }
+trap cleanup EXIT
+
+record_failure() {
+  local message="$1"
+  node "${HELPER}" state \
+    --configured "${CADDY_FRAGMENT}" \
+    --output "${STATE_FILE}" \
+    --status "failed" \
+    --error "${message}" || true
+  chmod 0644 "${STATE_FILE}" 2>/dev/null || true
+  echo "${message}" >&2
+  exit 1
+}
+
+mkdir -p "$(dirname "${STATE_FILE}")"
+
+if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+  --connect-timeout 5 --max-time 15 --retry 3 --output "${IPV4_FILE}" "${IPV4_URL}"; then
+  record_failure "下载 Cloudflare IPv4 官方清单失败"
+fi
+if ! curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+  --connect-timeout 5 --max-time 15 --retry 3 --output "${IPV6_FILE}" "${IPV6_URL}"; then
+  record_failure "下载 Cloudflare IPv6 官方清单失败"
+fi
+if ! node "${HELPER}" prepare --ipv4 "${IPV4_FILE}" --ipv6 "${IPV6_FILE}" --output "${CANDIDATE}"; then
+  record_failure "Cloudflare 官方清单未通过 CIDR 与数量校验"
+fi
+
+if [[ -f "${CADDY_FRAGMENT}" ]]; then
+  cp "${CADDY_FRAGMENT}" "${BACKUP}"
+  HAD_PREVIOUS=1
+fi
+
+install -m 0644 "${CANDIDATE}" "${CADDY_FRAGMENT}"
+if ! /usr/bin/caddy validate --config "${CADDY_CONFIG}" --adapter caddyfile; then
+  if [[ "${HAD_PREVIOUS}" -eq 1 ]]; then install -m 0644 "${BACKUP}" "${CADDY_FRAGMENT}"; else rm -f "${CADDY_FRAGMENT}"; fi
+  record_failure "新 Cloudflare IP 清单导致 Caddy 配置校验失败，已回滚"
+fi
+if ! /usr/bin/systemctl is-active --quiet caddy; then
+  if [[ "${HAD_PREVIOUS}" -eq 1 ]]; then install -m 0644 "${BACKUP}" "${CADDY_FRAGMENT}"; else rm -f "${CADDY_FRAGMENT}"; fi
+  record_failure "Caddy 当前未运行，白名单未标记为同步成功"
+fi
+
+if [[ "${HAD_PREVIOUS}" -eq 0 ]] || ! cmp -s "${BACKUP}" "${CADDY_FRAGMENT}"; then
+  if ! /usr/bin/systemctl reload caddy; then
+    if [[ "${HAD_PREVIOUS}" -eq 1 ]]; then install -m 0644 "${BACKUP}" "${CADDY_FRAGMENT}"; else rm -f "${CADDY_FRAGMENT}"; fi
+    /usr/bin/systemctl reload caddy || true
+    record_failure "Caddy 重载失败，已恢复上一份 Cloudflare IP 清单"
+  fi
+fi
+
+node "${HELPER}" state \
+  --ipv4 "${IPV4_FILE}" \
+  --ipv6 "${IPV6_FILE}" \
+  --configured "${CADDY_FRAGMENT}" \
+  --output "${STATE_FILE}" \
+  --status "synchronized" \
+  --error ""
+chmod 0644 "${STATE_FILE}"
+echo "Cloudflare IP 白名单已核对并同步。"

@@ -29,6 +29,7 @@ const FrontendProxyService = require('../services/FrontendProxyService');
 const CloudflareApiEdgeService = require('../services/CloudflareApiEdgeService');
 const CloudflareBootstrapService = require('../services/CloudflareBootstrapService');
 const CloudflarePublicFrontendService = require('../services/CloudflarePublicFrontendService');
+const CloudflareIpWhitelistService = require('../services/CloudflareIpWhitelistService');
 const IntegrationState = require('../services/IntegrationStateService');
 const ControlCenterAgentService = require('../services/ControlCenterAgentService');
 const IpIntelligenceService = require('../services/IpIntelligenceService');
@@ -604,6 +605,33 @@ async function syncCloudflareOrigins(req, res) {
     if (!result.synchronized) return fail(res, 'API Edge 尚未配置', 409);
     return ok(res, result, '全部公共前台白名单已同步');
   } catch (error) { return fail(res, safeApiErrorMessage(error, '同步前台白名单失败'), 400); }
+}
+
+async function getCloudflareIpWhitelist(req, res) {
+  try {
+    res.setHeader('Cache-Control', 'no-store');
+    return ok(res, await CloudflareIpWhitelistService.getStatus());
+  } catch (error) {
+    console.error('读取 Cloudflare IP 白名单状态失败：', error);
+    return fail(res, safeApiErrorMessage(error, '读取 Cloudflare IP 白名单状态失败'), 503);
+  }
+}
+
+async function syncCloudflareIpWhitelist(req, res) {
+  try {
+    const result = await CloudflareIpWhitelistService.triggerSync();
+    await auditCloudflare(req, 'ip_whitelist_sync', 'server', 'caddy', true, {
+      ipv4: result.configured.ipv4.length,
+      ipv6: result.configured.ipv6.length,
+      synchronized: result.comparison.synchronized
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    return ok(res, result, 'Cloudflare IP 白名单已重新核对并同步');
+  } catch (error) {
+    await auditCloudflare(req, 'ip_whitelist_sync', 'server', 'caddy', false, { error: error.message });
+    console.error('手动同步 Cloudflare IP 白名单失败：', error);
+    return fail(res, safeApiErrorMessage(error, 'Cloudflare IP 白名单同步失败，请检查服务器自动更新服务'), 503);
+  }
 }
 
 async function verifyCloudflareFrontendAccount(req, res) {
@@ -2168,6 +2196,8 @@ module.exports = {
   verifyCloudflareCentral,
   redeployCloudflareCentral,
   syncCloudflareOrigins,
+  getCloudflareIpWhitelist,
+  syncCloudflareIpWhitelist,
   verifyCloudflareFrontendAccount,
   updateCloudflareFrontendAccountToken,
   reconcileCloudflareFrontendAccount,

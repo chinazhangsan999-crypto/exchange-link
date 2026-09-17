@@ -15,6 +15,8 @@
     hiddenMetrics: new Set(),
     statsTimer: null,
     chartTimer: null,
+    whitelistTimer: null,
+    whitelistManualAvailable: false,
     chartRequest: 0
   };
 
@@ -119,7 +121,134 @@
       box.id = 'suspicious-box';
       box.className = 'box';
       box.innerHTML = '<div class="box-head"><div><h2>疑似刷量预警</h2><p class="hint">采用高、中风险分层；样本不足仅展示监控，不发送告警。</p></div></div><div class="table-wrap"><table><thead><tr><th>站点</th><th>24小时 UV</th><th>24小时 PV</th><th>风险原因</th><th>快捷操作</th></tr></thead><tbody id="suspicious-body"></tbody></table></div>';
-      chart.insertAdjacentElement('afterend', box);
+      (document.querySelector('#cloudflare-ip-whitelist-box') || chart).insertAdjacentElement('afterend', box);
+    }
+  }
+
+  function createCloudflareIpWhitelistBox() {
+    if (document.querySelector('#cloudflare-ip-whitelist-box')) return;
+    const chart = document.querySelector('#site-traffic-chart-box');
+    if (!chart) return;
+    const box = document.createElement('div');
+    box.id = 'cloudflare-ip-whitelist-box';
+    box.className = 'box cf-ip-box';
+    box.innerHTML = `
+      <div class="box-head cf-ip-head">
+        <div>
+          <h2>Cloudflare 回源 IP 白名单</h2>
+          <p class="hint">实时对照 Cloudflare 官网清单与服务器 Caddy 当前生效清单；自动任务每天核对一次。</p>
+        </div>
+        <button id="sync-cloudflare-ip-whitelist" class="button ghost" type="button">立即核对并同步</button>
+      </div>
+      <div id="cloudflare-ip-summary" class="cf-ip-summary" aria-live="polite">正在读取白名单状态…</div>
+      <div class="cf-ip-columns">
+        <section class="cf-ip-panel">
+          <h3>Cloudflare 官网当前白名单</h3>
+          <p id="cloudflare-ip-official-meta" class="hint">—</p>
+          <details open><summary>IPv4 <b id="cloudflare-ip-official-v4-count">0</b> 条</summary><code id="cloudflare-ip-official-v4">—</code></details>
+          <details><summary>IPv6 <b id="cloudflare-ip-official-v6-count">0</b> 条</summary><code id="cloudflare-ip-official-v6">—</code></details>
+        </section>
+        <section class="cf-ip-panel">
+          <h3>服务器当前设计白名单</h3>
+          <p id="cloudflare-ip-configured-meta" class="hint">—</p>
+          <details open><summary>IPv4 <b id="cloudflare-ip-configured-v4-count">0</b> 条</summary><code id="cloudflare-ip-configured-v4">—</code></details>
+          <details><summary>IPv6 <b id="cloudflare-ip-configured-v6-count">0</b> 条</summary><code id="cloudflare-ip-configured-v6">—</code></details>
+        </section>
+      </div>
+      <div id="cloudflare-ip-diff" class="cf-ip-diff hint"></div>`;
+    chart.insertAdjacentElement('afterend', box);
+    box.querySelector('#sync-cloudflare-ip-whitelist').onclick = syncCloudflareIpWhitelist;
+  }
+
+  function dateTime(value) {
+    if (!value) return '尚无记录';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '时间未知';
+    return new Intl.DateTimeFormat('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false, timeZone: 'Asia/Shanghai'
+    }).format(date).replaceAll('/', '-');
+  }
+
+  function cidrText(values) {
+    return Array.isArray(values) && values.length ? values.join('\n') : '—';
+  }
+
+  function renderCloudflareIpWhitelist(data) {
+    createCloudflareIpWhitelistBox();
+    const official = data?.official || { ipv4: [], ipv6: [] };
+    const configured = data?.configured || { ipv4: [], ipv6: [] };
+    const comparison = data?.comparison || {};
+    const summary = document.querySelector('#cloudflare-ip-summary');
+    const synchronized = comparison.synchronized === true;
+    summary.className = `cf-ip-summary ${synchronized ? 'ok' : 'warn'}`;
+    summary.innerHTML = synchronized
+      ? '<strong>✓ 白名单一致</strong><span>服务器已完整采用 Cloudflare 当前官方 IP 网段。</span>'
+      : '<strong>! 白名单存在差异</strong><span>请检查下方缺失/多余网段，或点击立即同步。</span>';
+
+    const set = (selector, value) => { const element = document.querySelector(selector); if (element) element.textContent = value; };
+    set('#cloudflare-ip-official-v4-count', official.ipv4?.length || 0);
+    set('#cloudflare-ip-official-v6-count', official.ipv6?.length || 0);
+    set('#cloudflare-ip-configured-v4-count', configured.ipv4?.length || 0);
+    set('#cloudflare-ip-configured-v6-count', configured.ipv6?.length || 0);
+    set('#cloudflare-ip-official-v4', cidrText(official.ipv4));
+    set('#cloudflare-ip-official-v6', cidrText(official.ipv6));
+    set('#cloudflare-ip-configured-v4', cidrText(configured.ipv4));
+    set('#cloudflare-ip-configured-v6', cidrText(configured.ipv6));
+    set('#cloudflare-ip-official-meta', `${official.source === 'cloudflare-live' ? '官网实时读取' : '使用服务器最近一次快照'} · ${dateTime(official.fetchedAt)}`);
+    set('#cloudflare-ip-configured-meta', `${configured.source === 'server-state' ? '服务器实际状态' : '仓库默认配置'} · 最近成功同步 ${dateTime(data.lastAppliedAt)}`);
+
+    const missing = [...(comparison.missing?.ipv4 || []), ...(comparison.missing?.ipv6 || [])];
+    const extra = [...(comparison.extra?.ipv4 || []), ...(comparison.extra?.ipv6 || [])];
+    const messages = [
+      `自动任务：${data.automation?.schedule || '未配置'}`,
+      `最近检查：${dateTime(data.lastCheckedAt)}`,
+      missing.length ? `缺失 ${missing.length} 条：${missing.join('、')}` : '无缺失网段',
+      extra.length ? `多余 ${extra.length} 条：${extra.join('、')}` : '无多余网段'
+    ];
+    if (data.officialError) messages.push(`官网读取异常：${data.officialError}`);
+    if (data.lastError) messages.push(`最近更新异常：${data.lastError}`);
+    set('#cloudflare-ip-diff', messages.join(' ｜ '));
+    const button = document.querySelector('#sync-cloudflare-ip-whitelist');
+    if (button) {
+      state.whitelistManualAvailable = data.automation?.manualAvailable === true;
+      button.disabled = !state.whitelistManualAvailable;
+      button.title = state.whitelistManualAvailable ? '从 Cloudflare 官网重新获取、校验并安全重载 Caddy' : '服务器尚未安装 systemd 自动更新器';
+    }
+  }
+
+  async function loadCloudflareIpWhitelist() {
+    if (window.adminSessionActive !== true || !isDashboardVisible()) return;
+    createCloudflareIpWhitelistBox();
+    try {
+      renderCloudflareIpWhitelist(await request('/api/admin/cloudflare/ip-whitelist'));
+    } catch (error) {
+      const summary = document.querySelector('#cloudflare-ip-summary');
+      if (summary) {
+        summary.className = 'cf-ip-summary warn';
+        summary.textContent = `白名单状态读取失败：${error.message}`;
+      }
+    }
+  }
+
+  async function syncCloudflareIpWhitelist() {
+    const button = document.querySelector('#sync-cloudflare-ip-whitelist');
+    if (!button || button.disabled) return;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.textContent = '正在校验并重载…';
+    try {
+      const data = await request('/api/admin/cloudflare/ip-whitelist/sync', { method: 'POST' });
+      renderCloudflareIpWhitelist(data);
+      notify(data.comparison?.synchronized ? 'Cloudflare IP 白名单同步完成' : '同步已执行，但清单仍存在差异');
+    } catch (error) {
+      notify(error.message || 'Cloudflare IP 白名单同步失败');
+      await loadCloudflareIpWhitelist();
+    } finally {
+      button.disabled = !state.whitelistManualAvailable;
+      button.removeAttribute('aria-busy');
+      button.textContent = originalText;
     }
   }
 
@@ -317,14 +446,17 @@
   function startRefreshTimers() {
     if (state.statsTimer) clearInterval(state.statsTimer);
     if (state.chartTimer) clearInterval(state.chartTimer);
+    if (state.whitelistTimer) clearInterval(state.whitelistTimer);
     state.statsTimer = setInterval(() => { if (isDashboardVisible()) loadDashboardStats(); }, STATS_INTERVAL_MS);
     state.chartTimer = setInterval(() => { if (isDashboardVisible()) loadSiteTrafficTrend(); }, CHART_INTERVAL_MS);
+    state.whitelistTimer = setInterval(() => { if (isDashboardVisible()) loadCloudflareIpWhitelist(); }, CHART_INTERVAL_MS);
   }
 
   async function initDashboard() {
     createDashboard();
     startRefreshTimers();
-    await Promise.allSettled([loadDashboardStats(), loadSiteTrafficTrend()]);
+    createCloudflareIpWhitelistBox();
+    await Promise.allSettled([loadDashboardStats(), loadSiteTrafficTrend(), loadCloudflareIpWhitelist()]);
   }
 
   document.addEventListener('visibilitychange', () => {
@@ -360,6 +492,7 @@
   window.loadDashboardStats = loadDashboardStats;
   window.loadSiteTrafficTrend = loadSiteTrafficTrend;
   window.loadFraudAlerts = loadDashboardStats;
+  window.loadCloudflareIpWhitelist = loadCloudflareIpWhitelist;
   window.initDashboard = initDashboard;
   window.setupPartnerCategoryFilter = setupCategoryFilter;
 })();

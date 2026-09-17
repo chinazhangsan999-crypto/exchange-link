@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Cloudflare IP whitelist synchronization
+
+[Timer]
+OnCalendar=*-*-* 04:20:00 Asia/Shanghai
+RandomizedDelaySec=30m
+Persistent=true
+Unit=webring-cloudflare-ip-sync.service
+
+[Install]
+WantedBy=timers.target

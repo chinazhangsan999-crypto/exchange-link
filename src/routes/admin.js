@@ -43,6 +43,8 @@ router.get('/api/admin/cloudflare/overview', AdminController.getCloudflareOvervi
 router.post('/api/admin/cloudflare/central/verify', AdminController.verifyCloudflareCentral);
 router.post('/api/admin/cloudflare/central/redeploy/:target', AdminController.redeployCloudflareCentral);
 router.post('/api/admin/cloudflare/central/sync-origins', AdminController.syncCloudflareOrigins);
+router.get('/api/admin/cloudflare/ip-whitelist', AdminController.getCloudflareIpWhitelist);
+router.post('/api/admin/cloudflare/ip-whitelist/sync', AdminController.syncCloudflareIpWhitelist);
 router.post('/api/admin/cloudflare/accounts/:id/verify', AdminController.verifyCloudflareFrontendAccount);
 router.put('/api/admin/cloudflare/accounts/:id/token', AdminController.updateCloudflareFrontendAccountToken);
 router.post('/api/admin/cloudflare/accounts/:id/reconcile', AdminController.reconcileCloudflareFrontendAccount);

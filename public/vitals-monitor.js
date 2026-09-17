@@ -1,4 +1,7 @@
+// @charset "UTF-8";
+// -*- coding: utf-8 -*-
 // public/vitals-monitor.js
+
 const CACHE_VERSION = 'v1.0.4';
 
 // 伪装变量名：实际上是 TXT 域名

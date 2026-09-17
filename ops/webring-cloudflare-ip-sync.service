@@ -1,0 +1,15 @@
+[Unit]
+Description=Synchronize Cloudflare IP ranges into Caddy
+After=network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/webring-cloudflare-ip-sync
+ExecStart=/usr/local/sbin/webring-cloudflare-ip-sync
+User=root
+Group=root
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target
