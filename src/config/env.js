@@ -64,8 +64,9 @@ const IP_INTELLIGENCE_BATCH_SIZE = Math.max(1, Math.min(100,
 const CONTROL_CENTER_ENABLED = process.env.CONTROL_CENTER_ENABLED === '1';
 const CONTROL_CENTER_URL = String(process.env.CONTROL_CENTER_URL || '').trim().replace(/\/$/, '');
 const CONTROL_CENTER_SITE_CREDENTIAL = String(process.env.CONTROL_CENTER_SITE_CREDENTIAL || '').trim();
-const CONTROL_CENTER_CREDENTIAL_FILE = String(process.env.CONTROL_CENTER_CREDENTIAL_FILE
-  || (IS_PRODUCTION ? '/home/niaiwo/app-secrets/control-center-site.json' : 'data/secrets/control-center-site.json')).trim();
+// 留空时由凭据存储层按当前运行用户的主目录选择安全路径，避免部署到
+// 不同 Linux 用户后仍写入旧服务器的 /home/niaiwo。
+const CONTROL_CENTER_CREDENTIAL_FILE = String(process.env.CONTROL_CENTER_CREDENTIAL_FILE || '').trim();
 const CONTROL_CENTER_SYNC_INTERVAL_MS = Math.max(10_000, Math.min(10 * 60_000,
   Number.parseInt(process.env.CONTROL_CENTER_SYNC_INTERVAL_MS || '60000', 10) || 60_000));
 // 后台 HTML 与 /api/admin/* 只能经该可信边缘域名进入。
