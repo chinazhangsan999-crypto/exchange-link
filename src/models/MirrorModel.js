@@ -161,8 +161,14 @@ async function syncMirrorsFromCsv(rows) {
 async function syncMirrorsToPartners() {
   return withTransaction(async ({ run: txRun, get: txGet, all: txAll }) => {
     const entries = await txAll('SELECT speed_name, partner_name, url FROM mirrors WHERE status = 1 ORDER BY speed_name COLLATE NOCASE ASC');
-    const firstCategory = await txGet('SELECT name FROM categories ORDER BY sort_order ASC, id ASC LIMIT 1');
-    if (entries.length && !firstCategory?.name) throw new Error('请先创建至少一个站点分类，再启用节点');
+    let firstCategory = await txGet('SELECT name FROM categories ORDER BY sort_order ASC, id ASC LIMIT 1');
+    if (entries.length && !firstCategory?.name) {
+      const maxOrder = await txGet('SELECT COALESCE(MAX(sort_order), 0) AS value FROM categories');
+      await txRun('INSERT OR IGNORE INTO categories(name, sort_order) VALUES (?, ?)', [
+        '备用节点', Number(maxOrder?.value || 0) + 1
+      ]);
+      firstCategory = await txGet('SELECT name FROM categories WHERE name = ?', ['备用节点']);
+    }
 
     await txRun('CREATE TEMP TABLE desired_internal_partner_ids(id INTEGER PRIMARY KEY)');
     let inserted = 0;
