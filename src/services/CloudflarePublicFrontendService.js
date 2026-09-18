@@ -12,7 +12,7 @@ const API_BASE = 'https://api.cloudflare.com/client/v4';
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const PUBLIC_DIRECTORY = path.join(PROJECT_ROOT, 'public');
 const PUBLIC_WORKER_SOURCE = path.join(PROJECT_ROOT, 'ops', 'public-edge', 'worker.js');
-const API_ORIGIN = String(process.env.PUBLIC_API_ORIGIN || 'https://api-link.chinazhangsan.ccwu.cc').trim().replace(/\/$/, '');
+const PUBLIC_API_ORIGIN = String(process.env.PUBLIC_API_ORIGIN || '').trim().replace(/\/$/, '');
 const HOSTNAME_PATTERN = /^(?=.{3,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const PROFILE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const WORKER_PREFIX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,54}$/;
@@ -42,6 +42,21 @@ function normalizeHostname(value) {
   const hostname = String(value || '').trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '').replace(/\.$/, '');
   if (!HOSTNAME_PATTERN.test(hostname)) throw new Error('前台域名格式不正确');
   return hostname;
+}
+
+function resolveApiOrigin() {
+  const configuredDomain = String(CredentialStore.cloudflareBootstrapConfig().apiDomain || '')
+    .trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '').replace(/\.$/, '');
+  if (HOSTNAME_PATTERN.test(configuredDomain)) return `https://${configuredDomain}`;
+
+  let fallback;
+  try { fallback = new URL(PUBLIC_API_ORIGIN); }
+  catch { throw new Error('中央 API 域名尚未配置，无法创建公共前台 Worker'); }
+  if (fallback.protocol !== 'https:' || fallback.username || fallback.password
+    || fallback.pathname !== '/' || fallback.search || fallback.hash) {
+    throw new Error('PUBLIC_API_ORIGIN 必须是仅含域名的 HTTPS 地址');
+  }
+  return fallback.origin;
 }
 
 function normalizeProfile(input = {}, existing = {}) {
@@ -382,7 +397,7 @@ async function uploadAndDeploy(profile, workerName) {
     compatibility_date: '2026-09-14',
     bindings: [
       { name: 'ASSETS', type: 'assets' },
-      { name: 'API_ORIGIN', type: 'plain_text', text: API_ORIGIN }
+      { name: 'API_ORIGIN', type: 'plain_text', text: resolveApiOrigin() }
     ],
     assets: { jwt: completionJwt, config: { run_worker_first: RUN_WORKER_FIRST } }
   };

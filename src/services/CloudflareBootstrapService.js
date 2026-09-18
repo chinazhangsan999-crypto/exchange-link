@@ -57,10 +57,10 @@ function normalizeInput(input = {}) {
   return {
     accountId,
     apiToken,
-    originUrl: normalizeHttpsUrl(input.originUrl || stored.originUrl || 'https://origin-link.chinazhangsan.ccwu.cc', '源站地址'),
-    apiDomain: normalizeHostname(input.apiDomain || stored.apiDomain || 'api-link.chinazhangsan.ccwu.cc', 'API 域名'),
+    originUrl: normalizeHttpsUrl(input.originUrl || stored.originUrl, '源站地址'),
+    apiDomain: normalizeHostname(input.apiDomain || stored.apiDomain, 'API 域名'),
     apiWorkerName: normalizeWorkerName(input.apiWorkerName || stored.apiWorkerName || edge.workerName || 'webring-api-test', 'API Worker 名称'),
-    adminDomain: normalizeHostname(input.adminDomain || stored.adminDomain || 'houtai.chinazhangsan.ccwu.cc', '后台域名'),
+    adminDomain: normalizeHostname(input.adminDomain || stored.adminDomain, '后台域名'),
     adminWorkerName: normalizeWorkerName(input.adminWorkerName || stored.adminWorkerName || 'webring-admin-edge', '后台 Worker 名称')
   };
 }
@@ -72,10 +72,10 @@ function publicStatus() {
     configured: Boolean(edge.accountId && edge.workerName && edge.apiToken && stored.apiDomain && stored.adminDomain),
     accountId: edge.accountId,
     apiTokenConfigured: Boolean(edge.apiToken),
-    originUrl: stored.originUrl || 'https://origin-link.chinazhangsan.ccwu.cc',
-    apiDomain: stored.apiDomain || 'api-link.chinazhangsan.ccwu.cc',
+    originUrl: stored.originUrl || '',
+    apiDomain: stored.apiDomain || '',
     apiWorkerName: stored.apiWorkerName || edge.workerName || 'webring-api-test',
-    adminDomain: stored.adminDomain || 'houtai.chinazhangsan.ccwu.cc',
+    adminDomain: stored.adminDomain || '',
     adminWorkerName: stored.adminWorkerName || 'webring-admin-edge'
   };
 }

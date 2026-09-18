@@ -19,10 +19,10 @@
         <legend>中央 API 与管理后台</legend>
         <label>Cloudflare Account ID<input name="accountId" autocomplete="off" required></label>
         <label>Cloudflare API Token<input name="apiToken" type="password" autocomplete="new-password" required></label>
-        <label class="wide">源站地址<input name="originUrl" type="url" value="https://origin-link.chinazhangsan.ccwu.cc" required><small>填写 Caddy 对外的 HTTPS 源站，不是公共前台地址。</small></label>
-        <label>API 域名<input name="apiDomain" value="api-link.chinazhangsan.ccwu.cc" required></label>
+        <label class="wide">源站地址<input name="originUrl" type="url" placeholder="https://origin.example.com" required><small>填写 Caddy 对外的 HTTPS 源站，不是公共前台地址。</small></label>
+        <label>API 域名<input name="apiDomain" placeholder="api.example.com" required></label>
         <label>API Worker 名称<input name="apiWorkerName" value="webring-api-test" required></label>
-        <label>后台域名<input name="adminDomain" value="houtai.chinazhangsan.ccwu.cc" required></label>
+        <label>后台域名<input name="adminDomain" placeholder="admin.example.com" required></label>
         <label>后台 Worker 名称<input name="adminWorkerName" value="webring-admin-edge" required></label>
       </fieldset>
       <fieldset class="form-section">

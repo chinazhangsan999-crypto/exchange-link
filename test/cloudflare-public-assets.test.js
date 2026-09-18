@@ -16,6 +16,7 @@ test('多批静态资源共用上传 JWT，并仅在最后一批接收完成 JWT
   const database = require('../src/config/database');
   const originalProfiles = CredentialStore.cloudflarePublicFrontendProfiles;
   const originalSaveProfiles = CredentialStore.saveCloudflarePublicFrontendProfiles;
+  const originalBootstrapConfig = CredentialStore.cloudflareBootstrapConfig;
   const originalFetch = global.fetch;
   let storedProfiles = [];
   let uploadCalls = 0;
@@ -25,6 +26,7 @@ test('多批静态资源共用上传 JWT，并仅在最后一批接收完成 JWT
 
   CredentialStore.cloudflarePublicFrontendProfiles = () => storedProfiles;
   CredentialStore.saveCloudflarePublicFrontendProfiles = async profiles => { storedProfiles = profiles; };
+  CredentialStore.cloudflareBootstrapConfig = () => ({ apiDomain: 'api-new.example.com' });
   global.fetch = async (url, options = {}) => {
     const target = String(url);
     const response = result => new Response(JSON.stringify({ success: true, result }), {
@@ -55,6 +57,7 @@ test('多批静态资源共用上传 JWT，并仅在最后一批接收完成 JWT
     if (options.method === 'PUT' && target.includes('/workers/scripts/') && !target.endsWith('/secrets')) {
       const metadata = JSON.parse(await options.body.get('metadata').text());
       assert.equal(metadata.assets.jwt, 'completion-token');
+      assert.equal(metadata.bindings.find(binding => binding.name === 'API_ORIGIN')?.text, 'https://api-new.example.com');
       assert.equal(options.body.get('worker.js').type, 'application/javascript+module');
       assert.ok(metadata.assets.config.run_worker_first.includes('/.well-known/route-health.gif'));
       assert.match(await options.body.get('worker.js').text(), /'\/.well-known\/route-health\.gif'/);
@@ -81,6 +84,7 @@ test('多批静态资源共用上传 JWT，并仅在最后一批接收完成 JWT
   } finally {
     CredentialStore.cloudflarePublicFrontendProfiles = originalProfiles;
     CredentialStore.saveCloudflarePublicFrontendProfiles = originalSaveProfiles;
+    CredentialStore.cloudflareBootstrapConfig = originalBootstrapConfig;
     global.fetch = originalFetch;
     await database.closeDatabase();
     for (const suffix of ['', '-wal', '-shm']) fs.rmSync(`${databasePath}${suffix}`, { force: true });
