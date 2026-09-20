@@ -275,6 +275,12 @@ async function listReviewPartners() {
     ORDER BY p.created_at ASC`);
 }
 
+/** 仅供后台导航徽标使用，避免每次刷新后台都加载完整审核列表。 */
+async function countReviewPartners() {
+  const row = await get('SELECT COUNT(*) AS count FROM partners WHERE is_approved = 0');
+  return Number(row?.count || 0);
+}
+
 async function listAdminPartners(query = '') {
   const keyword = String(query || '').trim();
   const rows = await all(
@@ -466,6 +472,7 @@ module.exports = {
   getOverviewPartnerStats,
   getNewPartnerCounts,
   listReviewPartners,
+  countReviewPartners,
   listAdminPartners,
   findAnalyticsPartner,
   findSubmissionByDomain,

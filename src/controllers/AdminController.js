@@ -881,6 +881,14 @@ async function getReview(req, res) {
   }
 }
 
+async function getReviewCount(req, res) {
+  try {
+    return ok(res, { count: await PartnerModel.countReviewPartners() });
+  } catch {
+    return fail(res, '获取待审核友链数量失败', 500);
+  }
+}
+
 async function getOverview(req, res) {
   try {
     const [total, partnerStats] = await Promise.all([
@@ -2217,6 +2225,7 @@ module.exports = {
   getWebhookHealth,
   listWebhookDeliveries,
   getReview,
+  getReviewCount,
   getOverview,
   getDashboardStats,
   getSiteTrafficTrend,

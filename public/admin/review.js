@@ -83,7 +83,7 @@
   function install() {
     if (document.querySelector('#review-tab')) return;
     const tabs = document.querySelector('.tabs');
-    const reviewButton = document.createElement('button'); reviewButton.id = 'review-tab'; reviewButton.innerHTML = '友链审核 <b id="review-count" class="review-badge">0</b>';
+    const reviewButton = document.createElement('button'); reviewButton.id = 'review-tab'; reviewButton.innerHTML = '友链审核 <b id="review-count" class="review-badge" aria-live="polite">…</b>';
     const cloudflareButton = document.createElement('button'); cloudflareButton.id = 'cloudflare-tab'; cloudflareButton.textContent = 'Cloudflare 管理';
     const settingsButton = document.createElement('button'); settingsButton.id = 'settings-tab'; settingsButton.textContent = '系统设置'; tabs.append(reviewButton, cloudflareButton, settingsButton);
     const review = document.createElement('section'); review.id = 'review'; review.className = 'panel'; review.innerHTML = `<div class="box"><div class="box-head"><div><h2>友链审核</h2><p class="hint">待审核站点累计有效独立 IP 达到自动通过阈值后将自动上线。</p></div><button id="refresh-review" class="button ghost">刷新列表</button></div><div class="table-card"><div class="table-wrap"><table class="admin-table review-table"><colgroup><col class="review-col-site"><col class="review-col-url"><col class="review-col-description"><col class="review-col-contact"><col class="review-col-score"><col class="review-col-progress"><col class="review-col-time"><col class="review-col-actions"></colgroup><thead><tr><th>站点 / 分类</th><th>友链地址</th><th>一句话描述</th><th>申请人联系方式</th><th>24h 积分</th><th>入站进度</th><th>申请时间</th><th>操作</th></tr></thead><tbody id="review-body"></tbody></table></div></div></div>`;
@@ -106,10 +106,26 @@
   async function loadReview() {
     if (!hasSession()) return;
     try {
-      const data = await api('/api/admin/review'); document.querySelector('#review-count').textContent = data.count;
+      const data = await api('/api/admin/review'); setReviewCount(data.count);
       document.querySelector('#review-body').innerHTML = data.partners.map(item => `<tr><td class="site-cell"><b class="text-ellipsis" title="${esc(item.name)}">${esc(item.name)}</b><span class="site-domain" title="${esc(item.category || '未分类')}">${esc(item.category || '未分类')}</span></td><td><a href="${esc(item.url)}" target="_blank" rel="noopener" class="review-url text-ellipsis" title="${esc(item.url)}">${esc(item.url)}</a></td><td><span class="text-ellipsis review-description" title="${esc(item.description || '—')}">${esc(item.description || '—')}</span></td><td><span class="text-ellipsis review-contact" title="${esc(item.contact || '—')}">${esc(item.contact || '—')}</span></td><td class="score-center">${Number(item.score_24h || 0)}</td><td><span class="progress-pill">${Number(item.total_uv || 0)} / ${data.threshold}</span></td><td><span class="compact-time" title="${esc(item.created_at)}">${esc(time(item.created_at))}</span></td><td><div class="action-btn-group"><button class="btn-sm btn-action btn-pass approve-review" data-id="${item.id}">通过</button><button class="btn-sm btn-action btn-reject reject-review" data-id="${item.id}">拒绝</button></div></td></tr>`).join('') || '<tr><td class="empty-row" colspan="8">暂无待审核友链</td></tr>';
       document.querySelectorAll('.approve-review').forEach(button => button.onclick = () => reviewAction(button.dataset.id, 1)); document.querySelectorAll('.reject-review').forEach(button => button.onclick = () => reviewAction(button.dataset.id, 2));
     } catch (error) { toast(error.message); }
+  }
+
+  function setReviewCount(value) {
+    const badge = document.querySelector('#review-count');
+    if (badge) badge.textContent = String(Number(value || 0));
+  }
+
+  async function refreshReviewCount() {
+    if (!hasSession()) return;
+    try {
+      const data = await api('/api/admin/review/count');
+      setReviewCount(data.count);
+    } catch {
+      const badge = document.querySelector('#review-count');
+      if (badge) { badge.textContent = '—'; badge.title = '待审核数量加载失败'; }
+    }
   }
   async function reviewAction(id, status) { if (status === 2 && !confirm('确定拒绝该申请吗？')) return; try { await api('/api/admin/partners/' + id, { method: 'PATCH', body: JSON.stringify({ is_approved: status }) }); toast(status === 1 ? '已手动审核通过' : '已拒绝申请'); loadReview(); window.loadPartners?.(); } catch (error) { toast(error.message); } }
   async function loadSettings() { try { const data = await api('/api/admin/settings'), form = document.querySelector('#settings-form'); Object.entries(data).forEach(([key, value]) => { if (!form.elements[key]) return; if (form.elements[key].type === 'checkbox') form.elements[key].checked = String(value) === '1'; else form.elements[key].value = value; }); const keyState = document.querySelector('#bark-key-state'); if (keyState) keyState.textContent = data.bark_device_key_configured ? '已保存 Device Key；留空表示不修改。' : '尚未保存 Device Key。'; setLogoPreview(form.elements.site_logo_url?.value); await loadWebhookHealth(); } catch (error) { toast(error.message); } }
@@ -255,5 +271,5 @@
   async function loadWebhookHealth() { const card = document.querySelector('#webhook-health-card'); if (!card) return; try { const data = await api('/api/admin/webhook/health'); const primary = data.primary || {}, backup = data.backup || {}; card.innerHTML = `<div class="webhook-health-head"><strong>告警投递健康</strong><span><button id="refresh-webhook-health" type="button" class="button ghost">↻ 刷新状态</button><button id="show-webhook-deliveries" type="button" class="button ghost">查看最近投递</button></span></div><div class="webhook-health-grid"><p>主通道：${esc(primary.provider || 'none')} <b>${healthLabel(primary.status)}</b></p><p>备用通道：Bark <b>${healthLabel(backup.status)}</b></p><p>主通道连续失败：<b>${Number(primary.consecutiveFailures || 0)} 次</b></p><p>主通道近24h：成功 ${Number(primary.success24h || 0)} / 失败 ${Number(primary.failed24h || 0)} / ${Number(primary.successRate24h || 0).toFixed(1)}%</p><p>最近主通道成功：${esc(time(primary.lastSuccessAt))}</p><p>最近失败原因：${esc(primary.lastFailureReason || '—')}</p><p>最近 Bark 成功：${esc(time(backup.lastSuccessAt))}</p><p>最近故障转移：${esc(time(data.lastFallbackAt))}</p></div><div id="webhook-delivery-list" hidden></div>`; card.querySelector('#refresh-webhook-health')?.addEventListener('click', loadWebhookHealth); card.querySelector('#show-webhook-deliveries')?.addEventListener('click', loadWebhookDeliveries); } catch (error) { card.innerHTML = `<p class="webhook-health-empty">状态读取失败：${esc(error.message)}</p>`; } }
   async function testWebhook() { const button = document.querySelector('#test-webhook'); try { button.disabled = true; button.textContent = '发送中…'; const data = await api('/api/admin/settings/test-webhook', { method: 'POST' }); await loadWebhookHealth(); toast(data.result?.provider ? `主通道测试消息已通过 ${data.result.provider} 发送` : '主通道测试消息已发送'); } catch (error) { await loadWebhookHealth(); toast(error.message); } finally { button.disabled = false; button.textContent = '🔔 测试主通道'; } }
   async function testBark() { const button = document.querySelector('#test-bark'); try { button.disabled = true; button.textContent = '发送中…'; await api('/api/admin/settings/test-bark', { method: 'POST' }); await loadWebhookHealth(); toast('Bark 测试消息已发送'); } catch (error) { await loadWebhookHealth(); toast(error.message); } finally { button.disabled = false; button.textContent = '📱 测试 Bark'; } }
-  const style = document.createElement('link'); style.rel = 'stylesheet'; style.href = '/admin/review.css?v=20260917-cloudflare-merged-3'; document.head.append(style); const logoStyle = document.createElement('link'); logoStyle.rel = 'stylesheet'; logoStyle.href = '/admin/logo-settings.css?v=20260908-1'; document.head.append(logoStyle); install(); window.fetchPendingCount = loadReview; window.loadCloudflareSettings = loadCloudflareSettings; window.loadAdminSettings = loadAllSettings;
+  const style = document.createElement('link'); style.rel = 'stylesheet'; style.href = '/admin/review.css?v=20260917-cloudflare-merged-3'; document.head.append(style); const logoStyle = document.createElement('link'); logoStyle.rel = 'stylesheet'; logoStyle.href = '/admin/logo-settings.css?v=20260908-1'; document.head.append(logoStyle); install(); window.fetchPendingCount = loadReview; window.refreshReviewCount = refreshReviewCount; window.loadCloudflareSettings = loadCloudflareSettings; window.loadAdminSettings = loadAllSettings;
 })();

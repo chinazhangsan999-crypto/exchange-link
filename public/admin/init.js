@@ -156,6 +156,7 @@
     window.adminSessionActive = true;
     document.querySelector('#login-modal')?.classList.remove('open');
     void window.loadAdminBrand();
+    void window.refreshReviewCount?.();
     window.restoreAdminTab();
     toast('登录成功，已恢复上次访问页面');
   }
@@ -262,6 +263,7 @@
     if (hasSession()) {
       document.querySelector('#login-modal')?.classList.remove('open');
       void window.loadAdminBrand();
+      void window.refreshReviewCount?.();
       window.restoreAdminTab();
     } else {
       document.querySelector('#login-modal')?.classList.add('open');

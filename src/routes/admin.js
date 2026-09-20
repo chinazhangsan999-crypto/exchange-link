@@ -63,6 +63,7 @@ router.post('/api/admin/settings/test-bark', AdminController.testBark);
 router.get('/api/admin/webhook/health', AdminController.getWebhookHealth);
 router.get('/api/admin/webhook/deliveries', AdminController.listWebhookDeliveries);
 router.get('/api/admin/review', AdminController.getReview);
+router.get('/api/admin/review/count', AdminController.getReviewCount);
 router.get('/api/admin/overview', AdminController.getOverview);
 router.get('/api/admin/dashboard/stats', AdminController.getDashboardStats);
 router.get('/api/admin/dashboard/site-traffic', AdminController.getSiteTrafficTrend);
