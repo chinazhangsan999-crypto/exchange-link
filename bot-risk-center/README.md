@@ -9,6 +9,9 @@
 3. 执行 `migrations/001_initial.sql`。
 4. 安装依赖并运行 `npm start`。
 
+若宿主机的 `127.0.0.1:5432` 已被其他 PostgreSQL 使用，可在 Compose 环境文件中设置
+`POSTGRES_BIND_PORT`，并让 `DATABASE_URL` 指向同一个本机端口；容器内部端口保持 5432。
+
 生产环境仅监听 `127.0.0.1`，由受信反向代理提供 TLS。导航站通过 HMAC 调用 `/v1/*`；健康检查不返回版本、配置或依赖细节。
 
 ## 决策边界
