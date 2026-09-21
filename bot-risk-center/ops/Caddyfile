@@ -1,4 +1,4 @@
-fengxian.changzhangsan.ccwu.cc {
+fengxian.chinazhangsan.ccwu.cc {
   encode zstd gzip
   import cloudflare-ips.caddy
 
