@@ -12,12 +12,12 @@ function page(req, res) {
 }
 
 function stylesheet(req, res) {
-  res.type('text/css').set('Cache-Control', 'public, max-age=3600');
+  res.type('text/css').set('Cache-Control', 'no-store');
   return res.sendFile(path.join(PUBLIC_DIR, 'admin.css'));
 }
 
 function script(req, res) {
-  res.type('application/javascript').set('Cache-Control', 'public, max-age=3600');
+  res.type('application/javascript').set('Cache-Control', 'no-store');
   return res.sendFile(path.join(PUBLIC_DIR, 'admin.js'));
 }
 
