@@ -57,10 +57,18 @@ function rejectAdminSession(req, res, status, message, reason) {
   return res.status(status).json({ code: status, msg: message, data: null });
 }
 
-/** JWT 管理身份校验：浏览器优先使用 HttpOnly Cookie，保留短暂 Bearer 仅供统一后台交换。 */
-async function requireAdmin(req, res, next) {
+function selectAdminToken(req) {
   const bearer = req.get('authorization')?.replace(/^Bearer\s+/i, '').trim();
-  const token = readCookie(req, ADMIN_SESSION_COOKIE) || bearer;
+  const cookie = readCookie(req, ADMIN_SESSION_COOKIE);
+  const isSessionExchange = req.method === 'POST' && req.path === '/api/admin/session/exchange';
+  // 统一登录交换必须优先使用刚签发的短效 Bearer；否则浏览器残留的旧 Cookie
+  // 会遮蔽新凭证，令合法的总后台登录被误判为 invalid_token。
+  return isSessionExchange ? (bearer || cookie) : (cookie || bearer);
+}
+
+/** JWT 管理身份校验：日常请求优先使用 HttpOnly Cookie，统一登录交换优先使用短暂 Bearer。 */
+async function requireAdmin(req, res, next) {
+  const token = selectAdminToken(req);
   if (!token) {
     return rejectAdminSession(req, res, 401, '需要管理员令牌', 'missing_session');
   }
@@ -113,6 +121,7 @@ function requireAdminCsrf(req, res, next) {
 module.exports = {
   requireAdmin,
   requireAdminCsrf,
+  selectAdminToken,
   issueAdminToken,
   setAdminSessionCookies,
   setAdminCsrfCookie,
