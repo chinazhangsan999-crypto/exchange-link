@@ -112,6 +112,7 @@ function publicProfile(profile, account = null, workers = []) {
       lastHealthAt: worker.last_health_at || null,
       lastDeployedAt: worker.last_deployed_at || null,
       migrationState: worker.migration_state || 'none',
+      recoveryProfileId: Number(worker.recovery_profile_id || 1),
       error: worker.error_message || null,
       createdAt: worker.created_at,
       updatedAt: worker.updated_at
@@ -497,10 +498,10 @@ async function resolveProfileForHostname(hostname, preferredProfileId = null) {
   return { hostname, profile: candidates[0].profile, zone: candidates[0].zone };
 }
 
-async function createDedicatedFrontend(hostnameInput, preferredProfileId = null) {
+async function createDedicatedFrontend(hostnameInput, preferredProfileId = null, recoveryProfileId = 1) {
   const hostname = normalizeHostname(hostnameInput);
   const resolved = await resolveProfileForHostname(hostname, preferredProfileId);
-  const reservation = await CloudflareFrontendModel.reserveWorker(resolved.profile.id, hostname, resolved.zone);
+  const reservation = await CloudflareFrontendModel.reserveWorker(resolved.profile.id, hostname, resolved.zone, { recoveryProfileId });
   let domain = null;
   try {
     await withProvisioningLock(() => provisionReservedWorker(resolved.profile, reservation));
@@ -510,7 +511,7 @@ async function createDedicatedFrontend(hostnameInput, preferredProfileId = null)
     });
     const securityBaseline = await withProvisioningLock(() => ensureZoneSecurityBaseline(resolved.profile, resolved.zone))
       .catch(error => ({ zone: resolved.zone, applied: false, error: String(error?.message || '安全基线配置失败') }));
-    return { ...reservation, profileId: resolved.profile.id, accountId: resolved.profile.accountId, hostname, zone: resolved.zone, domainId: domain.id, securityBaseline };
+    return { ...reservation, profileId: resolved.profile.id, recoveryProfileId: Number(recoveryProfileId), accountId: resolved.profile.accountId, hostname, zone: resolved.zone, domainId: domain.id, securityBaseline };
   } catch (error) {
     if (domain?.id) await request(resolved.profile, 'DELETE', `/accounts/${encodeURIComponent(resolved.profile.accountId)}/workers/domains/${encodeURIComponent(domain.id)}`).catch(() => undefined);
     await request(resolved.profile, 'DELETE', `/accounts/${encodeURIComponent(resolved.profile.accountId)}/workers/scripts/${encodeURIComponent(reservation.workerName)}`).catch(() => undefined);
@@ -642,7 +643,7 @@ async function prepareMigration(input = {}) {
   let targetWorker;
   try {
     targetWorker = await CloudflareFrontendModel.reserveWorker(targetProfileId, null, null, {
-      previousWorkerId: source.id, migrationState: 'prepared'
+      previousWorkerId: source.id, migrationState: 'prepared', recoveryProfileId: source.recovery_profile_id || 1
     });
     await withProvisioningLock(() => provisionReservedWorker(targetProfile, targetWorker));
     await CloudflareFrontendModel.updateWorker(targetWorker.id, { state: 'ready', deployed: true, migrationState: 'prepared' });

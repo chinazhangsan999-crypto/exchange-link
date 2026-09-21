@@ -50,6 +50,8 @@ router.post('/api/admin/cloudflare/central/sync-origins', AdminController.syncCl
 router.get('/api/admin/cloudflare/ip-whitelist', AdminController.getCloudflareIpWhitelist);
 router.post('/api/admin/cloudflare/ip-whitelist/sync', AdminController.syncCloudflareIpWhitelist);
 router.get('/api/admin/recovery', RecoveryController.getOverview);
+router.get('/api/admin/recovery/profiles', RecoveryController.listProfiles);
+router.post('/api/admin/recovery/profiles', RecoveryController.createProfile);
 router.put('/api/admin/recovery/settings', RecoveryController.saveSettings);
 router.post('/api/admin/recovery/domains', RecoveryController.createDomain);
 router.put('/api/admin/recovery/domains/:id', RecoveryController.updateDomain);
@@ -60,6 +62,8 @@ router.post('/api/admin/recovery/bootstrap', RecoveryController.createBootstrap)
 router.put('/api/admin/recovery/bootstrap/:id', RecoveryController.updateBootstrap);
 router.delete('/api/admin/recovery/bootstrap/:id', RecoveryController.deleteBootstrap);
 router.get('/api/admin/recovery/bootstrap/:id/doh', RecoveryController.diagnoseDoh);
+router.post('/api/admin/recovery/lookup-routes', RecoveryController.createLookupRoute);
+router.delete('/api/admin/recovery/lookup-routes/:id', RecoveryController.deleteLookupRoute);
 router.put('/api/admin/recovery/cloudflare', RecoveryController.saveCloudflare);
 router.post('/api/admin/recovery/keys/ensure', RecoveryController.ensureKey);
 router.post('/api/admin/recovery/keys/next', RecoveryController.generateNextKey);

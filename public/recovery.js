@@ -1,10 +1,10 @@
 /** 故障时才运行：本地签名清单 -> 动态图片测活 -> 多 DoH -> 手动前往。 */
 (() => {
-  const RESOLVERS = [
-    { id: 'dnspod', label: 'DNSPod', url: 'https://doh.pub/dns-query' },
-    { id: 'alidns', label: 'AliDNS', url: 'https://dns.alidns.com/resolve' },
-    { id: 'cloudflare', label: 'Cloudflare', url: 'https://cloudflare-dns.com/dns-query' },
-    { id: 'google', label: 'Google', url: 'https://dns.google/resolve' }
+  const LEGACY_RESOLVERS = [
+    { resolverId: 'dnspod', resolverLabel: 'DNSPod', endpoint: 'https://doh.pub/dns-query', format: 'wire', priority: 1, timeoutMs: 2500 },
+    { resolverId: 'alidns', resolverLabel: 'AliDNS', endpoint: 'https://dns.alidns.com/dns-query', format: 'wire', priority: 1, timeoutMs: 2500 },
+    { resolverId: 'cloudflare', resolverLabel: 'Cloudflare', endpoint: 'https://cloudflare-dns.com/dns-query', format: 'wire', priority: 2, timeoutMs: 3000 },
+    { resolverId: 'google', resolverLabel: 'Google Public DNS', endpoint: 'https://dns.google/dns-query', format: 'wire', priority: 2, timeoutMs: 3000 }
   ];
   const statusElement = document.querySelector('#recovery-status');
   const progressElement = document.querySelector('#recovery-progress');
@@ -46,34 +46,87 @@
     return winner;
   }
 
-  async function queryDoh(resolver, name) {
+  function dnsWireQuery(name) {
+    const bytes = [0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0];
+    for (const label of name.split('.')) {
+      const encoded = new TextEncoder().encode(label); bytes.push(encoded.length, ...encoded);
+    }
+    bytes.push(0, 0, 16, 0, 1);
+    return new Uint8Array(bytes);
+  }
+
+  function toBase64Url(bytes) {
+    let binary = ''; bytes.forEach(byte => { binary += String.fromCharCode(byte); });
+    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+  }
+
+  function skipDnsName(bytes, offset) {
+    let cursor = offset;
+    while (cursor < bytes.length) {
+      const length = bytes[cursor];
+      if ((length & 0xc0) === 0xc0) return cursor + 2;
+      cursor += 1;
+      if (length === 0) return cursor;
+      cursor += length;
+    }
+    throw new Error('DNS 响应名称越界');
+  }
+
+  function parseDnsWireTxt(buffer) {
+    const bytes = new Uint8Array(buffer), view = new DataView(buffer);
+    if (bytes.length < 12) throw new Error('DNS 响应过短');
+    const questions = view.getUint16(4), answers = view.getUint16(6);
+    let offset = 12;
+    for (let index = 0; index < questions; index += 1) offset = skipDnsName(bytes, offset) + 4;
+    const values = [];
+    for (let index = 0; index < answers; index += 1) {
+      offset = skipDnsName(bytes, offset);
+      if (offset + 10 > bytes.length) throw new Error('DNS 响应记录越界');
+      const type = view.getUint16(offset), length = view.getUint16(offset + 8); offset += 10;
+      const end = offset + length;
+      if (end > bytes.length) throw new Error('DNS TXT 数据越界');
+      if (type === 16) {
+        let cursor = offset, value = '';
+        while (cursor < end) { const size = bytes[cursor++]; value += new TextDecoder().decode(bytes.slice(cursor, cursor + size)); cursor += size; }
+        values.push(value);
+      }
+      offset = end;
+    }
+    return values;
+  }
+
+  async function queryDoh(route) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 4000);
+    const timer = setTimeout(() => controller.abort(), Math.max(800, Math.min(10000, Number(route.timeoutMs) || 2500)));
     try {
-      const url = new URL(resolver.url); url.searchParams.set('name', name); url.searchParams.set('type', 'TXT');
-      const response = await fetch(url, { headers: { Accept: 'application/dns-json' }, signal: controller.signal, cache: 'no-store' });
+      const url = new URL(route.endpoint); url.searchParams.set('dns', toBase64Url(dnsWireQuery(route.bootstrapName)));
+      const response = await fetch(url, { headers: { Accept: 'application/dns-message' }, signal: controller.signal, cache: 'no-store' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const payload = await response.json();
-      const values = (payload.Answer || []).filter(item => Number(item.type) === 16).map(item => item.data);
-      return { resolver, name, envelopes: window.RecoveryCrypto.assembleTxt(values) };
+      const values = parseDnsWireTxt(await response.arrayBuffer());
+      return { route, envelopes: window.RecoveryCrypto.assembleTxt(values) };
     } catch (error) {
-      log(`${resolver.label} 查询 ${name} 失败：${error.name === 'AbortError' ? '超时' : error.message}`);
-      return { resolver, name, envelopes: [] };
+      log(`${route.resolverLabel} 查询 ${route.bootstrapName} 失败：${error.name === 'AbortError' ? '超时' : error.message}`);
+      return { route, envelopes: [] };
     } finally { clearTimeout(timer); }
   }
 
   async function newestVerifiedFromDoh(state) {
-    const names = Array.isArray(state.bootstrapNames) ? state.bootstrapNames.slice(0, 4) : [];
-    if (!names.length) { log('本地清单未保存 Bootstrap DNS 名称'); return null; }
+    let routes = Array.isArray(state.lookupRoutes) ? state.lookupRoutes.filter(item => item?.endpoint && item?.bootstrapName) : [];
+    if (!routes.length) routes = (Array.isArray(state.bootstrapNames) ? state.bootstrapNames.slice(0, 4) : []).flatMap(bootstrapName => LEGACY_RESOLVERS.map(item => ({ ...item, bootstrapName })));
+    if (!routes.length) { log('本地清单未保存 DNS/TXT 查询线路'); return null; }
     status('已保存线路均不可用，正在从多个 DNS 解析源查询最新地址…');
-    const results = await Promise.all(names.flatMap(name => RESOLVERS.map(resolver => queryDoh(resolver, name))));
-    const candidates = results.flatMap(item => item.envelopes.map(value => ({ ...value, resolver: item.resolver.label, name: item.name })));
     const accepted = [];
-    for (const candidate of candidates) {
-      const shape = window.RecoveryCrypto.validateEnvelopeShape(candidate.envelope, state.project, state.highestGeneration || 0);
-      if (!shape.valid) { log(`${candidate.resolver} 返回的清单被拒绝：${shape.reason}`); continue; }
-      if (!await window.RecoveryCrypto.verifyEnvelope(candidate.envelope, state.trustedKeys)) { log(`${candidate.resolver} 返回的清单签名无效`); continue; }
-      accepted.push(candidate);
+    const priorities = [...new Set(routes.map(item => Math.max(1, Number(item.priority) || 1)))].sort((a, b) => a - b);
+    for (const priority of priorities) {
+      const results = await Promise.all(routes.filter(item => Math.max(1, Number(item.priority) || 1) === priority).map(queryDoh));
+      const candidates = results.flatMap(item => item.envelopes.map(value => ({ ...value, resolver: item.route.resolverLabel, name: item.route.bootstrapName })));
+      for (const candidate of candidates) {
+        const shape = window.RecoveryCrypto.validateEnvelopeShape(candidate.envelope, state.project, state.highestGeneration || 0);
+        if (!shape.valid) { log(`${candidate.resolver} 返回的清单被拒绝：${shape.reason}`); continue; }
+        if (!await window.RecoveryCrypto.verifyEnvelope(candidate.envelope, state.trustedKeys)) { log(`${candidate.resolver} 返回的清单签名无效`); continue; }
+        accepted.push(candidate);
+      }
+      if (accepted.length) break;
     }
     accepted.sort((a, b) => Number(b.envelope.generation) - Number(a.envelope.generation));
     if (!accepted.length) return null;
@@ -88,6 +141,7 @@
       highestGeneration: Number(selected.envelope.generation),
       trustedKeys: Array.isArray(selected.envelope.trustedKeys) && selected.envelope.trustedKeys.length ? selected.envelope.trustedKeys : state.trustedKeys,
       bootstrapNames: selected.envelope.bootstrapNames || state.bootstrapNames,
+      lookupRoutes: selected.envelope.lookupRoutes || state.lookupRoutes,
       lastVerifiedAt: new Date().toISOString()
     };
     await window.RecoveryCrypto.writeState(nextState);

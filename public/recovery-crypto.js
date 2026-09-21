@@ -65,7 +65,7 @@
   }
 
   function validateEnvelopeShape(envelope, expectedProject, highestGeneration = 0) {
-    if (!envelope || Number(envelope.schema) !== 1) return { valid: false, reason: '清单格式版本不受支持' };
+    if (!envelope || ![1, 2].includes(Number(envelope.schema))) return { valid: false, reason: '清单格式版本不受支持' };
     if (!envelope.project || (expectedProject && envelope.project !== expectedProject)) return { valid: false, reason: '恢复项目编号不匹配' };
     if (!Number.isInteger(Number(envelope.generation)) || Number(envelope.generation) < Number(highestGeneration || 0)) return { valid: false, reason: '检测到旧版本清单，已阻止回滚' };
     const now = Math.floor(Date.now() / 1000);
@@ -128,6 +128,7 @@
       highestGeneration: Number(manifest.envelope.generation),
       trustedKeys: signedKeys.length ? signedKeys : bootstrapKeys,
       bootstrapNames: Array.isArray(manifest.envelope.bootstrapNames) ? manifest.envelope.bootstrapNames : (manifest.bootstrapNames || []),
+      lookupRoutes: Array.isArray(manifest.envelope.lookupRoutes) ? manifest.envelope.lookupRoutes : (manifest.lookupRoutes || []),
       lastVerifiedAt: new Date().toISOString(),
       componentVersion: manifest.componentVersion || 'recovery-v1'
     };

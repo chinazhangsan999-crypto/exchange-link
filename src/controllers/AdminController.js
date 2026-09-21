@@ -20,6 +20,7 @@ const MirrorModel = require('../models/MirrorModel');
 const FrontendOriginModel = require('../models/FrontendOriginModel');
 const SourceTokenModel = require('../models/SourceTokenModel');
 const CloudflareFrontendModel = require('../models/CloudflareFrontendModel');
+const RecoveryModel = require('../models/RecoveryModel');
 const InspectionService = require('../services/InspectionService');
 const PingService = require('../services/PingService');
 const RiskService = require('../services/RiskService');
@@ -29,6 +30,7 @@ const FrontendProxyService = require('../services/FrontendProxyService');
 const CloudflareApiEdgeService = require('../services/CloudflareApiEdgeService');
 const CloudflareBootstrapService = require('../services/CloudflareBootstrapService');
 const CloudflarePublicFrontendService = require('../services/CloudflarePublicFrontendService');
+const RecoveryService = require('../services/RecoveryService');
 const CloudflareIpWhitelistService = require('../services/CloudflareIpWhitelistService');
 const IntegrationState = require('../services/IntegrationStateService');
 const ControlCenterAgentService = require('../services/ControlCenterAgentService');
@@ -550,9 +552,12 @@ async function createPublicFrontend(req, res) {
   try {
     const hostname = String(req.body?.hostname || '').trim();
     if (!hostname) return fail(res, '请填写新前台域名');
+    const recoveryProfileId = Number.parseInt(req.body?.recoveryProfileId, 10);
+    if (!Number.isInteger(recoveryProfileId) || recoveryProfileId < 1) return fail(res, '请选择要随该前台发布的恢复方案');
+    const recoveryProfile = await RecoveryService.assertProfileReady(recoveryProfileId);
 
     previousOrigins = await FrontendOriginModel.listAllOrigins();
-    frontend = await CloudflarePublicFrontendService.createDedicatedFrontend(hostname);
+    frontend = await CloudflarePublicFrontendService.createDedicatedFrontend(hostname, null, recoveryProfileId);
     const origin = `https://${frontend.hostname}`;
     const nextByOrigin = new Map(previousOrigins.map(item => [item.origin, {
       origin: item.origin,
@@ -586,6 +591,7 @@ async function createPublicFrontend(req, res) {
       securityBaseline: frontend.securityBaseline,
       health,
       state: health.healthy ? 'ready' : 'provisioning'
+      ,recoveryProfile: { id: recoveryProfile.id, name: recoveryProfile.name, code: recoveryProfile.code }
     }, health.healthy ? '新公共前台已创建并通过健康检查' : '域名已创建并加入白名单，正在等待 Cloudflare 证书或路由生效');
   } catch (error) {
     if (frontend) {
@@ -600,14 +606,17 @@ async function createPublicFrontend(req, res) {
 
 async function getCloudflareOverview(req, res) {
   try {
-    const [central, profiles, origins, migrations] = await Promise.all([
+    const [central, profiles, origins, migrations, recoveryProfiles] = await Promise.all([
       CloudflareBootstrapService.overview(),
       CloudflarePublicFrontendService.listProfiles(),
       FrontendOriginModel.listAllOrigins(),
-      CloudflareFrontendModel.listMigrations()
+      CloudflareFrontendModel.listMigrations(),
+      RecoveryModel.listProfiles()
     ]);
+    const recoveryById = new Map(recoveryProfiles.map(item => [Number(item.id), item]));
     const workers = profiles.flatMap(profile => profile.workers.map(worker => ({
-      ...worker, accountProfileId: profile.id, accountLabel: profile.label, accountId: profile.accountId
+      ...worker, accountProfileId: profile.id, accountLabel: profile.label, accountId: profile.accountId,
+      recoveryProfileName: recoveryById.get(Number(worker.recoveryProfileId))?.name || '未绑定'
     })));
     return ok(res, { central, accounts: profiles, workers, origins, migrations });
   } catch (error) {

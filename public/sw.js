@@ -1,13 +1,13 @@
 /** 星环导航离线恢复缓存：导航失败进入独立恢复页，敏感操作永不缓存。 */
-const CACHE_NAME = 'nav-cache-v13-recovery';
+const CACHE_NAME = 'nav-cache-v14-recovery-profiles';
 const STATIC_ASSETS = [
   '/', '/index.html', '/read-client.js?v=20260915-read-proof3', '/script.js?v=20260914-post-entry-page-view-all-pages', '/style.css', '/manifest.json',
   '/tooltip.css', '/apply.css', '/apply-category.css', '/no-icons.css',
   '/header-cleanup.css', '/mobile-nav.css', '/enhance.css', '/pwa.css',
   '/icons/icon-192.png', '/icons/icon-512.png',
   '/recovery.html', '/recovery.css?v=20260921-recovery-1',
-  '/recovery-crypto.js?v=20260921-recovery-1', '/recovery-client.js?v=20260921-recovery-1',
-  '/recovery.js?v=20260921-recovery-1'
+  '/recovery-crypto.js?v=20260921-recovery-2', '/recovery-client.js?v=20260921-recovery-1',
+  '/recovery.js?v=20260921-recovery-2'
 ];
 const NEVER_CACHE_PATHS = new Set([
   '/verify.html', '/verify.css', '/verify.js', '/go', '/api/links/apply', '/api/read/bootstrap', '/api/read/proof'

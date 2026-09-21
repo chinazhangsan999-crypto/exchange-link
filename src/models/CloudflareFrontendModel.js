@@ -39,6 +39,7 @@ async function initializeCloudflareFrontendTables() {
   await ensureColumn('cloudflare_frontend_workers', 'last_deployed_at', 'DATETIME');
   await ensureColumn('cloudflare_frontend_workers', 'retired_at', 'DATETIME');
   await ensureColumn('cloudflare_frontend_workers', 'retained_hostname', 'TEXT');
+  await ensureColumn('cloudflare_frontend_workers', 'recovery_profile_id', 'INTEGER NOT NULL DEFAULT 1');
 
   await run(`CREATE TABLE IF NOT EXISTS cloudflare_central_state (
     id INTEGER PRIMARY KEY CHECK(id = 1), account_id TEXT, api_worker_name TEXT, api_domain TEXT,
@@ -126,9 +127,9 @@ async function reserveWorker(profileId, hostname = null, zoneName = null, option
     const workerName = `${account.worker_prefix}-${String(number).padStart(3, '0')}`;
     await transaction.run('UPDATE cloudflare_frontend_accounts SET next_worker_number = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [number + 1, profileId]);
     const inserted = await transaction.run(`INSERT INTO cloudflare_frontend_workers(
-      account_profile_id, worker_name, hostname, zone_name, state, previous_worker_id, migration_state)
-      VALUES (?, ?, ?, ?, 'creating', ?, ?)`, [profileId, workerName, hostname, zoneName,
-      options.previousWorkerId || null, options.migrationState || 'none']);
+      account_profile_id, worker_name, hostname, zone_name, state, previous_worker_id, migration_state, recovery_profile_id)
+      VALUES (?, ?, ?, ?, 'creating', ?, ?, ?)`, [profileId, workerName, hostname, zoneName,
+      options.previousWorkerId || null, options.migrationState || 'none', Number(options.recoveryProfileId) || 1]);
     return { id: inserted.id, workerName, hostname, zoneName };
   }, { priority: 'interactive', label: 'reserve Cloudflare frontend worker', durability: 'full' });
 }

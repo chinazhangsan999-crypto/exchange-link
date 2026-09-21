@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const axios = require('axios');
 const RecoveryModel = require('../models/RecoveryModel');
 const FrontendOriginModel = require('../models/FrontendOriginModel');
+const CloudflareFrontendModel = require('../models/CloudflareFrontendModel');
 const RecoveryCredentialStore = require('./RecoveryCredentialStore');
 const IntegrationCredentialStore = require('./IntegrationCredentialStore');
 const { assertSafeBacklinkUrl, createPinnedAxiosConfig } = require('./InspectionService');
@@ -12,10 +13,14 @@ const { runPromisePool } = require('../utils/asyncPool');
 const HEALTH_PATH = '/.well-known/route-health.gif';
 const GIF_1X1 = Buffer.from('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==', 'base64');
 const DOH_RESOLVERS = Object.freeze([
-  { id: 'dnspod', label: 'DNSPod', url: 'https://doh.pub/dns-query' },
-  { id: 'alidns', label: 'AliDNS', url: 'https://dns.alidns.com/resolve' },
-  { id: 'cloudflare', label: 'Cloudflare', url: 'https://cloudflare-dns.com/dns-query' },
-  { id: 'google', label: 'Google', url: 'https://dns.google/resolve' }
+  { id: 'dnspod', label: 'DNSPod', endpoint: 'https://doh.pub/dns-query' },
+  { id: 'alidns', label: 'AliDNS', endpoint: 'https://dns.alidns.com/dns-query' },
+  { id: 'cloudflare', label: 'Cloudflare', endpoint: 'https://cloudflare-dns.com/dns-query' },
+  { id: 'google', label: 'Google Public DNS', endpoint: 'https://dns.google/dns-query' },
+  { id: 'quad9-unfiltered', label: 'Quad9 No-block', endpoint: 'https://dns10.quad9.net/dns-query' },
+  { id: 'adguard-unfiltered', label: 'AdGuard Unfiltered', endpoint: 'https://unfiltered.adguard-dns.com/dns-query' },
+  { id: 'mullvad', label: 'Mullvad DNS', endpoint: 'https://dns.mullvad.net/dns-query' },
+  { id: 'controld-free', label: 'Control D Free', endpoint: 'https://freedns.controld.com/p0' }
 ]);
 const TXT_DATA_SIZE = 180;
 const MAX_ENCODED_SIZE = 4096;
@@ -98,33 +103,33 @@ function keyPair() {
   };
 }
 
-async function ensureCurrentKey() {
-  const settings = await RecoveryModel.getSettings();
-  const stored = RecoveryCredentialStore.signingKeys();
+async function ensureCurrentKey(profileId = 1) {
+  const settings = await RecoveryModel.getSettings(profileId);
+  const stored = RecoveryCredentialStore.signingKeys(profileId);
   if (settings.public_key_id && settings.public_key && stored.current?.privateKey) return stored.current;
   const generated = keyPair();
-  await RecoveryCredentialStore.saveSigningKeys({ ...stored, current: generated });
-  await RecoveryModel.saveKeyState({ public_key_id: generated.keyId, public_key: generated.publicKey });
-  await RecoveryModel.addAudit('key.generate.current', { keyId: generated.keyId });
+  await RecoveryCredentialStore.saveSigningKeys({ ...stored, current: generated }, profileId);
+  await RecoveryModel.saveKeyState({ public_key_id: generated.keyId, public_key: generated.publicKey }, profileId);
+  await RecoveryModel.addAudit('key.generate.current', { keyId: generated.keyId }, true, '', profileId);
   return generated;
 }
 
-async function generateNextKey() {
-  await ensureCurrentKey();
-  const stored = RecoveryCredentialStore.signingKeys();
+async function generateNextKey(profileId = 1) {
+  await ensureCurrentKey(profileId);
+  const stored = RecoveryCredentialStore.signingKeys(profileId);
   const generated = keyPair();
-  await RecoveryCredentialStore.saveSigningKeys({ current: stored.current, next: generated });
-  await RecoveryModel.saveKeyState({ next_public_key_id: generated.keyId, next_public_key: generated.publicKey });
-  await RecoveryModel.addAudit('key.generate.next', { keyId: generated.keyId });
-  return keyStatus();
+  await RecoveryCredentialStore.saveSigningKeys({ current: stored.current, next: generated }, profileId);
+  await RecoveryModel.saveKeyState({ next_public_key_id: generated.keyId, next_public_key: generated.publicKey }, profileId);
+  await RecoveryModel.addAudit('key.generate.next', { keyId: generated.keyId }, true, '', profileId);
+  return keyStatus(profileId);
 }
 
-async function promoteNextKey() {
-  const stored = RecoveryCredentialStore.signingKeys();
+async function promoteNextKey(profileId = 1) {
+  const stored = RecoveryCredentialStore.signingKeys(profileId);
   if (!stored.next?.privateKey) throw new Error('尚未生成下一代密钥');
   const [settings, published] = await Promise.all([
-    RecoveryModel.getSettings(),
-    RecoveryModel.getLatestPublishedRelease()
+    RecoveryModel.getSettings(profileId),
+    RecoveryModel.getLatestPublishedRelease(profileId)
   ]);
   if (!published) throw new Error('请先发布包含下一代公钥的过渡版本，再提升密钥');
   const envelope = envelopeForRelease(published);
@@ -134,20 +139,20 @@ async function promoteNextKey() {
   if (!verifyEnvelope(envelope, currentKeys) || !nextIsTrusted) {
     throw new Error('当前正式版本尚未安全发布下一代公钥，请先生成并发布过渡版本');
   }
-  await RecoveryCredentialStore.saveSigningKeys({ current: stored.next, next: null });
+  await RecoveryCredentialStore.saveSigningKeys({ current: stored.next, next: null }, profileId);
   await RecoveryModel.saveKeyState({
     public_key_id: stored.next.keyId,
     public_key: stored.next.publicKey,
     next_public_key_id: '',
     next_public_key: ''
-  });
-  await RecoveryModel.addAudit('key.promote', { keyId: stored.next.keyId });
-  return keyStatus();
+  }, profileId);
+  await RecoveryModel.addAudit('key.promote', { keyId: stored.next.keyId }, true, '', profileId);
+  return keyStatus(profileId);
 }
 
-async function keyStatus() {
-  const settings = await RecoveryModel.getSettings();
-  const stored = RecoveryCredentialStore.signingKeys();
+async function keyStatus(profileId = 1) {
+  const settings = await RecoveryModel.getSettings(profileId);
+  const stored = RecoveryCredentialStore.signingKeys(profileId);
   return {
     currentKeyId: settings.public_key_id || '',
     currentPublicKey: settings.public_key || '',
@@ -158,7 +163,7 @@ async function keyStatus() {
   };
 }
 
-async function updateSettings(input = {}) {
+async function updateSettings(input = {}, profileId = 1) {
   const recoveryEmail = String(input.recovery_email || '').trim();
   if (recoveryEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recoveryEmail)) throw new Error('恢复专用邮箱格式不正确');
   const normalized = {
@@ -173,8 +178,8 @@ async function updateSettings(input = {}) {
     probe_timeout_ms: Math.max(1000, Math.min(10000, Number.parseInt(input.probe_timeout_ms, 10) || 3000)),
     probe_concurrency: Math.max(1, Math.min(3, Number.parseInt(input.probe_concurrency, 10) || 3))
   };
-  const saved = await RecoveryModel.updateSettings(normalized);
-  await RecoveryModel.addAudit('settings.update', { enabled: saved.enabled });
+  const saved = await RecoveryModel.updateSettings(normalized, profileId);
+  await RecoveryModel.addAudit('settings.update', { enabled: saved.enabled }, true, '', profileId);
   return saved;
 }
 
@@ -207,21 +212,21 @@ async function probeDomain(domain, options = {}) {
   }
 }
 
-async function probeAndSave(id) {
-  const domain = await RecoveryModel.getDomain(id);
+async function probeAndSave(id, profileId = 1) {
+  const domain = await RecoveryModel.getDomain(id, profileId);
   if (!domain) throw new Error('恢复线路不存在');
-  const settings = await RecoveryModel.getSettings();
+  const settings = await RecoveryModel.getSettings(profileId);
   let result = await probeDomain(domain, { timeoutMs: settings.probe_timeout_ms });
   if (!result.healthy) result = await probeDomain(domain, { timeoutMs: settings.probe_timeout_ms });
   await RecoveryModel.saveProbeResult(id, result);
-  await RecoveryModel.addAudit('domain.probe', { id, url: domain.url, healthy: result.healthy }, result.healthy, result.error);
+  await RecoveryModel.addAudit('domain.probe', { id, url: domain.url, healthy: result.healthy }, result.healthy, result.error, profileId);
   return { ...domain, ...result };
 }
 
-async function probeAll() {
-  const settings = await RecoveryModel.getSettings();
-  const domains = await RecoveryModel.listDomains({ enabledOnly: true });
-  const settled = await runPromisePool(domains, settings.probe_concurrency, async domain => probeAndSave(domain.id), settings.probe_timeout_ms * 3);
+async function probeAll(profileId = 1) {
+  const settings = await RecoveryModel.getSettings(profileId);
+  const domains = await RecoveryModel.listDomains({ enabledOnly: true, profileId });
+  const settled = await runPromisePool(domains, settings.probe_concurrency, async domain => probeAndSave(domain.id, profileId), settings.probe_timeout_ms * 3);
   const results = settled.map((item, index) => item.status === 'fulfilled' ? item.value : ({
     ...domains[index], healthy: false, error: String(item.reason?.message || item.reason || '检测任务失败')
   }));
@@ -249,20 +254,20 @@ function verifyEnvelope(envelope, publicKeys) {
   } catch { return false; }
 }
 
-async function createDraft({ sourceReleaseId = null } = {}) {
+async function createDraft({ sourceReleaseId = null, profileId = 1 } = {}) {
   const [settings, domains, bootstraps] = await Promise.all([
-    RecoveryModel.getSettings(),
-    RecoveryModel.listDomains({ enabledOnly: true }),
-    RecoveryModel.listBootstrapRecords({ enabledOnly: true })
+    RecoveryModel.getSettings(profileId),
+    RecoveryModel.listDomains({ enabledOnly: true, profileId }),
+    RecoveryModel.listLookupRoutes(profileId, { enabledOnly: true })
   ]);
   if (!domains.length) throw new Error('至少需要一条已启用的恢复线路');
   if (domains.length > settings.max_domains) throw new Error(`已启用线路超过后台限制（最多 ${settings.max_domains} 条）`);
-  const key = await ensureCurrentKey();
-  const generation = await RecoveryModel.nextGeneration();
+  const key = await ensureCurrentKey(profileId);
+  const generation = await RecoveryModel.nextGeneration(profileId);
   const issuedAt = Math.floor(Date.now() / 1000);
   const expiresAt = issuedAt + Number(settings.manifest_valid_days) * 86400;
   const payload = {
-    schema: 1,
+    schema: 2,
     project: settings.project_id,
     generation,
     issuedAt,
@@ -275,7 +280,15 @@ async function createDraft({ sourceReleaseId = null } = {}) {
       message: settings.recovery_message || ''
     },
     foundMessage: settings.found_message || '',
-    bootstrapNames: bootstraps.map(item => item.record_name),
+    lookupRoutes: bootstraps.map(item => ({
+      resolverId: item.resolver_id,
+      resolverLabel: item.resolver_label,
+      endpoint: item.endpoint,
+      format: item.response_format,
+      bootstrapName: item.record_name,
+      priority: Number(item.priority_group),
+      timeoutMs: Number(item.timeout_ms)
+    })),
     trustedKeys: [
       { keyId: settings.public_key_id || key.keyId, spki: publicKeyPemToSpkiBase64(settings.public_key || key.publicKey) },
       { keyId: settings.next_public_key_id, spki: publicKeyPemToSpkiBase64(settings.next_public_key) }
@@ -293,8 +306,8 @@ async function createDraft({ sourceReleaseId = null } = {}) {
     issuedAt: new Date(issuedAt * 1000).toISOString(),
     expiresAt: new Date(expiresAt * 1000).toISOString(),
     sourceReleaseId
-  });
-  await RecoveryModel.addAudit('release.draft', { id: release.id, generation });
+  }, profileId);
+  await RecoveryModel.addAudit('release.draft', { id: release.id, generation }, true, '', profileId);
   return serializeRelease(release);
 }
 
@@ -351,30 +364,78 @@ function assembleTxt(values) {
   return envelopes;
 }
 
+function dnsWireQuery(recordName) {
+  const labels = recordName.split('.');
+  const question = Buffer.concat([
+    ...labels.map(label => Buffer.concat([Buffer.from([Buffer.byteLength(label)]), Buffer.from(label)])),
+    Buffer.from([0, 0, 16, 0, 1])
+  ]);
+  return Buffer.concat([Buffer.from([0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0]), question]);
+}
+
+function skipDnsName(buffer, offset) {
+  let cursor = offset;
+  while (cursor < buffer.length) {
+    const length = buffer[cursor];
+    if ((length & 0xc0) === 0xc0) return cursor + 2;
+    cursor += 1;
+    if (length === 0) return cursor;
+    cursor += length;
+  }
+  throw new Error('DNS 响应名称越界');
+}
+
+function parseDnsWireTxt(input) {
+  const buffer = Buffer.from(input);
+  if (buffer.length < 12) throw new Error('DNS 响应过短');
+  const questions = buffer.readUInt16BE(4), answers = buffer.readUInt16BE(6);
+  let offset = 12;
+  for (let index = 0; index < questions; index += 1) offset = skipDnsName(buffer, offset) + 4;
+  const values = [];
+  for (let index = 0; index < answers; index += 1) {
+    offset = skipDnsName(buffer, offset);
+    if (offset + 10 > buffer.length) throw new Error('DNS 响应记录越界');
+    const type = buffer.readUInt16BE(offset), length = buffer.readUInt16BE(offset + 8);
+    offset += 10;
+    const end = offset + length;
+    if (end > buffer.length) throw new Error('DNS TXT 数据越界');
+    if (type === 16) {
+      let cursor = offset, value = '';
+      while (cursor < end) { const size = buffer[cursor]; cursor += 1; value += buffer.subarray(cursor, cursor + size).toString('utf8'); cursor += size; }
+      values.push(value);
+    }
+    offset = end;
+  }
+  return values;
+}
+
 async function queryDoh(resolver, recordName, timeoutMs = 4000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const url = new URL(resolver.url);
-    url.searchParams.set('name', recordName);
-    url.searchParams.set('type', 'TXT');
-    const response = await fetch(url, { headers: { Accept: 'application/dns-json' }, signal: controller.signal, cache: 'no-store' });
+    const url = new URL(resolver.endpoint || resolver.url);
+    const wire = dnsWireQuery(recordName);
+    url.searchParams.set('dns', wire.toString('base64url'));
+    const response = await fetch(url, { headers: { Accept: 'application/dns-message' }, signal: controller.signal, cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    const values = (Array.isArray(data.Answer) ? data.Answer : []).filter(item => Number(item.type) === 16).map(item => item.data);
+    const values = parseDnsWireTxt(await response.arrayBuffer());
     return { id: resolver.id, label: resolver.label, ok: true, envelopes: assembleTxt(values) };
   } catch (error) {
     return { id: resolver.id, label: resolver.label, ok: false, error: error.name === 'AbortError' ? '查询超时' : String(error.message || '查询失败'), envelopes: [] };
   } finally { clearTimeout(timer); }
 }
 
-async function diagnoseDoh(recordName) {
-  const settings = await RecoveryModel.getSettings();
+async function diagnoseDoh(recordName, profileId = 1, bootstrapId = null) {
+  const settings = await RecoveryModel.getSettings(profileId);
   const publicKeys = [
     { keyId: settings.public_key_id, publicKey: settings.public_key },
     { keyId: settings.next_public_key_id, publicKey: settings.next_public_key }
   ].filter(item => item.keyId && item.publicKey);
-  const results = await Promise.all(DOH_RESOLVERS.map(resolver => queryDoh(resolver, recordName)));
+  const routes = await RecoveryModel.listLookupRoutes(profileId, { enabledOnly: true });
+  const selected = routes.filter(item => !bootstrapId || Number(item.bootstrap_id) === Number(bootstrapId));
+  const results = await Promise.all(selected.map(route => queryDoh({
+    id: route.resolver_id, label: route.resolver_label, endpoint: route.endpoint
+  }, recordName, route.timeout_ms)));
   return results.map(result => ({
     ...result,
     envelopes: result.envelopes.map(item => ({
@@ -416,7 +477,7 @@ async function resolveZoneId(zoneName) {
   return exact.id;
 }
 
-async function publishRecord(record, release) {
+async function publishRecord(record, release, profileId = 1) {
   const envelope = envelopeForRelease(release);
   const chunked = chunkEnvelope(envelope);
   const zoneId = await resolveZoneId(record.zone_name);
@@ -432,7 +493,7 @@ async function publishRecord(record, release) {
     let verified = false;
     for (let attempt = 0; attempt < 3 && !verified; attempt += 1) {
       if (attempt) await new Promise(resolve => setTimeout(resolve, 1500));
-      diagnosis = await diagnoseDoh(record.record_name);
+      diagnosis = await diagnoseDoh(record.record_name, profileId, record.id);
       verified = diagnosis.some(result => result.envelopes.some(item => item.generation === release.generation && item.signatureValid));
     }
     if (!verified) throw new Error('新 TXT 已写入，但多 DoH 回读尚未发现有效的新版本');
@@ -453,38 +514,40 @@ async function publishRecord(record, release) {
   }
 }
 
-async function publishRelease(id) {
-  const release = await RecoveryModel.getRelease(id);
+async function publishRelease(id, profileId = null) {
+  const release = await RecoveryModel.getRelease(id, profileId);
   if (!release) throw new Error('恢复版本不存在');
+  profileId = Number(release.profile_id || profileId || 1);
   if (!['draft', 'failed'].includes(release.status)) throw new Error('该版本当前不可发布');
-  const settings = await RecoveryModel.getSettings();
+  const settings = await RecoveryModel.getSettings(profileId);
   const publicKeys = [
     { keyId: settings.public_key_id, publicKey: settings.public_key },
     { keyId: settings.next_public_key_id, publicKey: settings.next_public_key }
   ].filter(item => item.keyId && item.publicKey);
   const envelope = envelopeForRelease(release);
   if (!verifyEnvelope(envelope, publicKeys)) throw new Error('恢复版本签名校验失败，拒绝发布');
-  const records = await RecoveryModel.listBootstrapRecords({ enabledOnly: true });
+  const records = await RecoveryModel.listBootstrapRecords({ enabledOnly: true, profileId });
   const results = [];
   try {
-    for (const record of records.filter(item => Number(item.is_primary) === 0)) results.push(await publishRecord(record, release));
-    for (const record of records.filter(item => Number(item.is_primary) === 1)) results.push(await publishRecord(record, release));
-    await RecoveryModel.publishReleaseAtomically(release.id, release.generation);
-    await RecoveryModel.addAudit('release.publish', { id, generation: release.generation, dnsRecords: results.length });
+    for (const record of records.filter(item => Number(item.is_primary) === 0)) results.push(await publishRecord(record, release, profileId));
+    for (const record of records.filter(item => Number(item.is_primary) === 1)) results.push(await publishRecord(record, release, profileId));
+    await RecoveryModel.publishReleaseAtomically(release.id, release.generation, profileId);
+    await RecoveryModel.addAudit('release.publish', { id, generation: release.generation, dnsRecords: results.length }, true, '', profileId);
     return { release: serializeRelease(await RecoveryModel.getRelease(id)), dnsPublished: results.length, records: results, warning: records.length ? '' : '尚未配置 Bootstrap DNS；当前版本只会通过主站同步给已访问用户。' };
   } catch (error) {
     await RecoveryModel.markRelease(id, 'failed', { error: error.message });
-    await RecoveryModel.addAudit('release.publish', { id, generation: release.generation }, false, error.message);
+    await RecoveryModel.addAudit('release.publish', { id, generation: release.generation }, false, error.message, profileId);
     throw error;
   }
 }
 
-async function rollbackTo(sourceId) {
-  const source = await RecoveryModel.getRelease(sourceId);
+async function rollbackTo(sourceId, profileId = null) {
+  const source = await RecoveryModel.getRelease(sourceId, profileId);
   if (!source) throw new Error('要回滚的历史版本不存在');
-  const settings = await RecoveryModel.getSettings();
-  const key = await ensureCurrentKey();
-  const generation = await RecoveryModel.nextGeneration();
+  profileId = Number(source.profile_id || profileId || 1);
+  const settings = await RecoveryModel.getSettings(profileId);
+  const key = await ensureCurrentKey(profileId);
+  const generation = await RecoveryModel.nextGeneration(profileId);
   const issuedAt = Math.floor(Date.now() / 1000);
   const expiresAt = issuedAt + Number(settings.manifest_valid_days) * 86400;
   const payload = {
@@ -505,16 +568,29 @@ async function rollbackTo(sourceId) {
     issuedAt: new Date(issuedAt * 1000).toISOString(),
     expiresAt: new Date(expiresAt * 1000).toISOString(),
     sourceReleaseId: source.id
-  });
-  await RecoveryModel.addAudit('release.rollback.draft', { sourceId, id: release.id, generation });
-  return publishRelease(release.id);
+  }, profileId);
+  await RecoveryModel.addAudit('release.rollback.draft', { sourceId, id: release.id, generation }, true, '', profileId);
+  return publishRelease(release.id, profileId);
 }
 
-async function getPublicManifest() {
+async function profileForFrontend(frontendOrigin) {
+  if (!frontendOrigin) return RecoveryModel.getProfile(1);
+  let hostname;
+  try { hostname = new URL(frontendOrigin).hostname.toLowerCase(); }
+  catch { return null; }
+  const worker = await CloudflareFrontendModel.getWorkerByHostname(hostname);
+  if (!worker?.recovery_profile_id) return null;
+  return RecoveryModel.getProfile(worker.recovery_profile_id);
+}
+
+async function getPublicManifest(frontendOrigin = '') {
+  const profile = await profileForFrontend(frontendOrigin);
+  if (!profile) return { enabled: false, componentVersion: 'recovery-v2', reason: 'frontend_unbound' };
+  const profileId = profile.id;
   const [settings, release, bootstraps] = await Promise.all([
-    RecoveryModel.getSettings(),
-    RecoveryModel.getLatestPublishedRelease(),
-    RecoveryModel.listBootstrapRecords({ enabledOnly: true })
+    RecoveryModel.getSettings(profileId),
+    RecoveryModel.getLatestPublishedRelease(profileId),
+    RecoveryModel.listLookupRoutes(profileId, { enabledOnly: true })
   ]);
   if (Number(settings.enabled) !== 1 || !release) return { enabled: false, componentVersion: settings.component_version };
   const envelope = envelopeForRelease(release);
@@ -523,18 +599,26 @@ async function getPublicManifest() {
     componentVersion: settings.component_version,
     envelope,
     publicKeys: Array.isArray(envelope.trustedKeys) ? envelope.trustedKeys : [],
-    bootstrapNames: bootstraps.map(item => item.record_name)
+    bootstrapNames: [...new Set(bootstraps.map(item => item.record_name))],
+    lookupRoutes: bootstraps.map(item => ({
+      resolverId: item.resolver_id, resolverLabel: item.resolver_label,
+      endpoint: item.endpoint, format: item.response_format,
+      bootstrapName: item.record_name, priority: Number(item.priority_group),
+      timeoutMs: Number(item.timeout_ms)
+    }))
   };
 }
 
-async function overview() {
-  const [settings, domains, bootstraps, releases, keys, audit, frontendOrigins] = await Promise.all([
-    RecoveryModel.getSettings(), RecoveryModel.listDomains(), RecoveryModel.listBootstrapRecords(),
-    RecoveryModel.listReleases(), keyStatus(), RecoveryModel.listAudit(100), FrontendOriginModel.listEnabledOrigins()
+async function overview(profileId = 1) {
+  const [profiles, settings, domains, bootstraps, routes, releases, keys, audit, frontendOrigins, resolvers] = await Promise.all([
+    RecoveryModel.listProfiles(), RecoveryModel.getSettings(profileId), RecoveryModel.listDomains({ profileId }), RecoveryModel.listBootstrapRecords({ profileId }),
+    RecoveryModel.listLookupRoutes(profileId), RecoveryModel.listReleases(50, profileId), keyStatus(profileId), RecoveryModel.listAudit(100, profileId), FrontendOriginModel.listEnabledOrigins(), RecoveryModel.listResolvers()
   ]);
   const credential = RecoveryCredentialStore.cloudflareConfig();
   const central = IntegrationCredentialStore.cloudflareApiEdgeConfig();
   return {
+    profiles: profiles.map(item => ({ ...item, ready: Number(item.enabled) === 1 && Boolean(item.public_key_id) })),
+    selectedProfileId: Number(settings?.id || profileId),
     settings,
     domains,
     bootstraps,
@@ -548,13 +632,14 @@ async function overview() {
       accountId: credential.reuseCentral ? (central.accountId || '') : (credential.accountId || ''),
       tokenConfigured: credential.reuseCentral ? Boolean(central.apiToken) : Boolean(credential.apiToken)
     },
-    resolvers: DOH_RESOLVERS.map(({ id, label }) => ({ id, label, enabled: true })),
+    resolvers,
+    lookupRoutes: routes,
     publicPreviewOrigin: frontendOrigins[0]?.origin || '',
     audit
   };
 }
 
-async function saveCloudflareCredentials(input = {}) {
+async function saveCloudflareCredentials(input = {}, profileId = 1) {
   const reuseCentral = ['1', 1, true, 'true', 'on'].includes(input.reuseCentral);
   const current = RecoveryCredentialStore.cloudflareConfig();
   const accountId = String(input.accountId || current.accountId || '').trim();
@@ -564,8 +649,33 @@ async function saveCloudflareCredentials(input = {}) {
     if (apiToken.length < 20) throw new Error('Cloudflare API Token 格式不正确');
   }
   await RecoveryCredentialStore.saveCloudflareConfig({ reuseCentral, accountId, apiToken });
-  await RecoveryModel.addAudit('credential.cloudflare.update', { reuseCentral, accountId });
-  return overview();
+  await RecoveryModel.addAudit('credential.cloudflare.update', { reuseCentral, accountId }, true, '', profileId);
+  return overview(profileId);
+}
+
+function validateLookupRouteInput(input = {}) {
+  const resolverId = String(input.resolverId || '').trim();
+  const bootstrapId = Number.parseInt(input.bootstrapId, 10);
+  if (!resolverId) throw new Error('请选择 DNS 服务商');
+  if (!Number.isInteger(bootstrapId) || bootstrapId < 1) throw new Error('请选择 Bootstrap TXT');
+  return {
+    resolverId, bootstrapId,
+    priorityGroup: Math.max(1, Math.min(4, Number.parseInt(input.priorityGroup, 10) || 1)),
+    timeoutMs: Math.max(800, Math.min(10000, Number.parseInt(input.timeoutMs, 10) || 2500)),
+    sortOrder: Math.max(-100000, Math.min(100000, Number.parseInt(input.sortOrder, 10) || 0)),
+    status: ['1', 1, true, 'true', 'on'].includes(input.status) ? 1 : 0
+  };
+}
+
+async function assertProfileReady(profileId) {
+  const [profile, domains] = await Promise.all([
+    RecoveryModel.getProfile(profileId), RecoveryModel.listDomains({ enabledOnly: true, profileId })
+  ]);
+  if (!profile || profile.status !== 'active') throw new Error('所选恢复方案不存在或已停用');
+  if (Number(profile.enabled) !== 1) throw new Error('所选恢复方案尚未启用');
+  if (!domains.length) throw new Error('所选恢复方案没有启用的备用域名');
+  if (!await RecoveryModel.getLatestPublishedRelease(profileId)) throw new Error('所选恢复方案尚未发布正式版本');
+  return profile;
 }
 
 module.exports = {
@@ -575,6 +685,7 @@ module.exports = {
   normalizeOrigin,
   validateDomainInput,
   validateBootstrapInput,
+  validateLookupRouteInput,
   updateSettings,
   ensureCurrentKey,
   generateNextKey,
@@ -593,4 +704,5 @@ module.exports = {
   verifyEnvelope,
   chunkEnvelope,
   assembleTxt
+  ,assertProfileReady
 };

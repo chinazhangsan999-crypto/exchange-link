@@ -27,17 +27,22 @@ async function write(value) {
   await fs.promises.rename(temporary, credentialPath);
 }
 
-function signingKeys() {
-  const stored = read().signing || {};
+function signingKeys(profileId = 1) {
+  const root = read();
+  const stored = root.signing_profiles?.[String(profileId)] || (Number(profileId) === 1 ? root.signing : null) || {};
   return {
     current: stored.current || null,
     next: stored.next || null
   };
 }
 
-async function saveSigningKeys(keys) {
+async function saveSigningKeys(keys, profileId = 1) {
   const stored = read();
-  await write({ ...stored, signing: { current: keys.current || null, next: keys.next || null } });
+  const profiles = { ...(stored.signing_profiles || {}) };
+  profiles[String(profileId)] = { current: keys.current || null, next: keys.next || null };
+  const next = { ...stored, signing_profiles: profiles };
+  if (Number(profileId) === 1 && stored.signing) delete next.signing;
+  await write(next);
 }
 
 function cloudflareConfig() {

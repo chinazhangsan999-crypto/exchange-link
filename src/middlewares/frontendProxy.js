@@ -62,6 +62,7 @@ function requireTrustedFrontendProxy(req, res, next) {
 
 const PUBLIC_PROXY_PATHS = [
   '/api/read/',
+  '/api/recovery/',
   '/api/sys-trap/',
   '/api/verify/',
   '/api/analytics/',
