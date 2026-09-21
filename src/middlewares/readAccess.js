@@ -6,6 +6,7 @@ const { LRUCache } = require('lru-cache');
 const { GUEST_JWT_SECRET, IS_PRODUCTION } = require('../config/env');
 const { ensureVisitorIdentity } = require('./rateLimit');
 const VisitorRiskService = require('../services/VisitorRiskService');
+const BotRiskClient = require('../services/BotRiskClient');
 
 const READ_TOKEN_TTL_SECONDS = 60;
 const READ_TOKEN_MAX_USES = 16;
@@ -82,6 +83,15 @@ function requireReadAccess(requiredScope) {
 
     const visitorId = ensureVisitorIdentity(req, res);
     const origin = String(req.trustedFrontendOrigin || `${req.protocol}://${req.get('host')}`).toLowerCase();
+    const centralDecision = BotRiskClient.getDecision(visitorId);
+    if (centralDecision?.enforce && centralDecision.decision === 'deny') {
+      return sendReadAccessDenied(res, '当前读取会话已被拒绝');
+    }
+    if (centralDecision?.enforce
+      && ['silent_challenge', 'strong_challenge'].includes(centralDecision.decision)
+      && !BotRiskClient.hasChallengeBypass(visitorId)) {
+      return sendReadAccessRequired(res, '当前读取会话需要重新验证');
+    }
     const restriction = VisitorRiskService.getReadRestriction(visitorId);
     if (restriction) {
       res.set('Retry-After', String(restriction.retryAfter));
@@ -112,6 +122,9 @@ function requireReadAccess(requiredScope) {
       VisitorRiskService.recordDetailRead(visitorId, Number(req.params.id));
       const detailRestriction = VisitorRiskService.getReadRestriction(visitorId);
       if (detailRestriction) {
+        BotRiskClient.enqueue(visitorId, 'sequential_detail_scan', {
+          detailId: Number(req.params.id) || 0
+        });
         res.set('Retry-After', String(detailRestriction.retryAfter));
         return res.status(429).json({
           code: 429,

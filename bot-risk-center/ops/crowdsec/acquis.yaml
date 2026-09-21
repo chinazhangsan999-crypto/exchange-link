@@ -1,0 +1,10 @@
+filenames:
+  - /var/log/webring/*.log
+labels:
+  type: caddy
+---
+source: file
+filenames:
+  - /var/log/webring/risk-events.jsonl
+labels:
+  type: json

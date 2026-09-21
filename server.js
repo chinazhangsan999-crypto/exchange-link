@@ -24,6 +24,7 @@ const CloudflareBootstrapAccessService = require('./src/services/CloudflareBoots
 const CloudflareBootstrapService = require('./src/services/CloudflareBootstrapService');
 const CloudflarePublicFrontendService = require('./src/services/CloudflarePublicFrontendService');
 const IntegrationStateService = require('./src/services/IntegrationStateService');
+const BotRiskClient = require('./src/services/BotRiskClient');
 const { startJobs, stopJobs } = require('./src/jobs/cron');
 
 let httpServer;
@@ -66,6 +67,7 @@ initializeDatabase()
       PartnerPageViewService.start();
       IpIntelligenceService.start();
       ControlCenterAgentService.start();
+      BotRiskClient.start();
       startJobs();
     });
   })
@@ -112,6 +114,7 @@ async function shutdown(signal) {
       console.warn('服务停机时刷新入站后站内浏览统计失败：', error.message);
     }
     ControlCenterAgentService.stop();
+    await BotRiskClient.stop();
     await IpIntelligenceService.stop();
     // 所有 HTTP 连接已关闭、未来任务已取消调度后，才拒绝新的写入并排空当前事务。
     dbWriteCoordinator.beginShutdown();

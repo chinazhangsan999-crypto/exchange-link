@@ -6,7 +6,7 @@ const path = require('path');
 const { Blob } = require('buffer');
 const CredentialStore = require('./IntegrationCredentialStore');
 const CloudflareFrontendModel = require('../models/CloudflareFrontendModel');
-const { FRONTEND_PROXY_SECRET } = require('../config/env');
+const { FRONTEND_PROXY_SECRET, BOT_GATE_MODE } = require('../config/env');
 
 const API_BASE = 'https://api.cloudflare.com/client/v4';
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
@@ -397,7 +397,8 @@ async function uploadAndDeploy(profile, workerName) {
     compatibility_date: '2026-09-14',
     bindings: [
       { name: 'ASSETS', type: 'assets' },
-      { name: 'API_ORIGIN', type: 'plain_text', text: resolveApiOrigin() }
+      { name: 'API_ORIGIN', type: 'plain_text', text: resolveApiOrigin() },
+      { name: 'BOT_GATE_MODE', type: 'plain_text', text: BOT_GATE_MODE }
     ],
     assets: { jwt: completionJwt, config: { run_worker_first: RUN_WORKER_FIRST } }
   };

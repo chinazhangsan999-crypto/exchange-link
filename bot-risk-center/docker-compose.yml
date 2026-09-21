@@ -1,0 +1,48 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: botrisk
+      POSTGRES_USER: botrisk
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - bot-risk-postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U botrisk -d botrisk"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    volumes:
+      - bot-risk-redis:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  crowdsec:
+    image: crowdsecurity/crowdsec:latest
+    restart: unless-stopped
+    environment:
+      COLLECTIONS: crowdsecurity/linux crowdsecurity/caddy crowdsecurity/http-cve
+    volumes:
+      - ./ops/crowdsec/acquis.yaml:/etc/crowdsec/acquis.yaml:ro
+      - ./data/logs:/var/log/webring:ro
+      - bot-risk-crowdsec-db:/var/lib/crowdsec/data
+      - bot-risk-crowdsec-config:/etc/crowdsec
+
+volumes:
+  bot-risk-postgres:
+  bot-risk-redis:
+  bot-risk-crowdsec-db:
+  bot-risk-crowdsec-config:

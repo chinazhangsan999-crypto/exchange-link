@@ -15,9 +15,15 @@ function jsonResponse(status, body) {
   };
 }
 
-async function loadClient(fetchMock) {
+async function loadClient(fetchMock, location = {}) {
   const source = await fs.readFile(path.join(__dirname, '..', 'public', 'read-client.js'), 'utf8');
-  const window = { crypto: globalThis.crypto };
+  const window = {
+    crypto: globalThis.crypto,
+    location: {
+      pathname: location.pathname || '/', search: location.search || '', hash: location.hash || '',
+      assign(value) { this.assigned = value; }
+    }
+  };
   vm.runInNewContext(source, {
     window,
     fetch: fetchMock,
@@ -30,6 +36,15 @@ async function loadClient(fetchMock) {
   });
   return window;
 }
+
+test('风险中心要求浏览器校验时跳转静默校验页并保留返回路径', async () => {
+  const window = await loadClient(async url => {
+    assert.equal(url, '/api/read/bootstrap');
+    return jsonResponse(428, { code: 428, data: { browserVerificationRequired: true } });
+  }, { pathname: '/site-detail.html', search: '?id=3' });
+  await window.readAccessReady;
+  assert.equal(window.location.assigned, '/browser-check.html?return=%2Fsite-detail.html%3Fid%3D3');
+});
 
 test('高风险读取会话完成一次本地计算后自动重新领取凭证', async () => {
   let bootstrapCalls = 0;

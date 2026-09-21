@@ -100,6 +100,11 @@
       cache: 'no-store'
     });
     const result = await response.json().catch(() => null);
+    if (allowProof && response.status === 428 && result?.data?.browserVerificationRequired) {
+      const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      window.location.assign(`/browser-check.html?return=${encodeURIComponent(returnTo)}`);
+      throw new Error('正在进行浏览器静默校验');
+    }
     if (allowProof && response.status === 428 && result?.data?.proofRequired && result.data.challenge) {
       await completeProof(result.data.challenge);
       return fetchAccessToken(false);

@@ -25,17 +25,18 @@ function countLeadingZeroBits(buffer) {
   return bits;
 }
 
-function issueChallenge(visitorId, now = Date.now()) {
+function issueChallenge(visitorId, now = Date.now(), requestedDifficultyBits = PROOF_DIFFICULTY_BITS) {
+  const difficultyBits = Math.max(8, Math.min(20, Number(requestedDifficultyBits) || PROOF_DIFFICULTY_BITS));
   const challengeId = crypto.randomBytes(18).toString('base64url');
   const salt = crypto.randomBytes(16).toString('base64url');
   const expiresAt = now + PROOF_TTL_MS;
   challenges.set(challengeId, {
     visitorId: String(visitorId || ''),
     salt,
-    difficultyBits: PROOF_DIFFICULTY_BITS,
+    difficultyBits,
     expiresAt
   });
-  return { challengeId, salt, difficultyBits: PROOF_DIFFICULTY_BITS, expiresAt };
+  return { challengeId, salt, difficultyBits, expiresAt };
 }
 
 function verifyChallenge(visitorId, input = {}, now = Date.now()) {

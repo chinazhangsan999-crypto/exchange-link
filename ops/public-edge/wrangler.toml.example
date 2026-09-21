@@ -9,6 +9,7 @@ run_worker_first = ["/", "/index.html", "/r/*", "/api/*", "/go", "/favicon.ico",
 
 [vars]
 API_ORIGIN = "https://api.example.com"
+BOT_GATE_MODE = "off"
 
 # FRONTEND_PROXY_SECRET 必须通过 `wrangler secret put FRONTEND_PROXY_SECRET` 保存，
-# 不要写入本文件或提交到 Git。
+# 不要写入本文件或提交到 Git。浏览器通行证密钥只保存在 Node.js，Worker 无需持有。

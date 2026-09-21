@@ -1,0 +1,18 @@
+{
+  "name": "webring-bot-risk-center",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Independent bot risk analysis and decision service for webring sites",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "lru-cache": "^11.2.2",
+    "pg": "^8.16.3",
+    "pino": "^9.9.4",
+    "redis": "^5.8.2"
+  }
+}

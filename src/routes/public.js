@@ -11,6 +11,7 @@ const {
 } = require('../middlewares/rateLimit');
 const { requireReadAccess } = require('../middlewares/readAccess');
 const { limitReadConcurrency } = require('../middlewares/readConcurrency');
+const { requireBrowserAccess } = require('../middlewares/browserGate');
 const {
   requireTrustedFrontendProxy,
   requireFrontendProxy
@@ -26,13 +27,16 @@ const verifyCheckRateLimiter = createRateLimiter('verify-check', 10 * 60 * 1000,
 const showcaseDiagnosticRateLimiter = createRateLimiter('showcase-diagnostics', 60 * 1000, 20);
 const readBootstrapRateLimiter = createVisitorRateLimiter('read-bootstrap', 60 * 1000, 6, 600);
 const readProofRateLimiter = createVisitorRateLimiter('read-proof', 60 * 1000, 6, 600);
+const browserChallengeRateLimiter = createVisitorRateLimiter('browser-challenge', 60 * 1000, 8, 600);
 
 router.get('/api/health', PublicController.health);
 router.get('/.well-known/route-health.gif', PublicController.routeHealthGif);
 // 仅供经过 HMAC 验签的静态前端边缘代理调用；浏览器无法直接伪造来源或客户端 IP。
 router.post('/internal/frontend/landing', requireTrustedFrontendProxy, PublicController.prepareFrontendLanding);
 router.use(requireFrontendProxy);
-router.get('/api/read/bootstrap', readBootstrapRateLimiter, PublicController.getReadBootstrap);
+router.get('/api/browser/challenge', browserChallengeRateLimiter, PublicController.getBrowserChallenge);
+router.post('/api/browser/verify', browserChallengeRateLimiter, PublicController.verifyBrowserChallenge);
+router.get('/api/read/bootstrap', requireBrowserAccess, readBootstrapRateLimiter, PublicController.getReadBootstrap);
 router.post('/api/read/proof', readProofRateLimiter, PublicController.verifyReadProof);
 router.get('/api/sys-trap/trapdoor', PublicController.recordTrapdoor);
 router.head('/', PublicController.headRoot);
@@ -47,7 +51,7 @@ router.post('/api/track/site-page-view', sitePageViewRateLimiter, PublicControll
 router.post('/api/inflow/claim', PublicController.deprecatedInflowClaim);
 router.get(['/api/config/public', '/api/config'], PublicController.getPublicConfig);
 router.get('/api/categories', PublicController.getCategories);
-router.get('/api/mirrors', PublicController.getMirrors);
+router.get('/api/mirrors', requireBrowserAccess, PublicController.getMirrors);
 router.get('/api/captcha', captchaRateLimiter, PublicController.getCaptcha);
 router.post('/api/links/apply', applyRiskProtection, adaptiveVerificationGate, PublicController.applyLink);
 router.get('/api/links', requireReadAccess('links:list'), limitReadConcurrency, PublicController.getLinks);

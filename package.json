@@ -9,6 +9,7 @@
     "build:public-frontend": "node scripts/build-public-frontend.js"
   },
   "dependencies": {
+    "@fingerprintjs/botd": "^2.0.0",
     "archiver": "^8.0.0",
     "async-mutex": "^0.5.0",
     "axios": "^1.20.0",

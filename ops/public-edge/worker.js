@@ -7,6 +7,7 @@ const PROXIED_PATHS = [
 ];
 
 const SCRIPT_CLIENT_PATTERN = /(?:python-requests|curl\/|wget\/|scrapy|go-http-client|aiohttp|httpx\/)/i;
+const KNOWN_CRAWLER_PATTERN = /(?:googlebot|bingbot|baiduspider|yandexbot|sogou|bytespider|gptbot|chatgpt-user|oai-searchbot|claudebot|claude-web|anthropic-ai|ccbot|cohere-ai|perplexitybot|amazonbot|applebot-extended|meta-externalagent|diffbot|headlesschrome)/i;
 
 function isProtectedReadPath(pathname) {
   return pathname === '/api/read/bootstrap'
@@ -25,6 +26,20 @@ function denyObviousScriptClient(request, pathname) {
       'Content-Type': 'application/json; charset=utf-8',
       'Cache-Control': 'private, no-store',
       'X-Content-Type-Options': 'nosniff',
+      'X-Robots-Tag': 'noindex, nofollow'
+    }
+  });
+}
+
+function denyKnownCrawler(request, env) {
+  if (String(env.BOT_GATE_MODE || 'off').toLowerCase() !== 'enforce') return null;
+  const userAgent = request.headers.get('User-Agent') || '';
+  if (!KNOWN_CRAWLER_PATTERN.test(userAgent)) return null;
+  return new Response('Not Found', {
+    status: 404,
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Cache-Control': 'private, no-store',
       'X-Robots-Tag': 'noindex, nofollow'
     }
   });
@@ -239,6 +254,8 @@ export default {
           headers: { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }
         }));
       }
+      const crawlerResponse = denyKnownCrawler(request, env);
+      if (crawlerResponse) return crawlerResponse;
       const scriptClientResponse = denyObviousScriptClient(request, url.pathname);
       if (scriptClientResponse) return scriptClientResponse;
       if (shouldProxy(url.pathname)) return await proxyRequest(request, env);

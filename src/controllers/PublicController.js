@@ -11,7 +11,8 @@ const {
   IS_PRODUCTION,
   GUEST_JWT_SECRET,
   TRAFFIC_DEBUG,
-  PUBLIC_CODE_ADS_ENABLED
+  PUBLIC_CODE_ADS_ENABLED,
+  BROWSER_ACCESS_TTL_MS
 } = require('../config/env');
 const { getClientIp, parseHostname, normalizePartnerUrl, normalizeRegisteredDomain } = require('../utils/network');
 const { ok, fail, safeApiErrorMessage, isUniqueConstraintError } = require('../utils/http');
@@ -45,6 +46,8 @@ const PartnerPageViewService = require('../services/PartnerPageViewService');
 const InflowAttributionService = require('../services/InflowAttributionService');
 const VisitorRiskService = require('../services/VisitorRiskService');
 const ReadProofService = require('../services/ReadProofService');
+const BotRiskClient = require('../services/BotRiskClient');
+const BrowserChallengeService = require('../services/BrowserChallengeService');
 const InflowService = require('../services/InflowService');
 const IpIntelligenceService = require('../services/IpIntelligenceService');
 const { sendAdminAlert, formatAlertLink, formatContactLine } = require('../services/AlertService');
@@ -429,7 +432,7 @@ function initVerification(req, res) {
 
 function getReadBootstrap(req, res) {
   const visitorId = ensureVisitorIdentity(req, res);
-  VisitorRiskService.recordBootstrapSignals(visitorId, {
+  const localRisk = VisitorRiskService.recordBootstrapSignals(visitorId, {
     fetchSite: req.get('sec-fetch-site'),
     fetchMode: req.get('sec-fetch-mode'),
     fetchDest: req.get('sec-fetch-dest'),
@@ -438,19 +441,83 @@ function getReadBootstrap(req, res) {
     userAgent: req.get('user-agent'),
     expectedOrigin: req.trustedFrontendOrigin || `${req.protocol}://${req.get('host')}`
   });
+  if (localRisk?.signalFlags?.includes('script-user-agent')) {
+    BotRiskClient.enqueue(visitorId, 'script_user_agent', { path: '/api/read/bootstrap' });
+  }
+  const centralDecision = BotRiskClient.getDecision(visitorId);
+  if (centralDecision?.enforce && centralDecision.decision === 'deny') {
+    res.set('Cache-Control', 'private, no-store');
+    return res.status(403).json({ code: 403, msg: '请求无法处理', data: null });
+  }
   const restriction = VisitorRiskService.getReadRestriction(visitorId);
-  if (restriction) {
+  const centralChallenge = centralDecision?.enforce
+    && ['silent_challenge', 'strong_challenge'].includes(centralDecision.decision)
+    && !BotRiskClient.hasChallengeBypass(visitorId);
+  if (restriction || centralChallenge) {
+    const difficulty = centralDecision?.decision === 'strong_challenge' ? 16 : 12;
     res.set('Cache-Control', 'private, no-store');
     return res.status(428).json({
       code: 428,
       msg: IS_PRODUCTION ? '请求无法处理' : '当前读取会话需要完成短时计算校验',
       data: {
         proofRequired: true,
-        challenge: ReadProofService.issueChallenge(visitorId)
+        challenge: ReadProofService.issueChallenge(visitorId, Date.now(), difficulty)
       }
     });
   }
   return ok(res, issueReadAccessToken(req, res), '读取凭证已生成');
+}
+
+function getBrowserChallenge(req, res) {
+  const visitorId = ensureVisitorIdentity(req, res);
+  const decision = BotRiskClient.getDecision(visitorId);
+  res.set('Cache-Control', 'private, no-store');
+  if (decision?.enforce && decision.decision === 'deny') {
+    return res.status(403).json({ code: 403, msg: '请求无法处理', data: null });
+  }
+  return ok(res, {
+    challenge: BrowserChallengeService.issue(visitorId, decision),
+    mode: 'silent'
+  }, '浏览器校验已初始化');
+}
+
+function verifyBrowserChallenge(req, res) {
+  const visitorId = ensureVisitorIdentity(req, res);
+  const body = req.body || {};
+  const proof = BrowserChallengeService.verifyProof(visitorId, body);
+  res.set('Cache-Control', 'private, no-store');
+  if (!proof.ok) return fail(res, '浏览器校验无效或已过期', 400);
+
+  const botD = body.botD && typeof body.botD === 'object' ? body.botD : {};
+  const webdriver = body.webdriver === true;
+  const botDetected = botD.bot === true;
+  BotRiskClient.enqueue(visitorId, 'browser_challenge_passed', {
+    elapsedMs: proof.elapsed,
+    difficultyBits: proof.difficultyBits,
+    webdriver,
+    botDetected,
+    botKind: String(botD.kind || '').slice(0, 64)
+  });
+  // 单一浏览器探针可能误报；仅在两个独立自动化信号同时出现时立即拒绝。
+  if (BrowserChallengeService.isEnforced() && webdriver && botDetected) {
+    BotRiskClient.enqueue(visitorId, 'browser_automation_confirmed');
+    return fail(res, '请求无法处理', 403);
+  }
+
+  const token = BrowserChallengeService.issueAccessToken(
+    visitorId,
+    req.get('user-agent') || '',
+    botDetected || webdriver ? 'observed' : 'browser'
+  );
+  res.cookie(BrowserChallengeService.COOKIE_NAME, token, {
+    maxAge: BROWSER_ACCESS_TTL_MS,
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: IS_PRODUCTION,
+    path: '/'
+  });
+  BotRiskClient.markChallengePassed(visitorId);
+  return ok(res, { verified: true, expiresIn: Math.floor(BROWSER_ACCESS_TTL_MS / 1000) }, '浏览器校验通过');
 }
 
 function verifyReadProof(req, res) {
@@ -465,6 +532,7 @@ function verifyReadProof(req, res) {
     });
   }
   VisitorRiskService.markReadProofVerified(visitorId);
+  BotRiskClient.markChallengePassed(visitorId);
   return ok(res, { verified: true }, '计算校验通过');
 }
 
@@ -473,6 +541,9 @@ function recordTrapdoor(req, res) {
   const record = VisitorRiskService.recordTrapdoor(visitorId, {
     userAgent: req.get('user-agent'),
     path: req.originalUrl || req.path
+  });
+  BotRiskClient.enqueue(visitorId, record?.repeatedQuickly ? 'repeated_trapdoor' : 'trapdoor_hit', {
+    path: String(req.originalUrl || req.path).slice(0, 200)
   });
   if (TRAFFIC_DEBUG && record) {
     console.warn(`[访客风险] 隐藏探针命中：visitor=${visitorId.slice(0, 8)}… score=${record.score} hits=${record.trapHits}`);
@@ -1065,6 +1136,8 @@ module.exports = {
   favicon,
   initVerification,
   getReadBootstrap,
+  getBrowserChallenge,
+  verifyBrowserChallenge,
   verifyReadProof,
   recordTrapdoor,
   checkVerification,

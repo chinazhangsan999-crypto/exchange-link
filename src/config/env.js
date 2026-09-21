@@ -83,6 +83,49 @@ const ADMIN_SESSION_COOKIE = 'webring_admin';
 const ADMIN_CSRF_COOKIE = 'webring_admin_csrf';
 // 主站默认不执行第三方联盟脚本。若确有业务需要，应先迁移到独立受限域名后再显式开启。
 const PUBLIC_CODE_ADS_ENABLED = process.env.PUBLIC_CODE_ADS_ENABLED === '1';
+const BOT_GATE_MODES = new Set(['off', 'observe', 'enforce']);
+const BOT_GATE_MODE = String(process.env.BOT_GATE_MODE || 'off').trim().toLowerCase();
+if (!BOT_GATE_MODES.has(BOT_GATE_MODE)) {
+  throw new Error('BOT_GATE_MODE 只能是 off、observe 或 enforce。');
+}
+const BOT_RISK_CENTER_URL = String(process.env.BOT_RISK_CENTER_URL || '').trim().replace(/\/$/, '');
+const BOT_RISK_CLIENT_ID = String(process.env.BOT_RISK_CLIENT_ID || '').trim();
+const BOT_RISK_CLIENT_SECRET = String(process.env.BOT_RISK_CLIENT_SECRET || '').trim();
+const BOT_RISK_SITE_KEY = String(process.env.BOT_RISK_SITE_KEY || 'webring-main').trim();
+const BOT_RISK_CENTER_ENABLED = process.env.BOT_RISK_CENTER_ENABLED === '1';
+const BOT_RISK_ALLOW_PRIVATE_HTTP = process.env.BOT_RISK_ALLOW_PRIVATE_HTTP === '1';
+const BOT_RISK_TIMEOUT_MS = Math.max(100, Math.min(5_000,
+  Number.parseInt(process.env.BOT_RISK_TIMEOUT_MS || '800', 10) || 800));
+const BOT_RISK_SYNC_INTERVAL_MS = Math.max(5_000, Math.min(5 * 60_000,
+  Number.parseInt(process.env.BOT_RISK_SYNC_INTERVAL_MS || '15000', 10) || 15_000));
+const EDGE_ACCESS_SECRET = String(process.env.EDGE_ACCESS_SECRET || '').trim();
+const BROWSER_ACCESS_TTL_MS = Math.max(15 * 60_000, Math.min(24 * 60 * 60_000,
+  Number.parseInt(process.env.BROWSER_ACCESS_TTL_MS || String(4 * 60 * 60_000), 10)
+    || 4 * 60 * 60_000));
+
+if (BOT_RISK_CENTER_ENABLED) {
+  let riskCenterUrl;
+  try { riskCenterUrl = new URL(BOT_RISK_CENTER_URL); } catch { riskCenterUrl = null; }
+  const hostname = riskCenterUrl?.hostname || '';
+  const privateHttp = BOT_RISK_ALLOW_PRIVATE_HTTP
+    && riskCenterUrl?.protocol === 'http:'
+    && (/^10\./.test(hostname)
+      || /^192\.168\./.test(hostname)
+      || /^172\.(1[6-9]|2\d|3[01])\./.test(hostname)
+      || hostname === '127.0.0.1'
+      || hostname === 'localhost');
+  if (IS_PRODUCTION && riskCenterUrl?.protocol !== 'https:' && !privateHttp) {
+    throw new Error('生产环境 BOT_RISK_CENTER_URL 必须使用 HTTPS，或显式允许 RFC1918 私网 HTTP。');
+  }
+  if (!BOT_RISK_CENTER_URL || !/^[A-Za-z0-9_-]{3,64}$/.test(BOT_RISK_CLIENT_ID)
+    || BOT_RISK_CLIENT_SECRET.length < 32 || !/^[A-Za-z0-9_-]{3,64}$/.test(BOT_RISK_SITE_KEY)) {
+    throw new Error('启用机器人风险中心后，必须配置有效 URL、client id、site key 和至少 32 字符的 secret。');
+  }
+}
+
+if (BOT_GATE_MODE === 'enforce' && EDGE_ACCESS_SECRET.length < 32) {
+  throw new Error('BOT_GATE_MODE=enforce 时必须配置至少 32 字符的 EDGE_ACCESS_SECRET。');
+}
 
 const ADMIN_ORIGIN_PATTERN = IS_PRODUCTION ? /^https:\/\/[^/]+$/i : /^https?:\/\/[^/]+$/i;
 if (ADMIN_FRONTEND_ORIGIN && !ADMIN_ORIGIN_PATTERN.test(ADMIN_FRONTEND_ORIGIN)) {
@@ -138,5 +181,16 @@ module.exports = {
   ADMIN_SESSION_TTL_MS,
   ADMIN_SESSION_COOKIE,
   ADMIN_CSRF_COOKIE,
-  PUBLIC_CODE_ADS_ENABLED
+  PUBLIC_CODE_ADS_ENABLED,
+  BOT_GATE_MODE,
+  BOT_RISK_CENTER_ENABLED,
+  BOT_RISK_ALLOW_PRIVATE_HTTP,
+  BOT_RISK_CENTER_URL,
+  BOT_RISK_CLIENT_ID,
+  BOT_RISK_CLIENT_SECRET,
+  BOT_RISK_SITE_KEY,
+  BOT_RISK_TIMEOUT_MS,
+  BOT_RISK_SYNC_INTERVAL_MS,
+  EDGE_ACCESS_SECRET,
+  BROWSER_ACCESS_TTL_MS
 };
