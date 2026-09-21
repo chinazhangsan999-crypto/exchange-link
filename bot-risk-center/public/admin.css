@@ -29,7 +29,7 @@ body {
   line-height: 1.5;
 }
 
-button, input { font: inherit; }
+button, input, select, textarea { font: inherit; }
 button { touch-action: manipulation; }
 
 .skip-link {
@@ -88,7 +88,7 @@ h2 { margin-bottom: 4px; font-size: 22px; }
 
 form { margin-top: 28px; }
 label { display: block; margin-bottom: 8px; font-weight: 700; }
-input {
+input, select, textarea {
   width: 100%;
   min-height: 48px;
   padding: 11px 14px;
@@ -97,6 +97,7 @@ input {
   background: var(--surface-muted);
   color: var(--text);
 }
+textarea { resize: vertical; }
 input + label { margin-top: 16px; }
 input:focus-visible, button:focus-visible {
   outline: 3px solid var(--focus);
@@ -119,7 +120,8 @@ input:focus-visible, button:focus-visible {
 }
 .button:disabled { cursor: not-allowed; opacity: 0.52; }
 .button svg { width: 18px; fill: currentColor; }
-.button.primary { width: 100%; margin-top: 20px; background: var(--primary); color: #fff; }
+.button.primary { background: var(--primary); color: #fff; }
+.button.full { width: 100%; margin-top: 20px; }
 .button.primary:hover:not(:disabled) { background: var(--primary-hover); }
 .button.secondary { border-color: var(--border); background: var(--surface); color: var(--text); }
 .button.secondary:hover:not(:disabled) { border-color: #aebbd0; background: var(--surface-muted); }
@@ -132,6 +134,10 @@ input:focus-visible, button:focus-visible {
   justify-content: space-between;
   gap: 24px;
 }
+.button-row, .filter-row, .form-actions, .pagination { display: flex; align-items: center; gap: 10px; }
+.tabs { display: flex; gap: 8px; margin-top: 28px; overflow-x: auto; padding-bottom: 4px; }
+.tab { flex: 0 0 auto; min-height: 42px; padding: 8px 16px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--muted); font: inherit; font-weight: 750; cursor: pointer; }
+.tab.active { border-color: #bdcaff; background: #eaf0ff; color: var(--primary); }
 
 .metrics {
   display: grid;
@@ -149,6 +155,7 @@ input:focus-visible, button:focus-visible {
 .metric-card strong { display: block; margin-top: 8px; font-size: 30px; font-variant-numeric: tabular-nums; }
 
 .panel { overflow: hidden; border-radius: 20px; }
+.tab-panel { margin-top: 20px; }
 .panel-head { padding: 24px; border-bottom: 1px solid var(--border); }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; min-width: 900px; }
@@ -157,6 +164,10 @@ th { background: var(--surface-muted); color: var(--muted); font-size: 13px; let
 tbody tr:last-child td { border-bottom: 0; }
 .site-name { display: block; font-weight: 800; }
 .site-key { display: block; margin-top: 3px; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.site-url { display: block; max-width: 310px; margin-top: 5px; color: var(--primary); font-size: 13px; overflow-wrap: anywhere; }
+.more-urls { margin-top: 5px; color: var(--muted); font-size: 13px; }
+.more-urls summary { cursor: pointer; }
+.more-urls a { display: block; margin: 4px 0; color: var(--primary); overflow-wrap: anywhere; }
 .client-chip, .status-chip {
   display: inline-flex;
   align-items: center;
@@ -173,6 +184,43 @@ tbody tr:last-child td { border-bottom: 0; }
 .action-column { text-align: right; }
 td.action-column .button { min-width: 88px; }
 .empty-cell { padding: 44px 20px; color: var(--muted); text-align: center; }
+.inline-actions { display: flex; justify-content: flex-end; gap: 7px; flex-wrap: wrap; }
+.button.small { min-height: 34px; padding: 6px 10px; border-radius: 9px; font-size: 13px; }
+.status-line { display: grid; gap: 5px; }
+.risk-metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; padding: 20px 24px 0; }
+.risk-metrics article { padding: 14px 16px; border-radius: 14px; background: var(--surface-muted); }
+.risk-metrics span { display: block; color: var(--muted); font-size: 13px; }
+.risk-metrics strong { display: block; margin-top: 4px; font-size: 24px; }
+.signal-summary { display: flex; gap: 8px; flex-wrap: wrap; padding: 16px 24px; }
+.signal-chip { padding: 6px 10px; border-radius: 999px; background: #eef2f8; color: #42526a; font-size: 13px; }
+.pagination { justify-content: flex-end; padding: 18px 24px; border-top: 1px solid var(--border); }
+.inline-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; padding: 22px 24px; margin: 0; border-bottom: 1px solid var(--border); }
+.inline-form label, .form-grid label, .action-form label { margin: 0; }
+.wide { grid-column: 1 / -1; }
+.form-note { align-self: center; margin: 0; color: var(--muted); }
+.dialog-card { width: min(760px, calc(100% - 24px)); max-height: calc(100dvh - 32px); padding: 0; border: 0; border-radius: 22px; color: var(--text); box-shadow: var(--shadow); }
+.dialog-card.narrow { width: min(560px, calc(100% - 24px)); }
+.dialog-card::backdrop { background: rgba(15, 27, 47, .52); backdrop-filter: blur(3px); }
+.dialog-card form { margin: 0; }
+.dialog-head, .dialog-foot { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 20px 24px; }
+.dialog-head { border-bottom: 1px solid var(--border); }
+.dialog-head h2 { margin: 0; }
+.dialog-foot { justify-content: flex-end; border-top: 1px solid var(--border); }
+.icon-button { width: 40px; height: 40px; border: 1px solid var(--border); border-radius: 50%; background: var(--surface-muted); color: var(--muted); cursor: pointer; font-size: 24px; }
+.form-grid, .action-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; padding: 22px 24px; }
+.check { display: flex !important; align-items: center; gap: 8px; min-height: 48px; }
+.check input { width: 18px; min-height: 18px; }
+.warning-note { margin: 20px 24px; padding: 12px 14px; border-radius: 10px; background: #fff7e6; color: #805600; }
+.dialog-card > label { margin: 16px 24px; }
+.detail-overview { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding: 20px 24px; }
+.detail-overview article { padding: 13px; border-radius: 12px; background: var(--surface-muted); }
+.detail-overview span { display: block; color: var(--muted); font-size: 12px; }
+.detail-overview strong { display: block; margin-top: 3px; overflow-wrap: anywhere; }
+.event-list { max-height: 340px; overflow: auto; padding: 0 24px 20px; }
+.event-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.event-item code { color: var(--primary); font-weight: 700; }
+.event-item pre { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; }
+.action-form { border-top: 1px solid var(--border); }
 
 .toast {
   position: fixed;
@@ -192,6 +240,7 @@ td.action-column .button { min-width: 88px; }
   .shell { width: min(100% - 24px, 680px); padding-top: 24px; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topbar, .panel-head { align-items: flex-start; }
+  .risk-metrics, .inline-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 520px) {
@@ -201,6 +250,9 @@ td.action-column .button { min-width: 88px; }
   .metrics { gap: 10px; }
   .metric-card { padding: 18px 16px; }
   .metric-card strong { font-size: 26px; }
+  .button-row, .filter-row { width: 100%; flex-wrap: wrap; }
+  .risk-metrics, .inline-form, .form-grid, .action-form, .detail-overview { grid-template-columns: 1fr; }
+  .wide { grid-column: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -7,6 +7,21 @@ CREATE TABLE IF NOT EXISTS sites (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS collection_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS enforcement_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE sites ADD COLUMN IF NOT EXISTS enforcement_mode TEXT NOT NULL DEFAULT 'observe';
+
+CREATE TABLE IF NOT EXISTS site_urls (
+  id BIGSERIAL PRIMARY KEY,
+  site_key TEXT NOT NULL REFERENCES sites(site_key) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  hostname TEXT NOT NULL,
+  is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(site_key, url)
+);
+CREATE INDEX IF NOT EXISTS idx_site_urls_site ON site_urls(site_key, is_primary DESC, id);
 
 CREATE TABLE IF NOT EXISTS api_clients (
   id BIGSERIAL PRIMARY KEY,
@@ -17,6 +32,14 @@ CREATE TABLE IF NOT EXISTS api_clients (
   last_used_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS name TEXT NOT NULL DEFAULT '';
+ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS transport TEXT NOT NULL DEFAULT 'internal';
+ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS endpoint_url TEXT NOT NULL DEFAULT '';
+ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS secret_ciphertext TEXT;
+ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS secret_iv TEXT;
+ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS secret_tag TEXT;
+ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS key_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE api_clients ADD COLUMN IF NOT EXISTS last_error TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_api_clients_site ON api_clients(site_key);
 
 CREATE TABLE IF NOT EXISTS policies (
@@ -109,3 +132,34 @@ CREATE TABLE IF NOT EXISTS admin_audits (
   details JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+CREATE TABLE IF NOT EXISTS manual_overrides (
+  id BIGSERIAL PRIMARY KEY,
+  site_key TEXT NOT NULL,
+  visitor_hash TEXT NOT NULL,
+  action TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(site_key, visitor_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_manual_overrides_active
+  ON manual_overrides(site_key, visitor_hash, expires_at DESC);
+
+CREATE TABLE IF NOT EXISTS signal_rules (
+  id BIGSERIAL PRIMARY KEY,
+  site_key TEXT NOT NULL,
+  signal TEXT NOT NULL,
+  action TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  enabled BOOLEAN NOT NULL DEFAULT TRUE,
+  duration_minutes INTEGER NOT NULL DEFAULT 60,
+  created_by TEXT NOT NULL,
+  expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_signal_rules_match
+  ON signal_rules(site_key, signal, enabled, expires_at);

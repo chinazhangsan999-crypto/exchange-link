@@ -498,6 +498,10 @@ function verifyBrowserChallenge(req, res) {
     botDetected,
     botKind: String(botD.kind || '').slice(0, 64)
   });
+  if (botDetected) {
+    BotRiskClient.enqueue(visitorId, 'botd_detected', { botKind: String(botD.kind || '').slice(0, 64) });
+  }
+  if (webdriver) BotRiskClient.enqueue(visitorId, 'webdriver_detected');
   // 单一浏览器探针可能误报；仅在两个独立自动化信号同时出现时立即拒绝。
   if (BrowserChallengeService.isEnforced() && webdriver && botDetected) {
     BotRiskClient.enqueue(visitorId, 'browser_automation_confirmed');

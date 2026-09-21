@@ -12,6 +12,10 @@ fengxian.chinazhangsan.ccwu.cc {
       reverse_proxy 10.128.0.3:4100
     }
 
+    handle /v1/* {
+      reverse_proxy 10.128.0.3:4100
+    }
+
     handle {
       respond "Not Found" 404
     }

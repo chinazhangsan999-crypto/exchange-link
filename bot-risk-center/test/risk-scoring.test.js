@@ -25,6 +25,18 @@ test('组合强证据进入加强挑战', () => {
   assert.equal(result.decision, 'strong_challenge');
 });
 
+test('浏览器自动化双重确认直接拒绝', () => {
+  const result = RiskScoringService.evaluate([{ signal: 'browser_automation_confirmed' }]);
+  assert.equal(result.score, 100);
+  assert.equal(result.decision, 'deny');
+});
+
+test('通过浏览器挑战降低风险但不会产生负分', () => {
+  const result = RiskScoringService.evaluate([{ signal: 'browser_challenge_passed' }]);
+  assert.equal(result.score, 0);
+  assert.equal(result.decision, 'allow');
+});
+
 test('事件幂等且增量游标单调', () => {
   DecisionService.resetForTests();
   const event = {

@@ -14,6 +14,7 @@ async function events(req, res) {
     return res.status(400).json({ code: 400, message: 'events must contain 1-500 items' });
   }
   const result = DecisionService.applyEvents(siteKey(req), inputs);
+  result.decisions = await StorageService.applyManualControls(siteKey(req), result.acceptedEvents, result.decisions);
   await StorageService.persistBatch(result.acceptedEvents, result.decisions);
   return res.json({ code: 200, data: result });
 }
@@ -33,12 +34,14 @@ async function evaluate(req, res) {
   return res.json({ code: 200, data: await StorageService.evaluate(siteKey(req), visitorHash) });
 }
 
-function policy(req, res) {
+async function policy(req, res) {
+  const control = await StorageService.getSiteControl(siteKey(req));
   return res.json({
     code: 200,
     data: {
       version: DecisionService.DEFAULT_POLICY_VERSION,
       thresholds: { observe: 25, silentChallenge: 50, strongChallenge: 75, deny: 90 },
+      enforcement: control,
       hash: crypto.createHash('sha256').update(DecisionService.DEFAULT_POLICY_VERSION).digest('hex')
     }
   });
