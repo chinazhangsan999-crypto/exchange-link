@@ -45,10 +45,11 @@ function hasChallengeBypass(subjectHash) {
 }
 
 function getCursor() { return cursor; }
-function resetForTests() {
+function clear() {
   decisions.clear();
   challengeBypasses.clear();
   cursor = 0;
 }
+function resetForTests() { clear(); }
 
-module.exports = { setMany, get, markChallengePassed, hasChallengeBypass, getCursor, resetForTests };
+module.exports = { setMany, get, markChallengePassed, hasChallengeBypass, getCursor, clear, resetForTests };

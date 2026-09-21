@@ -1,0 +1,23 @@
+fengxian.changzhangsan.ccwu.cc {
+  encode zstd gzip
+
+  @admin path /admin /admin/*
+  handle @admin {
+    reverse_proxy 10.128.0.3:4100
+  }
+
+  handle /health {
+    reverse_proxy 10.128.0.3:4100
+  }
+
+  handle {
+    respond "Not Found" 404
+  }
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "no-referrer"
+  }
+}

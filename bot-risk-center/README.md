@@ -12,7 +12,14 @@
 若宿主机的 `127.0.0.1:5432` 已被其他 PostgreSQL 使用，可在 Compose 环境文件中设置
 `POSTGRES_BIND_PORT`，并让 `DATABASE_URL` 指向同一个本机端口；容器内部端口保持 5432。
 
-生产环境仅监听 `127.0.0.1`，由受信反向代理提供 TLS。导航站通过 HMAC 调用 `/v1/*`；健康检查不返回版本、配置或依赖细节。
+生产环境仅监听回环或 RFC1918 私网地址，由受信反向代理提供 TLS。导航站通过 HMAC 调用 `/v1/*`；健康检查不返回版本、配置或依赖细节。
+
+## 管理后台
+
+- 管理入口：`https://fengxian.changzhangsan.ccwu.cc/admin`
+- 使用 `BOT_RISK_ADMIN_TOKEN` 登录；令牌仅在登录请求中提交，成功后改用 HttpOnly、Secure、SameSite=Strict 会话。
+- 后台可实时开启或关闭每个 `site_key` 的风险中心对接。关闭后 `/v1/*` 返回 403，导航站继续独立运行。
+- `ops/Caddyfile` 只公开 `/admin*` 与 `/health`；HMAC 数据线路继续使用 Google Cloud 私网地址。
 
 ## 决策边界
 

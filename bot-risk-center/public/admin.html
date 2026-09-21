@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <title>风险中心管理后台</title>
+  <link rel="stylesheet" href="/admin/assets/admin.css">
+  <script src="/admin/assets/admin.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">跳到主要内容</a>
+
+  <main id="main-content" class="shell">
+    <section id="login-view" class="login-card" aria-labelledby="login-title">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" focusable="false"><path d="M12 2 3.5 5.8v5.7c0 5.2 3.6 9.5 8.5 10.5 4.9-1 8.5-5.3 8.5-10.5V5.8L12 2Zm0 4.1 4.5 2v3.4c0 3.1-1.8 5.8-4.5 6.8-2.7-1-4.5-3.7-4.5-6.8V8.1l4.5-2Z"/></svg>
+      </div>
+      <p class="eyebrow">RISK CONTROL CENTER</p>
+      <h1 id="login-title">风险中心管理后台</h1>
+      <p class="subtle">登录后可管理各导航站与风险中心的连接状态。</p>
+      <form id="login-form" novalidate>
+        <label for="admin-token">管理令牌</label>
+        <input id="admin-token" name="token" type="password" autocomplete="current-password" required>
+        <p id="login-error" class="form-error" role="alert" hidden></p>
+        <button id="login-button" class="button primary" type="submit">安全登录</button>
+      </form>
+    </section>
+
+    <section id="dashboard-view" class="dashboard" aria-labelledby="page-title" hidden>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">RISK CONTROL CENTER</p>
+          <h1 id="page-title">对接站点管理</h1>
+          <p class="subtle">关闭对接后，该导航站继续运行，但不再接收或执行风险中心决策。</p>
+        </div>
+        <button id="logout-button" class="button secondary" type="button">退出登录</button>
+      </header>
+
+      <section class="metrics" aria-label="风险中心概览">
+        <article class="metric-card">
+          <span>已接入站点</span>
+          <strong id="metric-sites">—</strong>
+        </article>
+        <article class="metric-card">
+          <span>当前已开启</span>
+          <strong id="metric-enabled">—</strong>
+        </article>
+        <article class="metric-card">
+          <span>24h 风险事件</span>
+          <strong id="metric-events">—</strong>
+        </article>
+        <article class="metric-card">
+          <span>24h 风险决定</span>
+          <strong id="metric-decisions">—</strong>
+        </article>
+      </section>
+
+      <section class="panel" aria-labelledby="sites-title">
+        <div class="panel-head">
+          <div>
+            <h2 id="sites-title">导航站连接</h2>
+            <p class="subtle">开关实时作用于对应站点的 HMAC 数据线路。</p>
+          </div>
+          <button id="refresh-button" class="button secondary" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18.4 5.6A9 9 0 1 0 21 12h-2.2a6.8 6.8 0 1 1-2-4.8L14 10h7V3l-2.6 2.6Z"/></svg>
+            刷新
+          </button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">站点</th>
+                <th scope="col">客户端</th>
+                <th scope="col">24h 事件</th>
+                <th scope="col">24h 决策</th>
+                <th scope="col">最后连接</th>
+                <th scope="col">状态</th>
+                <th scope="col" class="action-column">操作</th>
+              </tr>
+            </thead>
+            <tbody id="sites-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="status-message" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>

@@ -5,7 +5,7 @@ const DecisionService = require('../services/DecisionService');
 const StorageService = require('../services/StorageService');
 
 function siteKey(req) {
-  return String(req.get('X-Risk-Site') || req.riskClient?.clientId || '').slice(0, 64);
+  return String(req.riskClient?.siteKey || req.riskClient?.clientId || '').slice(0, 64);
 }
 
 async function events(req, res) {

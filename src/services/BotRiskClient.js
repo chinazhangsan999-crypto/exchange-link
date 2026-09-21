@@ -21,6 +21,7 @@ let decisionTimer = null;
 let flushing = false;
 let syncing = false;
 let stopped = true;
+let integrationDisabled = false;
 
 function enabled() {
   return BOT_RISK_CENTER_ENABLED && BOT_GATE_MODE !== 'off';
@@ -66,7 +67,12 @@ async function signedRequest(method, pathAndQuery, body) {
       },
       body: rawBody.length ? rawBody : undefined
     });
-    if (!response.ok) throw new Error(`risk center returned ${response.status}`);
+    if (!response.ok) {
+      const error = new Error(`risk center returned ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    integrationDisabled = false;
     return response.json();
   } finally {
     clearTimeout(timeout);
@@ -97,6 +103,11 @@ async function flush() {
     await signedRequest('POST', '/v1/events/batch', { events: batch });
     return { sent: batch.length };
   } catch (error) {
+    if (error.status === 403) {
+      integrationDisabled = true;
+      LocalRiskDecisionCache.clear();
+      return { sent: 0, dropped: batch.length, disabled: true };
+    }
     queue = [...batch, ...queue].slice(0, MAX_QUEUE_SIZE);
     return { sent: 0, error: error.name === 'AbortError' ? 'timeout' : error.message };
   } finally {
@@ -112,6 +123,11 @@ async function syncDecisions() {
     const result = await signedRequest('GET', `/v1/decisions/delta?cursor=${cursor}&limit=1000`);
     return { applied: LocalRiskDecisionCache.setMany(result?.data?.items || []) };
   } catch (error) {
+    if (error.status === 403) {
+      integrationDisabled = true;
+      LocalRiskDecisionCache.clear();
+      return { applied: 0, disabled: true };
+    }
     return { applied: 0, error: error.name === 'AbortError' ? 'timeout' : error.message };
   } finally {
     syncing = false;
@@ -157,7 +173,13 @@ async function stop() {
 }
 
 function status() {
-  return { enabled: enabled(), mode: BOT_GATE_MODE, queued: queue.length, cursor: LocalRiskDecisionCache.getCursor() };
+  return {
+    enabled: enabled(),
+    mode: BOT_GATE_MODE,
+    integrationDisabled,
+    queued: queue.length,
+    cursor: LocalRiskDecisionCache.getCursor()
+  };
 }
 
 module.exports = {

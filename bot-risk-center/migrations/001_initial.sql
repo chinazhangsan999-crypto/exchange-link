@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS api_clients (
   last_used_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE INDEX IF NOT EXISTS idx_api_clients_site ON api_clients(site_key);
 
 CREATE TABLE IF NOT EXISTS policies (
   id BIGSERIAL PRIMARY KEY,
@@ -43,6 +44,8 @@ CREATE INDEX IF NOT EXISTS idx_risk_events_visitor_time
   ON risk_events(site_key, visitor_hash, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS idx_risk_events_created
   ON risk_events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_risk_events_site_created
+  ON risk_events(site_key, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS risk_decisions (
   id BIGSERIAL PRIMARY KEY,
@@ -63,6 +66,8 @@ CREATE INDEX IF NOT EXISTS idx_risk_decisions_delta
   ON risk_decisions(site_key, sequence);
 CREATE INDEX IF NOT EXISTS idx_risk_decisions_subject
   ON risk_decisions(site_key, subject_type, subject_hash, expires_at DESC);
+CREATE INDEX IF NOT EXISTS idx_risk_decisions_site_created
+  ON risk_decisions(site_key, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS allowlists (
   id BIGSERIAL PRIMARY KEY,
