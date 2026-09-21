@@ -609,7 +609,7 @@ async function listSuspects({ siteKey = '', page = 1, limit = 50, minScore = 25 
     `${base}
      SELECT l.*, s.name AS site_name,
             COALESCE(e.event_count, 0)::int AS event_count,
-            e.first_seen, e.last_seen,
+            e.first_seen, e.last_seen, e.signal_details,
             o.action AS manual_action, o.reason AS manual_reason, o.expires_at AS manual_expires_at
        FROM latest l
        JOIN sites s ON s.site_key = l.site_key
@@ -618,11 +618,13 @@ async function listSuspects({ siteKey = '', page = 1, limit = 50, minScore = 25 
                 MIN(g.first_seen) AS first_seen, MAX(g.last_seen) AS last_seen,
                 COALESCE(jsonb_agg(jsonb_build_object(
                   'signal', g.event_type, 'count', g.signal_count,
-                  'firstSeen', g.first_seen, 'lastSeen', g.last_seen
+                  'firstSeen', g.first_seen, 'lastSeen', g.last_seen,
+                  'latestEvidence', g.latest_evidence
                 ) ORDER BY g.signal_count DESC), '[]'::jsonb) AS signal_details
            FROM (
              SELECT re.event_type, COUNT(*)::int AS signal_count,
-                    MIN(re.occurred_at) AS first_seen, MAX(re.occurred_at) AS last_seen
+                    MIN(re.occurred_at) AS first_seen, MAX(re.occurred_at) AS last_seen,
+                    (ARRAY_AGG(re.evidence ORDER BY re.occurred_at DESC))[1] AS latest_evidence
                FROM risk_events re
               WHERE re.site_key = l.site_key AND re.visitor_hash = l.subject_hash
                 AND re.created_at >= NOW() - INTERVAL '24 hours'
@@ -651,7 +653,8 @@ async function listSuspects({ siteKey = '', page = 1, limit = 50, minScore = 25 
         count: Number(detail.count) || 0,
         scoreImpact: Number(SIGNAL_WEIGHTS[detail.signal] || 0),
         firstSeen: detail.firstSeen,
-        lastSeen: detail.lastSeen
+        lastSeen: detail.lastSeen,
+        latestEvidence: detail.latestEvidence || {}
       })),
       eventCount: Number(row.event_count) || 0,
       firstSeen: row.first_seen,
@@ -690,7 +693,8 @@ async function getSuspectDetail(siteKey, visitorHash) {
       count: 0,
       scoreImpact: Number(SIGNAL_WEIGHTS[row.event_type] || 0),
       firstSeen: row.occurred_at,
-      lastSeen: row.occurred_at
+      lastSeen: row.occurred_at,
+      latestEvidence: row.evidence || {}
     };
     current.count += 1;
     if (new Date(row.occurred_at) < new Date(current.firstSeen)) current.firstSeen = row.occurred_at;
@@ -716,7 +720,10 @@ async function getSuspectDetail(siteKey, visitorHash) {
   };
 }
 
-async function applyManualDecision(siteKey, visitorHash, action, durationMinutes, reason, actor = 'risk-admin', permanent = false) {
+async function applyManualDecision(
+  siteKey, visitorHash, action, durationMinutes, reason,
+  actor = 'risk-admin', permanent = false, globalRule = null
+) {
   if (!pool || !ACTIONS.has(action)) return null;
   const minutes = Math.max(1, Math.min(43_200, Number(durationMinutes) || 60));
   const client = await pool.connect();
@@ -754,12 +761,34 @@ async function applyManualDecision(siteKey, visitorHash, action, durationMinutes
     await client.query(
       `INSERT INTO admin_audits (actor, action, target, details)
        VALUES ($1, 'manual_visitor_action', $2, $3::jsonb)`,
-      [actor, `${siteKey}:${visitorHash}`, JSON.stringify({ action, minutes: permanent ? null : minutes, permanent, reason })]
+      [actor, `${siteKey}:${visitorHash}`, JSON.stringify({
+        action, minutes: permanent ? null : minutes, permanent, reason,
+        applyToAllSites: Boolean(globalRule), ruleSignal: globalRule?.signal || null
+      })]
     );
+    let globalRuleId = null;
+    if (globalRule?.signal) {
+      const rule = await client.query(
+        `INSERT INTO signal_rules
+          (site_key, signal, action, reason, enabled, duration_minutes, created_by, expires_at)
+         VALUES ('*', $1, $2, $3, TRUE, $4, $5, NULL)
+         RETURNING id`,
+        [globalRule.signal, action, reason, permanent ? null : minutes, actor]
+      );
+      globalRuleId = Number(rule.rows[0].id);
+      await client.query(
+        `INSERT INTO admin_audits (actor, action, target, details)
+         VALUES ($1, 'create_signal_rule_from_visitor', $2, $3::jsonb)`,
+        [actor, String(globalRuleId), JSON.stringify({
+          siteKey: '*', sourceSiteKey: siteKey, visitorHash,
+          signal: globalRule.signal, action, permanent, durationMinutes: permanent ? null : minutes, reason
+        })]
+      );
+    }
     await client.query('COMMIT');
     DecisionService.setSequenceFloor(sequence);
     if (redis) await redis.set(redisKey(siteKey, visitorHash), JSON.stringify(item), { PX: expiresAt - Date.now() });
-    return item;
+    return { ...item, globalRuleId };
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;

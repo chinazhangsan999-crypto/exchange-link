@@ -193,15 +193,27 @@ td.action-column .button { min-width: 68px; }
 .risk-metrics span { display: block; color: var(--muted); font-size: 12px; }
 .risk-metrics strong { display: block; margin-top: 2px; font-size: 20px; }
 .signal-summary { display: flex; gap: 6px; flex-wrap: wrap; padding: 12px 18px; }
-.signal-chip { padding: 4px 8px; border-radius: 999px; background: #eef2f8; color: #42526a; font-size: 12px; }
+.signal-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border-radius: 999px; background: #eef2f8; color: #42526a; font-size: 12px; }
 .signal-chip.positive { background: var(--success-bg); color: var(--success); }
+.signal-chip code { color: #274064; font-size: 11px; user-select: all; }
+.copy-signal { min-height: 24px; padding: 2px 6px; border: 1px solid #c8d3e3; border-radius: 6px; background: #fff; color: var(--primary); cursor: pointer; font-size: 11px; white-space: nowrap; }
 .signal-list { display: flex; min-width: 230px; max-width: 380px; gap: 5px; flex-wrap: wrap; }
-.reason-cell { min-width: 210px; max-width: 340px; }
-.reason-cell span { display: block; margin: 2px 0; color: #42526a; font-size: 12px; line-height: 1.45; }
+.reason-cell { min-width: 300px; max-width: 430px; }
+.reason-summary { margin: 0 0 9px; }
+.reason-summary:last-child { margin-bottom: 0; }
+.reason-summary strong, .reason-summary span, .reason-summary small { display: block; }
+.reason-summary strong { margin-bottom: 2px; color: var(--text); font-size: 12px; }
+.reason-summary span { color: #42526a; font-size: 12px; line-height: 1.5; }
+.reason-summary small { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.reason-summary .reason-evidence-inline { color: #6d531f; overflow-wrap: anywhere; }
 .signal-detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 0 18px 14px; }
-.signal-detail-grid article { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted); }
-.signal-detail-grid strong, .signal-detail-grid span { display: block; }
-.signal-detail-grid span { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.signal-detail-grid article { padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted); }
+.reason-detail-head { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.reason-detail-head code { color: var(--primary); font-size: 12px; user-select: all; }
+.reason-detail p { margin: 7px 0 0; font-size: 12px; line-height: 1.55; }
+.reason-why { color: #33445f; }
+.reason-meta { color: var(--muted); }
+.reason-evidence { padding-top: 7px; border-top: 1px dashed var(--border); color: #5b4720; overflow-wrap: anywhere; }
 .pagination { justify-content: flex-end; padding: 12px 18px; border-top: 1px solid var(--border); }
 .inline-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; padding: 14px 18px; margin: 0; border-bottom: 1px solid var(--border); }
 .inline-form label, .form-grid label, .action-form label { margin: 0; }
@@ -230,6 +242,10 @@ td.action-column .button { min-width: 68px; }
 .event-item code { color: var(--primary); font-weight: 700; }
 .event-item pre { margin: 7px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; }
 .action-form { border-top: 1px solid var(--border); }
+.global-rule-box { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin: 0; padding: 12px; border: 1px solid #cbd7ef; border-radius: 10px; background: #f5f8ff; }
+.global-rule-box legend { padding: 0 6px; color: var(--primary); font-size: 13px; font-weight: 800; }
+.global-rule-box p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }
+.global-rule-box small { display: block; margin-top: 4px; color: var(--muted); font-weight: 400; }
 
 .toast {
   position: fixed;
@@ -251,6 +267,8 @@ td.action-column .button { min-width: 68px; }
   .topbar, .panel-head { align-items: flex-start; }
   .risk-metrics, .inline-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .signal-detail-grid { grid-template-columns: 1fr; }
+  .global-rule-box { grid-template-columns: 1fr; }
+  .global-rule-box p { grid-column: 1; }
   input, select, textarea, .button, .tab { min-height: 44px; }
 }
 

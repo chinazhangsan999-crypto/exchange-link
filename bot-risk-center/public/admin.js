@@ -12,6 +12,35 @@
     valid_read_token: '持有有效读取凭证', challenge_passed: '已通过风险验证',
     browser_challenge_passed: '已通过浏览器挑战', normal_dwell: '正常页面停留', outbound_interaction: '存在真实出站交互'
   });
+  const signalExplanations = Object.freeze({
+    cloudflare_confirmed_bot: 'Cloudflare 已明确将该请求识别为自动程序。这是边缘平台给出的强证据，普通真人浏览器通常不会命中。',
+    verified_search_bot: '请求来源与已验证的搜索引擎蜘蛛一致。它可能是正规蜘蛛，但仍属于自动抓取程序，不是普通访客。',
+    known_ai_crawler: 'User-Agent 或风险情报命中了已知 AI 抓取工具特征。这类客户端通常以程序方式批量读取页面。',
+    token_replay: '同一短效读取凭证被重复或异常使用。正常页面会按流程获取和消费凭证，重复使用更像脚本复制请求。',
+    sequential_detail_scan: '短时间内连续访问多个详情编号，呈现按 ID 枚举页面的规律；真人浏览通常不会如此连续、机械地遍历。',
+    high_concurrency: '同一访客同时发起的核心数据读取超过正常页面并发上限。人类操作通常有点击间隔，高并发更像批量抓取。',
+    botd_detected: '浏览器环境暴露了无头浏览器或自动化框架特征。该信号较强，但仍建议结合其他证据复核。',
+    webdriver_detected: '浏览器报告了 WebDriver 自动控制标识，常见于 Selenium、Playwright 等自动化工具。',
+    browser_automation_confirmed: '多项浏览器自动化证据同时成立，已形成相互印证；误判概率显著低于单一环境信号。',
+    script_user_agent: '请求标识命中 curl、python、wget、Go HTTP 等脚本客户端特征，和普通 Chrome、Safari 浏览器不一致。',
+    trapdoor_hit: '访问了正常界面不可见、真人无法通过常规操作进入的探针路径，通常由自动遍历链接的程序触发。',
+    repeated_trapdoor: '同一访客重复访问隐藏探针，说明并非偶然请求，自动扫描或遍历的可能性很高。',
+    challenge_failed: '客户端未能通过浏览器静默验证，可能不具备完整浏览器能力，也可能禁用了必要脚本；应结合其他信号判断。',
+    missing_fetch_metadata: '核心读取请求缺少现代浏览器通常自动携带的 Fetch Metadata。代理、旧浏览器或隐私工具也可能移除它，单独出现不足以判定机器人。',
+    valid_browser_access: '客户端持有有效浏览器通行状态，这是降低风险的正向证据。',
+    valid_read_token: '请求携带了有效短效读取凭证，说明经过了正常页面读取流程，是正向证据。',
+    challenge_passed: '客户端已经通过风险验证，是降低风险的正向证据。',
+    browser_challenge_passed: '客户端通过了浏览器挑战，是降低风险的正向证据。',
+    normal_dwell: '页面停留时间符合真人阅读节奏，是降低风险的正向证据。',
+    outbound_interaction: '访客产生了真实出站点击，表明存在正常浏览意图，是降低风险的正向证据。'
+  });
+  const evidenceLabels = Object.freeze({
+    path: '请求路径', requestPath: '请求路径', url: '请求地址', userAgent: 'User-Agent', ua: 'User-Agent',
+    concurrency: '并发数', count: '次数', detailCount: '详情数量', detailId: '详情编号', ids: '访问编号', windowMs: '统计窗口',
+    reason: '检测依据', source: '信号来源', botName: '程序名称', botKind: '自动化类型', method: '请求方法', test: '测试标记',
+    elapsedMs: '验证耗时(ms)', difficultyBits: '验证难度', webdriver: 'WebDriver', botDetected: 'BotD 结果',
+    secFetchSite: 'Sec-Fetch-Site', secFetchMode: 'Sec-Fetch-Mode', secFetchDest: 'Sec-Fetch-Dest'
+  });
   let toastTimer;
 
   async function request(path, options = {}) {
@@ -31,6 +60,39 @@
   function chip(text, on = true) { return node('span', text, `status-chip ${on ? 'on' : 'off'}`); }
   function actionButton(text, action, extra = '', id = '') { const button = node('button', text, `button small ${extra || 'secondary'}`); button.type = 'button'; button.dataset.action = action; if (id) button.dataset.id = id; return button; }
   function signalLabel(signal) { return signalLabels[signal] || signal; }
+  function signalExplanation(signal) { return signalExplanations[signal] || '系统记录到了该风险信号，但暂未配置专用解释；请结合原始证据、命中次数和时间分布人工判断。'; }
+  function evidenceSummary(evidence = {}) {
+    if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return '';
+    const entries = Object.entries(evidence)
+      .filter(([key, value]) => evidenceLabels[key] && value !== null && value !== '' && !/token|secret|password|cookie|authorization/i.test(key))
+      .slice(0, 5)
+      .map(([key, value]) => {
+        const rendered = Array.isArray(value) ? value.join(', ') : (typeof value === 'object' ? JSON.stringify(value) : String(value));
+        return `${evidenceLabels[key]}：${rendered.slice(0, 180)}`;
+      });
+    return entries.join('；');
+  }
+  function copySignalButton(signal) {
+    const button = node('button', '复制信号', 'copy-signal');
+    button.type = 'button';
+    button.dataset.copySignal = signal;
+    button.title = `复制 ${signal}`;
+    return button;
+  }
+  function buildReasonDetail(item) {
+    const box = node('article', '', 'reason-detail');
+    const head = node('div', '', 'reason-detail-head');
+    head.append(node('strong', signalLabel(item.signal)), node('code', item.signal), copySignalButton(item.signal));
+    const score = Number(item.scoreImpact) || 0;
+    box.append(
+      head,
+      node('p', signalExplanation(item.signal), 'reason-why'),
+      node('p', `命中 ${Number(item.count) || 0} 次 · 单次分值影响 ${score > 0 ? '+' : ''}${score} · 首次 ${formatDate(item.firstSeen)} · 最近 ${formatDate(item.lastSeen)}`, 'reason-meta')
+    );
+    const evidence = evidenceSummary(item.latestEvidence);
+    if (evidence) box.append(node('p', `最近证据：${evidence}`, 'reason-evidence'));
+    return box;
+  }
   function reasonLabel(reason) {
     const value = String(reason || '');
     if (value.startsWith('manual_override:')) return `人工处置：${value.slice(16) || '管理员指定'}`;
@@ -41,7 +103,9 @@
     const box = node('div', '', 'signal-list');
     for (const item of signals.slice(0, 4)) {
       const score = Number(item.scoreImpact) || 0;
-      box.append(node('span', `${signalLabel(item.signal)} ×${item.count}${score ? ` (${score > 0 ? '+' : ''}${score})` : ''}`, `signal-chip ${score < 0 ? 'positive' : ''}`));
+      const chipBox = node('span', '', `signal-chip ${score < 0 ? 'positive' : ''}`);
+      chipBox.append(node('span', `${signalLabel(item.signal)} ×${item.count}${score ? ` (${score > 0 ? '+' : ''}${score})` : ''}`), node('code', item.signal), copySignalButton(item.signal));
+      box.append(chipBox);
     }
     if (signals.length > 4) box.append(node('span', `另有 ${signals.length - 4} 项`, 'signal-chip'));
     return box;
@@ -113,17 +177,22 @@
     $('signal-summary').replaceChildren(...(summary.data.signals || []).map(item => node('span', `${item.signal} · ${item.visitors} 人 / ${item.count} 次`, 'signal-chip')));
     const body = $('suspects-body'); body.replaceChildren(); const data = suspects.data; state.suspectTotal = data.total;
     if (!data.items.length) emptyRow(body, '当前筛选条件下没有疑似访客。', 8);
-    for (const item of data.items) { const tr = node('tr'); tr.dataset.siteKey = item.siteKey; tr.dataset.visitorHash = item.visitorHash; const who = node('td'); who.append(node('strong', item.siteName), node('span', `${item.visitorHash.slice(0, 12)}…`, 'site-key')); const decision = node('td'); decision.append(chip(item.manualAction ? `人工：${item.manualAction}` : item.decision, !['deny', 'strong_challenge'].includes(item.manualAction || item.decision))); const reasons = node('td', '', 'reason-cell'); reasons.append(...(item.reasons || []).slice(0, 3).map(reason => node('span', reasonLabel(reason)))); const signalItems = (item.signals || []).length ? item.signals : (item.reasons || []).filter(reason => !String(reason).startsWith('manual_')).map(signal => ({ signal, count: 1, scoreImpact: 0 })); const signals = node('td'); signals.append(renderSignalChips(signalItems)); const action = node('td', '', 'action-column'); action.append(actionButton('查看证据 / 处置', 'view-suspect')); tr.append(who, node('td', String(item.score), 'numeric'), decision, reasons, signals, node('td', String(item.eventCount), 'numeric'), node('td', formatDate(item.lastSeen)), action); body.append(tr); }
+    for (const item of data.items) { const tr = node('tr'); tr.dataset.siteKey = item.siteKey; tr.dataset.visitorHash = item.visitorHash; const who = node('td'); who.append(node('strong', item.siteName), node('span', `${item.visitorHash.slice(0, 12)}…`, 'site-key')); const decision = node('td'); decision.append(chip(item.manualAction ? `人工：${item.manualAction}` : item.decision, !['deny', 'strong_challenge'].includes(item.manualAction || item.decision))); const signalItems = (item.signals || []).length ? item.signals : (item.reasons || []).filter(reason => !String(reason).startsWith('manual_')).map(signal => ({ signal, count: 1, scoreImpact: 0, firstSeen: item.firstSeen, lastSeen: item.lastSeen, latestEvidence: {} })); const reasons = node('td', '', 'reason-cell'); for (const signal of signalItems.slice(0, 3)) { const reason = node('div', '', 'reason-summary'); reason.append(node('strong', signalLabel(signal.signal)), node('span', signalExplanation(signal.signal)), node('small', `命中 ${signal.count} 次 · 最近 ${formatDate(signal.lastSeen)}`)); const evidence = evidenceSummary(signal.latestEvidence); if (evidence) reason.append(node('small', `最近证据：${evidence}`, 'reason-evidence-inline')); reasons.append(reason); } if (!signalItems.length) reasons.append(node('span', (item.reasons || []).map(reasonLabel).join('；') || '暂无可解释信号')); const signals = node('td'); signals.append(renderSignalChips(signalItems)); const action = node('td', '', 'action-column'); action.append(actionButton('查看证据 / 处置', 'view-suspect')); tr.append(who, node('td', String(item.score), 'numeric'), decision, reasons, signals, node('td', String(item.eventCount), 'numeric'), node('td', formatDate(item.lastSeen)), action); body.append(tr); }
     const pages = Math.max(1, Math.ceil(data.total / data.limit)); $('suspect-page').textContent = `第 ${data.page} / ${pages} 页 · 共 ${data.total} 人`; $('suspect-prev').disabled = data.page <= 1; $('suspect-next').disabled = data.page >= pages;
   }
 
   async function openSuspect(siteKey, visitorHash) {
-    const result = await request(`/admin/api/risk/suspects/${encodeURIComponent(siteKey)}/${visitorHash}`); const data = result.data; state.currentSuspect = { siteKey, visitorHash };
+    const result = await request(`/admin/api/risk/suspects/${encodeURIComponent(siteKey)}/${visitorHash}`); const data = result.data; state.currentSuspect = { siteKey, visitorHash, signals: data.signals || [] };
     $('suspect-title').textContent = `${data.siteName} · ${visitorHash.slice(0, 12)}…`;
-    $('suspect-overview').replaceChildren(...[['风险分', data.score], ['当前结论', data.decision], ['详细原因', (data.reasons || []).map(reasonLabel).join('；') || '无']].map(([label, value]) => { const box = node('article'); box.append(node('span', label), node('strong', String(value))); return box; }));
-    $('suspect-signal-details').replaceChildren(...(data.signals || []).map(signal => { const box = node('article'); const score = Number(signal.scoreImpact) || 0; box.append(node('strong', signalLabel(signal.signal)), node('span', `${signal.count} 次 · 分值影响 ${score > 0 ? '+' : ''}${score} · 最近 ${formatDate(signal.lastSeen)}`)); return box; }));
+    const primarySignal = (data.signals || [])[0];
+    $('suspect-overview').replaceChildren(...[['风险分', data.score], ['当前结论', data.decision], ['主要判断依据', primarySignal ? `${signalLabel(primarySignal.signal)}：${signalExplanation(primarySignal.signal)}` : ((data.reasons || []).map(reasonLabel).join('；') || '无')]].map(([label, value]) => { const box = node('article'); box.append(node('span', label), node('strong', String(value))); return box; }));
+    $('suspect-signal-details').replaceChildren(...(data.signals || []).map(buildReasonDetail));
     $('suspect-events').replaceChildren(...data.events.map(event => { const item = node('article', '', 'event-item'); item.append(node('code', event.eventType), node('span', ` · ${formatDate(event.occurredAt)}`), node('pre', JSON.stringify(event.evidence || {}, null, 2))); return item; }));
-    $('suspect-reason').value = ''; $('suspect-permanent').checked = false; $('suspect-duration').disabled = false; $('suspect-dialog').showModal();
+    const ruleSignal = $('suspect-rule-signal');
+    ruleSignal.replaceChildren(...(data.signals || []).map(signal => { const option = node('option', `${signalLabel(signal.signal)} · ${signal.signal}`); option.value = signal.signal; return option; }));
+    $('suspect-reason').value = ''; $('suspect-permanent').checked = false; $('suspect-duration').disabled = false;
+    $('suspect-apply-all-sites').checked = false; $('suspect-apply-all-sites').disabled = !(data.signals || []).length; ruleSignal.disabled = true;
+    $('suspect-dialog').showModal();
   }
 
   async function loadRules() { const result = await request('/admin/api/risk/rules'); const body = $('rules-body'); body.replaceChildren(); if (!result.data.length) return emptyRow(body, '尚未配置人工信号规则。', 6); for (const rule of result.data) { const tr = node('tr'); tr.dataset.ruleId = rule.id; const actions = node('td', '', 'action-column'); const group = node('div', '', 'inline-actions'); group.append(actionButton(rule.enabled ? '停用' : '启用', 'toggle-rule', rule.enabled ? 'danger' : 'success'), actionButton('删除', 'delete-rule', 'danger')); actions.append(group); tr.append(node('td', rule.scope === 'all' ? '任意站点' : rule.siteName), node('td', `${signalLabel(rule.signal)}\n${rule.signal}`), node('td', rule.action), node('td', rule.permanent ? '永久' : `${rule.durationMinutes} 分钟`), node('td', rule.enabled ? '已启用' : '已停用'), actions); body.append(tr); } }
@@ -135,7 +204,12 @@
   $('logout-button').addEventListener('click', async () => { try { await request('/admin/api/logout', { method: 'POST' }); } catch {} state.csrf = ''; setAuthenticated(false); });
   $('refresh-button').addEventListener('click', () => loadDashboard().then(() => toast('数据已刷新')).catch(error => toast(error.message)));
   document.querySelector('.tabs').addEventListener('click', event => { const tab = event.target.closest('[data-tab]'); if (!tab) return; state.activeTab = tab.dataset.tab; document.querySelectorAll('.tab').forEach(item => item.classList.toggle('active', item === tab)); document.querySelectorAll('.tab-panel').forEach(panel => { panel.hidden = panel.id !== `panel-${state.activeTab}`; }); loadActiveTab().catch(error => toast(error.message)); });
-  document.addEventListener('click', event => { const button = event.target.closest('[data-close-dialog]'); if (button) $(button.dataset.closeDialog).close(); });
+  document.addEventListener('click', async event => {
+    const closeButton = event.target.closest('[data-close-dialog]');
+    if (closeButton) $(closeButton.dataset.closeDialog).close();
+    const copyButton = event.target.closest('[data-copy-signal]');
+    if (copyButton) { await navigator.clipboard.writeText(copyButton.dataset.copySignal); toast(`已复制风险信号：${copyButton.dataset.copySignal}`); }
+  });
   $('add-integration').addEventListener('click', () => openIntegration());
   $('integration-form').addEventListener('submit', async event => { event.preventDefault(); const urls = $('integration-urls').value.split(/\r?\n/).map(value => value.trim()).filter(Boolean).map((url, index) => ({ url, isPrimary: index === 0 })); try { const result = await request('/admin/api/integrations', { method: 'POST', body: JSON.stringify({ name: $('integration-name').value.trim(), siteKey: $('integration-site-key').value.trim(), clientId: $('integration-client-id').value.trim(), transport: $('integration-transport').value, urls, collectionEnabled: $('integration-collection').checked, enforcementEnabled: $('integration-enforcement').checked, enforcementMode: $('integration-mode').value }) }); $('integration-dialog').close(); if (result.data.secret) showSecret(result.data); toast(result.message); await loadOverviewAndSites(); } catch (error) { toast(error.message); } });
   $('copy-secret').addEventListener('click', async () => { await navigator.clipboard.writeText(`BOT_RISK_URL=${$('secret-endpoint').value}\nBOT_RISK_CLIENT_ID=${$('secret-client').value}\nBOT_RISK_HMAC_SECRET=${$('secret-value').value}`); toast('接入信息已复制'); });
@@ -145,7 +219,8 @@
   $('suspect-site-filter').addEventListener('change', () => { state.suspectPage = 1; loadSuspects().catch(error => toast(error.message)); }); $('suspect-score-filter').addEventListener('change', () => { state.suspectPage = 1; loadSuspects().catch(error => toast(error.message)); }); $('suspect-prev').addEventListener('click', () => { state.suspectPage--; loadSuspects().catch(error => toast(error.message)); }); $('suspect-next').addEventListener('click', () => { state.suspectPage++; loadSuspects().catch(error => toast(error.message)); });
   $('suspects-body').addEventListener('click', event => { const button = event.target.closest('[data-action="view-suspect"]'); const row = button?.closest('tr'); if (row) openSuspect(row.dataset.siteKey, row.dataset.visitorHash).catch(error => toast(error.message)); });
   $('suspect-permanent').addEventListener('change', event => { $('suspect-duration').disabled = event.currentTarget.checked; });
-  $('suspect-action-form').addEventListener('submit', async event => { event.preventDefault(); if (!state.currentSuspect) return; try { const { siteKey, visitorHash } = state.currentSuspect; await request(`/admin/api/risk/suspects/${encodeURIComponent(siteKey)}/${visitorHash}/action`, { method: 'POST', body: JSON.stringify({ action: $('suspect-action').value, durationMinutes: Number($('suspect-duration').value), permanent: $('suspect-permanent').checked, reason: $('suspect-reason').value.trim() }) }); $('suspect-dialog').close(); toast($('suspect-permanent').checked ? '永久人工处置已生效' : '人工处置已生效'); await loadSuspects(); } catch (error) { toast(error.message); } });
+  $('suspect-apply-all-sites').addEventListener('change', event => { $('suspect-rule-signal').disabled = !event.currentTarget.checked; });
+  $('suspect-action-form').addEventListener('submit', async event => { event.preventDefault(); if (!state.currentSuspect) return; const applyToAllSites = $('suspect-apply-all-sites').checked; const ruleSignal = $('suspect-rule-signal').value; if (applyToAllSites && !confirm(`将把风险信号“${ruleSignal}”的同类处置应用到所有接入站点，确定继续吗？`)) return; try { const { siteKey, visitorHash } = state.currentSuspect; const result = await request(`/admin/api/risk/suspects/${encodeURIComponent(siteKey)}/${visitorHash}/action`, { method: 'POST', body: JSON.stringify({ action: $('suspect-action').value, durationMinutes: Number($('suspect-duration').value), permanent: $('suspect-permanent').checked, reason: $('suspect-reason').value.trim(), applyToAllSites, ruleSignal: applyToAllSites ? ruleSignal : '' }) }); $('suspect-dialog').close(); toast(result.message || ($('suspect-permanent').checked ? '永久人工处置已生效' : '人工处置已生效')); await loadSuspects(); } catch (error) { toast(error.message); } });
   $('clear-suspect-action').addEventListener('click', async () => { if (!state.currentSuspect) return; const { siteKey, visitorHash } = state.currentSuspect; try { await request(`/admin/api/risk/suspects/${encodeURIComponent(siteKey)}/${visitorHash}/action`, { method: 'DELETE' }); $('suspect-dialog').close(); toast('人工处置已解除'); await loadSuspects(); } catch (error) { toast(error.message); } });
 
   $('rule-scope').addEventListener('change', event => { const anySite = event.currentTarget.value === 'all'; $('rule-site').disabled = anySite; $('rule-site').required = !anySite; });

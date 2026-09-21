@@ -133,13 +133,22 @@ async function setSuspectAction(req, res) {
   const action = String(req.body?.action || '');
   const reason = String(req.body?.reason || '').trim().slice(0, 300);
   const permanent = req.body?.permanent === true;
+  const applyToAllSites = req.body?.applyToAllSites === true;
+  const ruleSignal = String(req.body?.ruleSignal || '').trim();
   if (!validSiteKey(siteKey) || !validVisitorHash(visitorHash)
     || !['allow', 'observe', 'silent_challenge', 'strong_challenge', 'deny'].includes(action)
-    || !reason) return res.status(400).json({ code: 400, message: '处置动作或原因无效' });
+    || !reason || (applyToAllSites && !/^[a-z0-9_-]{2,64}$/i.test(ruleSignal))) {
+    return res.status(400).json({ code: 400, message: '处置动作、原因或全站规则信号无效' });
+  }
   const data = await StorageService.applyManualDecision(
-    siteKey, visitorHash, action, req.body?.durationMinutes, reason, actor(req), permanent
+    siteKey, visitorHash, action, req.body?.durationMinutes, reason, actor(req), permanent,
+    applyToAllSites ? { signal: ruleSignal } : null
   );
-  return res.json({ code: 200, data, message: '人工处置已生效' });
+  return res.json({
+    code: 200,
+    data,
+    message: applyToAllSites ? '人工处置及全站同类规则已生效' : '人工处置已生效'
+  });
 }
 
 async function clearSuspectAction(req, res) {
