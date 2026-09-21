@@ -20,6 +20,17 @@ const RESOLVER_CATALOG = Object.freeze([
   ['controld-free', 'Control D Free', 'https://freedns.controld.com/p0', 'wire', '扩展容灾']
 ]);
 
+// RFC 1035 limits one TXT character-string to 255 octets.  The recovery
+// publisher deliberately stays below that boundary instead of relying on a
+// provider UI/API to split an oversized value differently.
+const AUTHORITATIVE_DNS_CATALOG = Object.freeze([
+  ['cloudflare', 'Cloudflare DNS', 'automatic', 255, 240, 'API 可自动发布；单字符串 255 字节，系统使用 240 字节安全上限'],
+  ['desec', 'deSEC', 'manual', 255, 240, '支持 API；当前先按手动发布，单字符串 255 字节'],
+  ['cloudns', 'ClouDNS', 'manual', 255, 240, '支持 API；当前先按手动发布，单字符串 255 字节'],
+  ['route53', 'AWS Route 53', 'manual', 255, 240, '支持 API；当前先按手动发布，单字符串 255 字节'],
+  ['he', 'Hurricane Electric Free DNS', 'manual', 255, 240, '免费 DNS 以手动发布为主；使用跨平台 240 字节安全上限']
+]);
+
 async function ensureColumn(table, name, definition) {
   const columns = await all(`PRAGMA table_info(${table})`);
   if (!columns.some(column => column.name === name)) await run(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
@@ -129,8 +140,26 @@ async function initializeRecoveryTables() {
   )`);
   await ensureColumn('recovery_bootstrap_records', 'profile_id', 'INTEGER NOT NULL DEFAULT 1');
   await migrateScopedUniqueTables();
+  await ensureColumn('recovery_bootstrap_records', 'provider_id', "TEXT NOT NULL DEFAULT 'cloudflare'");
+  await ensureColumn('recovery_bootstrap_records', 'share_role', "TEXT NOT NULL DEFAULT 'LEGACY'");
+  await ensureColumn('recovery_bootstrap_records', 'publish_mode', "TEXT NOT NULL DEFAULT 'automatic'");
   await run('CREATE INDEX IF NOT EXISTS idx_recovery_domains_profile ON recovery_domains(profile_id, status, priority DESC, id ASC)');
   await run('CREATE INDEX IF NOT EXISTS idx_recovery_bootstrap_profile ON recovery_bootstrap_records(profile_id, status, is_primary, sort_order, id)');
+
+  await run(`CREATE TABLE IF NOT EXISTS recovery_dns_providers (
+    id TEXT PRIMARY KEY, label TEXT NOT NULL, default_publish_mode TEXT NOT NULL,
+    max_character_string_bytes INTEGER NOT NULL DEFAULT 255,
+    portable_record_bytes INTEGER NOT NULL DEFAULT 240,
+    note TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )`);
+  for (const item of AUTHORITATIVE_DNS_CATALOG) {
+    await run(`INSERT INTO recovery_dns_providers(id,label,default_publish_mode,max_character_string_bytes,portable_record_bytes,note,enabled)
+      VALUES(?,?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET label=excluded.label,
+      default_publish_mode=excluded.default_publish_mode,max_character_string_bytes=excluded.max_character_string_bytes,
+      portable_record_bytes=excluded.portable_record_bytes,note=excluded.note`, item);
+  }
 
   await run(`CREATE TABLE IF NOT EXISTS recovery_resolvers (
     id TEXT PRIMARY KEY, label TEXT NOT NULL, endpoint TEXT NOT NULL, response_format TEXT NOT NULL DEFAULT 'wire',
@@ -219,14 +248,16 @@ async function updateDomain(id, input, owner = null) { await run(`UPDATE recover
 function deleteDomain(id, owner = null) { return run(`DELETE FROM recovery_domains WHERE id=?${owner ? ' AND profile_id=?' : ''}`, [id,...(owner ? [profileId(owner)] : [])]); }
 async function saveProbeResult(id, result) { await run(`UPDATE recovery_domains SET last_probe_status=?,last_probe_ms=?,last_probe_error=?,last_probe_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?`, [result.healthy?'healthy':'failed',result.elapsedMs??null,result.error||'',id]); return getDomain(id); }
 
-function listBootstrapRecords({ enabledOnly = false, profileId: owner = 1 } = {}) { return all(`SELECT * FROM recovery_bootstrap_records WHERE profile_id=? ${enabledOnly ? 'AND status=1' : ''} ORDER BY is_primary ASC,sort_order ASC,id ASC`, [profileId(owner)]); }
+function listBootstrapRecords({ enabledOnly = false, profileId: owner = 1 } = {}) { return all(`SELECT b.*,p.label AS provider_label,p.max_character_string_bytes,p.portable_record_bytes,p.note AS provider_note FROM recovery_bootstrap_records b LEFT JOIN recovery_dns_providers p ON p.id=b.provider_id WHERE b.profile_id=? ${enabledOnly ? 'AND b.status=1' : ''} ORDER BY CASE b.share_role WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END,b.sort_order,b.id`, [profileId(owner)]); }
 function getBootstrapRecord(id, owner = null) { return owner ? get('SELECT * FROM recovery_bootstrap_records WHERE id=? AND profile_id=?',[id,profileId(owner)]) : get('SELECT * FROM recovery_bootstrap_records WHERE id=?',[id]); }
-async function createBootstrapRecord(input, owner = 1) { const result=await run(`INSERT INTO recovery_bootstrap_records(profile_id,label,record_name,zone_name,is_primary,status,sort_order) VALUES(?,?,?,?,?,?,?)`,[profileId(owner),input.label,input.recordName,input.zoneName,input.isPrimary,input.status,input.sortOrder]); return getBootstrapRecord(result.id); }
-async function updateBootstrapRecord(id,input,owner=null){await run(`UPDATE recovery_bootstrap_records SET label=?,record_name=?,zone_name=?,is_primary=?,status=?,sort_order=?,updated_at=CURRENT_TIMESTAMP WHERE id=?${owner?' AND profile_id=?':''}`,[input.label,input.recordName,input.zoneName,input.isPrimary,input.status,input.sortOrder,id,...(owner?[profileId(owner)]:[])]);return getBootstrapRecord(id);}
+async function createBootstrapRecord(input, owner = 1) { const result=await run(`INSERT INTO recovery_bootstrap_records(profile_id,label,record_name,zone_name,is_primary,status,sort_order,provider_id,share_role,publish_mode) VALUES(?,?,?,?,?,?,?,?,?,?)`,[profileId(owner),input.label,input.recordName,input.zoneName,input.isPrimary,input.status,input.sortOrder,input.providerId,input.shareRole,input.publishMode]); return getBootstrapRecord(result.id); }
+async function updateBootstrapRecord(id,input,owner=null){await run(`UPDATE recovery_bootstrap_records SET label=?,record_name=?,zone_name=?,is_primary=?,status=?,sort_order=?,provider_id=?,share_role=?,publish_mode=?,updated_at=CURRENT_TIMESTAMP WHERE id=?${owner?' AND profile_id=?':''}`,[input.label,input.recordName,input.zoneName,input.isPrimary,input.status,input.sortOrder,input.providerId,input.shareRole,input.publishMode,id,...(owner?[profileId(owner)]:[])]);return getBootstrapRecord(id);}
 function deleteBootstrapRecord(id,owner=null){return run(`DELETE FROM recovery_bootstrap_records WHERE id=?${owner?' AND profile_id=?':''}`,[id,...(owner?[profileId(owner)]:[])]);}
 async function saveBootstrapPublishResult(id,result){await run(`UPDATE recovery_bootstrap_records SET last_publish_status=?,last_publish_error=?,last_published_generation=CASE WHEN ?>0 THEN ? ELSE last_published_generation END,last_published_at=CASE WHEN ?>0 THEN CURRENT_TIMESTAMP ELSE last_published_at END,last_verified_at=CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE last_verified_at END,updated_at=CURRENT_TIMESTAMP WHERE id=?`,[result.status,result.error||'',result.generation||0,result.generation||0,result.generation||0,result.verified?1:0,id]);}
 
 function listResolvers(){return all('SELECT * FROM recovery_resolvers WHERE enabled=1 ORDER BY category,label');}
+function listDnsProviders(){return all('SELECT * FROM recovery_dns_providers WHERE enabled=1 ORDER BY label');}
+function getDnsProvider(id){return get('SELECT * FROM recovery_dns_providers WHERE id=? AND enabled=1',[id]);}
 function getResolver(id){return get('SELECT * FROM recovery_resolvers WHERE id=? AND enabled=1',[id]);}
 function listLookupRoutes(owner=1,{enabledOnly=false}={}){return all(`SELECT r.*,d.label AS resolver_label,d.endpoint,d.response_format,b.label AS bootstrap_label,b.record_name FROM recovery_lookup_routes r JOIN recovery_resolvers d ON d.id=r.resolver_id JOIN recovery_bootstrap_records b ON b.id=r.bootstrap_id WHERE r.profile_id=? ${enabledOnly?'AND r.status=1 AND d.enabled=1 AND b.status=1':''} ORDER BY r.priority_group,r.sort_order,r.id`,[profileId(owner)]);}
 async function createLookupRoute(input,owner=1){const result=await run(`INSERT INTO recovery_lookup_routes(profile_id,resolver_id,bootstrap_id,priority_group,timeout_ms,sort_order,status) VALUES(?,?,?,?,?,?,?)`,[profileId(owner),input.resolverId,input.bootstrapId,input.priorityGroup,input.timeoutMs,input.sortOrder,input.status]);return get('SELECT * FROM recovery_lookup_routes WHERE id=?',[result.id]);}
@@ -243,4 +274,4 @@ async function publishReleaseAtomically(id,generation,owner=1){return withTransa
 async function addAudit(action,detail={},success=true,errorMessage='',owner=1){await run(`INSERT INTO recovery_audit_logs(profile_id,action,detail_json,success,error_message) VALUES(?,?,?,?,?)`,[profileId(owner),action,JSON.stringify(detail),success?1:0,String(errorMessage||'')]);}
 function listAudit(limit=100,owner=1){return all('SELECT * FROM recovery_audit_logs WHERE profile_id=? ORDER BY id DESC LIMIT ?',[profileId(owner),Math.max(1,Math.min(500,Number(limit)||100))]);}
 
-module.exports={initializeRecoveryTables,listProfiles,getProfile,createProfile,getSettings,updateSettings,saveKeyState,listDomains,getDomain,createDomain,updateDomain,deleteDomain,saveProbeResult,listBootstrapRecords,getBootstrapRecord,createBootstrapRecord,updateBootstrapRecord,deleteBootstrapRecord,saveBootstrapPublishResult,listResolvers,getResolver,listLookupRoutes,createLookupRoute,deleteLookupRoute,nextGeneration,createRelease,getRelease,getReleaseByGeneration,listReleases,getLatestPublishedRelease,markRelease,publishReleaseAtomically,addAudit,listAudit};
+module.exports={initializeRecoveryTables,listProfiles,getProfile,createProfile,getSettings,updateSettings,saveKeyState,listDomains,getDomain,createDomain,updateDomain,deleteDomain,saveProbeResult,listBootstrapRecords,getBootstrapRecord,createBootstrapRecord,updateBootstrapRecord,deleteBootstrapRecord,saveBootstrapPublishResult,listResolvers,getResolver,listDnsProviders,getDnsProvider,listLookupRoutes,createLookupRoute,deleteLookupRoute,nextGeneration,createRelease,getRelease,getReleaseByGeneration,listReleases,getLatestPublishedRelease,markRelease,publishReleaseAtomically,addAudit,listAudit};

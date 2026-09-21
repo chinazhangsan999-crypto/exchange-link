@@ -64,8 +64,53 @@
     return envelopes;
   }
 
+  function assembleShards(values) {
+    const sets = new Map();
+    for (const raw of values || []) {
+      const match = /^r2;set=([^;]+);role=([AB]);part=(\d+)\/(\d+);data=([A-Za-z0-9_-]+)$/.exec(parseTxtValue(raw));
+      if (!match) continue;
+      const [, set, role, indexRaw, totalRaw, data] = match;
+      const index = Number(indexRaw), total = Number(totalRaw);
+      if (index < 1 || total < 1 || total > 50 || index > total) continue;
+      const key = `${set}:${role}`;
+      if (!sets.has(key)) sets.set(key, { set, role, total, parts: new Map() });
+      const group = sets.get(key);
+      if (group.total === total) group.parts.set(index, data);
+    }
+    return [...sets.values()].filter(group => group.parts.size === group.total).map(group => ({
+      set: group.set, role: group.role,
+      bytes: fromBase64Url(Array.from({ length: group.total }, (_, index) => group.parts.get(index + 1)).join(''))
+    }));
+  }
+
+  async function sha256Hex(text) {
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+    return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function combineShards(shares) {
+    const grouped = new Map();
+    for (const share of shares || []) {
+      if (!grouped.has(share.set)) grouped.set(share.set, {});
+      grouped.get(share.set)[share.role] = share.bytes;
+    }
+    const envelopes = [];
+    for (const [set, pair] of grouped) {
+      if (!pair.A || !pair.B || pair.A.length !== pair.B.length) continue;
+      try {
+        const bytes = new Uint8Array(pair.A.length);
+        for (let index = 0; index < bytes.length; index += 1) bytes[index] = pair.A[index] ^ pair.B[index];
+        const envelope = JSON.parse(new TextDecoder().decode(bytes));
+        const { signature, manifestHash, ...core } = envelope;
+        if (!signature || !manifestHash || await sha256Hex(stableStringify(core)) !== manifestHash) continue;
+        envelopes.push({ set, envelope });
+      } catch { /* 丢弃无法组合或校验的分片 */ }
+    }
+    return envelopes;
+  }
+
   function validateEnvelopeShape(envelope, expectedProject, highestGeneration = 0) {
-    if (!envelope || ![1, 2].includes(Number(envelope.schema))) return { valid: false, reason: '清单格式版本不受支持' };
+    if (!envelope || ![1, 2, 3].includes(Number(envelope.schema))) return { valid: false, reason: '清单格式版本不受支持' };
     if (!envelope.project || (expectedProject && envelope.project !== expectedProject)) return { valid: false, reason: '恢复项目编号不匹配' };
     if (!Number.isInteger(Number(envelope.generation)) || Number(envelope.generation) < Number(highestGeneration || 0)) return { valid: false, reason: '检测到旧版本清单，已阻止回滚' };
     const now = Math.floor(Date.now() / 1000);
@@ -129,6 +174,7 @@
       trustedKeys: signedKeys.length ? signedKeys : bootstrapKeys,
       bootstrapNames: Array.isArray(manifest.envelope.bootstrapNames) ? manifest.envelope.bootstrapNames : (manifest.bootstrapNames || []),
       lookupRoutes: Array.isArray(manifest.envelope.lookupRoutes) ? manifest.envelope.lookupRoutes : (manifest.lookupRoutes || []),
+      localFallback: manifest.localFallback || existing?.localFallback || {},
       lastVerifiedAt: new Date().toISOString(),
       componentVersion: manifest.componentVersion || 'recovery-v1'
     };
@@ -136,5 +182,5 @@
     return state;
   }
 
-  window.RecoveryCrypto = { stableStringify, verifyEnvelope, assembleTxt, validateEnvelopeShape, readState, writeState, acceptManifest };
+  window.RecoveryCrypto = { stableStringify, verifyEnvelope, assembleTxt, assembleShards, combineShards, validateEnvelopeShape, readState, writeState, acceptManifest };
 })();

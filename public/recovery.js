@@ -103,10 +103,10 @@
       const response = await fetch(url, { headers: { Accept: 'application/dns-message' }, signal: controller.signal, cache: 'no-store' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const values = parseDnsWireTxt(await response.arrayBuffer());
-      return { route, envelopes: window.RecoveryCrypto.assembleTxt(values) };
+      return { route, envelopes: window.RecoveryCrypto.assembleTxt(values), shares: window.RecoveryCrypto.assembleShards(values) };
     } catch (error) {
       log(`${route.resolverLabel} 查询 ${route.bootstrapName} 失败：${error.name === 'AbortError' ? '超时' : error.message}`);
-      return { route, envelopes: [] };
+      return { route, envelopes: [], shares: [] };
     } finally { clearTimeout(timer); }
   }
 
@@ -116,10 +116,14 @@
     if (!routes.length) { log('本地清单未保存 DNS/TXT 查询线路'); return null; }
     status('已保存线路均不可用，正在从多个 DNS 解析源查询最新地址…');
     const accepted = [];
+    const collectedShares = [];
     const priorities = [...new Set(routes.map(item => Math.max(1, Number(item.priority) || 1)))].sort((a, b) => a - b);
     for (const priority of priorities) {
       const results = await Promise.all(routes.filter(item => Math.max(1, Number(item.priority) || 1) === priority).map(queryDoh));
+      results.forEach(item => collectedShares.push(...item.shares));
       const candidates = results.flatMap(item => item.envelopes.map(value => ({ ...value, resolver: item.route.resolverLabel, name: item.route.bootstrapName })));
+      const combined = await window.RecoveryCrypto.combineShards(collectedShares);
+      combined.forEach(value => candidates.push({ ...value, resolver: '跨权威 DNS A/B 组合', name: 'Bootstrap TXT' }));
       for (const candidate of candidates) {
         const shape = window.RecoveryCrypto.validateEnvelopeShape(candidate.envelope, state.project, state.highestGeneration || 0);
         if (!shape.valid) { log(`${candidate.resolver} 返回的清单被拒绝：${shape.reason}`); continue; }
@@ -139,7 +143,7 @@
       project: selected.envelope.project,
       signedEnvelope: selected.envelope,
       highestGeneration: Number(selected.envelope.generation),
-      trustedKeys: Array.isArray(selected.envelope.trustedKeys) && selected.envelope.trustedKeys.length ? selected.envelope.trustedKeys : state.trustedKeys,
+      trustedKeys: state.trustedKeys,
       bootstrapNames: selected.envelope.bootstrapNames || state.bootstrapNames,
       lookupRoutes: selected.envelope.lookupRoutes || state.lookupRoutes,
       lastVerifiedAt: new Date().toISOString()
@@ -149,13 +153,16 @@
     return selected.envelope;
   }
 
-  function fallbackValue(envelope, key) { return envelope?.fallback && typeof envelope.fallback[key] === 'string' ? envelope.fallback[key] : ''; }
+  function fallbackValue(envelope, key) {
+    if (savedState?.localFallback && typeof savedState.localFallback[key] === 'string') return savedState.localFallback[key];
+    return envelope?.fallback && typeof envelope.fallback[key] === 'string' ? envelope.fallback[key] : '';
+  }
   function showFound(item, envelope) {
     finishProgress(); status('已找到通过签名和动态线路检测的最新地址。');
     document.querySelector('#recovery-found-title').textContent = item.title || '可用线路';
     document.querySelector('#recovery-found-url').textContent = item.url;
     const link = document.querySelector('#recovery-go'); link.href = item.url;
-    document.querySelector('#recovery-found-message').textContent = envelope.foundMessage || '该地址已经过恢复清单签名和动态线路检测。';
+    document.querySelector('#recovery-found-message').textContent = savedState?.localFallback?.foundMessage || envelope.foundMessage || '该地址已经过恢复清单签名和动态线路检测。';
     document.querySelector('#recovery-found').hidden = false;
     document.querySelector('#recovery-fallback').hidden = true;
   }

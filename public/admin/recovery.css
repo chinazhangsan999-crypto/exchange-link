@@ -9,8 +9,8 @@
 #recovery .recovery-actions.recovery-key-actions{margin-top:12px}
 #recovery .recovery-profile-bar{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin:0 0 18px;padding:14px;border:1px solid var(--line);border-radius:14px;background:#f7f9ff}
 #recovery .recovery-profile-bar label{display:grid;gap:6px;font-size:12px;color:var(--muted);min-width:min(100%,280px)}
-#recovery .recovery-profile-bar select,#recovery .recovery-route-form select,#recovery .recovery-route-form input{min-height:42px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);padding:8px 11px;font:inherit}
-#recovery .recovery-route-form{display:grid;grid-template-columns:minmax(180px,1fr) minmax(220px,1.3fr) minmax(135px,.7fr) minmax(135px,.7fr) auto;gap:10px;align-items:end;margin-bottom:14px}
+#recovery .recovery-profile-bar select,#recovery .recovery-route-form select,#recovery .recovery-route-form input{min-height:48px;border:1px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);padding:10px 13px;font:inherit}
+#recovery .recovery-route-form{display:grid;grid-template-columns:minmax(260px,1fr) minmax(320px,1.28fr) minmax(150px,.7fr) minmax(150px,.7fr) auto;gap:14px 16px;align-items:end;margin-bottom:16px}
 #recovery .recovery-route-form label{display:grid;gap:6px;color:var(--muted);font-size:12px;min-width:0}
 #recovery a[aria-disabled="true"]{pointer-events:none;opacity:.5}
 #recovery .recovery-grid{display:grid;grid-template-columns:minmax(0,1.45fr) minmax(320px,.75fr);gap:18px;align-items:start}
@@ -42,12 +42,14 @@
 #recovery .recovery-result-list{display:grid;gap:10px;margin-top:12px}
 #recovery .recovery-result{border:1px solid var(--line);border-radius:12px;padding:12px}
 #recovery .recovery-result p{margin:6px 0 0;line-height:1.55;color:#657087}
+#recovery .recovery-manual-value{display:block;margin-top:8px;padding:9px;border:1px solid var(--line);border-radius:8px;background:#f7f9fc;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
 #recovery .recovery-audit{max-height:360px;overflow:auto;display:grid;gap:8px}
 #recovery .recovery-audit-item{display:grid;grid-template-columns:150px 180px 1fr;gap:10px;border-bottom:1px solid #eef0f5;padding:9px 0;font-size:12px}
 #recovery .recovery-empty{padding:24px;text-align:center;color:var(--muted)}
 #recovery .recovery-modal{z-index:1100}
 #recovery .recovery-modal .dialog{max-height:min(86dvh,760px);overflow:auto}
 @media(max-width:1440px){#recovery .recovery-status-grid{grid-template-columns:repeat(3,minmax(0,1fr))}#recovery .recovery-grid{grid-template-columns:1fr}}
+@media(max-width:1180px){#recovery .recovery-route-form{grid-template-columns:repeat(2,minmax(0,1fr))}#recovery .recovery-route-form .button{grid-column:1/-1;justify-self:start}}
 @media(max-width:760px){#recovery .recovery-status-grid{grid-template-columns:1fr 1fr}#recovery .recovery-form,#recovery .recovery-route-form{grid-template-columns:1fr}#recovery .recovery-form .full,#recovery .recovery-switch,#recovery .recovery-form-actions{grid-column:1}#recovery .recovery-actions .button,#recovery .recovery-route-form .button{min-height:44px;flex:1 1 145px}#recovery .recovery-audit-item{grid-template-columns:1fr;gap:3px}#recovery .recovery-status-card{padding:13px}#recovery .recovery-profile-bar>*{width:100%}}
 @media(max-width:420px){#recovery .recovery-status-grid{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){#recovery *{scroll-behavior:auto!important;transition:none!important}}

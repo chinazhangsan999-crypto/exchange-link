@@ -62,8 +62,8 @@
           <div class="box"><div class="box-head"><div><h2>恢复专用线路</h2><p class="hint">仅接受 HTTPS Origin；测活固定使用 /.well-known/route-health.gif。</p></div><button class="button" type="button" data-recovery-action="open-domain">新增线路</button></div>
             <div class="table-wrap"><table class="recovery-table"><thead><tr><th>线路</th><th>地址</th><th>优先级</th><th>状态</th><th>动态图片检测</th><th>最近检测</th><th>操作</th></tr></thead><tbody id="recovery-domain-body"></tbody></table></div>
           </div>
-          <div class="box"><div class="box-head"><div><h2>Bootstrap DNS</h2><p class="hint">主、备用 TXT 均保存同一份签名 JSON 分片；发布时先备用、后主记录。</p></div><button class="button" type="button" data-recovery-action="open-bootstrap">新增 DNS</button></div>
-            <div class="table-wrap"><table class="recovery-table"><thead><tr><th>名称</th><th>TXT 记录</th><th>Zone</th><th>角色</th><th>发布状态</th><th>当前代</th><th>操作</th></tr></thead><tbody id="recovery-bootstrap-body"></tbody></table></div>
+          <div class="box"><div class="box-head"><div><h2>Bootstrap DNS</h2><p class="hint">新版本使用 A/B 两份 XOR 分片；至少从不同权威 DNS 各取得一份才可恢复。每条 TXT 强制不超过 240 字节，兼容五家托管商的 255 字节单字符串限制。</p></div><button class="button" type="button" data-recovery-action="open-bootstrap">新增 DNS</button></div>
+            <div class="table-wrap"><table class="recovery-table"><thead><tr><th>名称</th><th>权威 DNS</th><th>TXT 记录</th><th>分片</th><th>单条限制</th><th>发布状态</th><th>当前代</th><th>操作</th></tr></thead><tbody id="recovery-bootstrap-body"></tbody></table></div>
             <div id="recovery-doh-results" class="recovery-result-list" aria-live="polite"></div>
           </div>
           <div class="box"><div class="box-head"><div><h2>DNS / Bootstrap 查询线路</h2><p class="hint">每一行精确指定“哪个 DNS 服务商查询哪一条 TXT”。同一方案可让不同 DNS 查询不同的 Bootstrap TXT；按 P1 → P4 分组容灾，同组并发。</p></div></div>
@@ -92,21 +92,21 @@
         </div>
       </div>
       <div id="recovery-domain-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-domain-title"><form id="recovery-domain-form" class="dialog"><h3 id="recovery-domain-title">恢复线路</h3><input name="id" type="hidden"><div class="form-grid"><label>线路名称<input name="title" maxlength="80" required></label><label>优先级<input name="priority" type="number" value="0" required></label><label class="full">HTTPS 地址<input name="url" type="url" placeholder="https://recovery.example" required></label><label class="full exemption-option"><input name="status" type="checkbox" value="1" checked><span>启用该线路</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存线路</button></div></form></div>
-      <div id="recovery-bootstrap-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-bootstrap-title"><form id="recovery-bootstrap-form" class="dialog"><h3 id="recovery-bootstrap-title">Bootstrap DNS</h3><input name="id" type="hidden"><div class="form-grid"><label>显示名称<input name="label" maxlength="80" required></label><label>排序<input name="sortOrder" type="number" value="0" required></label><label class="full">TXT 记录名<input name="recordName" placeholder="_recovery.bootstrap.example" required></label><label class="full">Cloudflare Zone<input name="zoneName" placeholder="bootstrap.example" required></label><label class="exemption-option"><input name="isPrimary" type="checkbox" value="1"><span>主 Bootstrap</span></label><label class="exemption-option"><input name="status" type="checkbox" value="1" checked><span>启用</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存 DNS</button></div></form></div>
+      <div id="recovery-bootstrap-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-bootstrap-title"><form id="recovery-bootstrap-form" class="dialog"><h3 id="recovery-bootstrap-title">Bootstrap DNS</h3><input name="id" type="hidden"><input name="isPrimary" type="hidden" value="0"><div class="form-grid"><label>显示名称<input name="label" maxlength="80" required></label><label>排序<input name="sortOrder" type="number" value="0" required></label><label>权威 DNS 托管商<select name="providerId" required></select></label><label>分片角色<select name="shareRole" required><option value="A">A 分片</option><option value="B">B 分片</option><option value="LEGACY">旧版 r1 兼容</option></select></label><label>发布方式<select name="publishMode" required><option value="automatic">API 自动发布（Cloudflare）</option><option value="manual">手动发布并 DoH 验证</option></select></label><label class="full">TXT 记录名<input name="recordName" placeholder="_recovery-a.bootstrap.example" required></label><label class="full">权威 DNS Zone<input name="zoneName" placeholder="bootstrap.example" required></label><p class="hint full">Cloudflare、deSEC、ClouDNS、AWS Route 53、HE Free DNS 均按单字符字符串 255 字节边界处理；系统实际使用 240 字节上限，为引号和接口差异留出余量。</p><label class="exemption-option full"><input name="status" type="checkbox" value="1" checked><span>启用</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存 DNS</button></div></form></div>
     `;
     document.querySelector('.shell')?.append(panel);
     bindPanel(panel);
   }
 
   function statusTag(value, labels = {}) {
-    const map = { published: ['已发布', ''], draft: ['草稿', 'warn'], failed: ['失败', 'off'], superseded: ['已替代', 'neutral'], verified: ['已验证', ''], unpublished: ['未发布', 'neutral'], healthy: ['正常', ''], untested: ['未检测', 'neutral'] };
+    const map = { published: ['已发布', ''], draft: ['草稿', 'warn'], failed: ['失败', 'off'], superseded: ['已替代', 'neutral'], verified: ['已验证', ''], manual_required: ['待手动写入', 'warn'], unpublished: ['未发布', 'neutral'], healthy: ['正常', ''], untested: ['未检测', 'neutral'] };
     const [text, tone] = map[value] || [labels[value] || value || '未知', 'off'];
     return `<span class="tag ${tone}">${escapeHtml(text)}</span>`;
   }
 
   function renderOverview() {
     if (!state) return;
-    const { settings, domains, bootstraps, releases, keys, cloudflare, audit, profiles = [], resolvers = [], lookupRoutes = [] } = state;
+    const { settings, domains, bootstraps, releases, keys, cloudflare, audit, profiles = [], resolvers = [], dnsProviders = [], lookupRoutes = [] } = state;
     currentProfileId = Number(state.selectedProfileId || settings.id || currentProfileId);
     const profileSelect = document.querySelector('#recovery-profile-select');
     profileSelect.innerHTML = profiles.map(item => `<option value="${Number(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.code)}${item.ready ? ' · 可发布' : ''}</option>`).join('');
@@ -138,7 +138,9 @@
     credentialForm.elements.apiToken.disabled = cloudflare.reuseCentral === true;
 
     document.querySelector('#recovery-domain-body').innerHTML = domains.map(item => `<tr><td><strong>${escapeHtml(item.title)}</strong></td><td class="recovery-url">${escapeHtml(item.url)}</td><td>${Number(item.priority)}</td><td>${Number(item.status) === 1 ? '<span class="tag">启用</span>' : '<span class="tag neutral">停用</span>'}</td><td>${statusTag(item.last_probe_status)}${item.last_probe_ms ? ` <span class="hint">${item.last_probe_ms}ms</span>` : ''}${item.last_probe_error ? `<span class="domain">${escapeHtml(item.last_probe_error)}</span>` : ''}</td><td>${formatTime(item.last_probe_at)}</td><td><div class="actions"><button class="action" data-recovery-action="probe-domain" data-id="${item.id}">检测</button><button class="action" data-recovery-action="edit-domain" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-domain" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="7" class="recovery-empty">尚未添加恢复专用线路</td></tr>';
-    document.querySelector('#recovery-bootstrap-body').innerHTML = bootstraps.map(item => `<tr><td><strong>${escapeHtml(item.label)}</strong></td><td class="recovery-code">${escapeHtml(item.record_name)}</td><td>${escapeHtml(item.zone_name)}</td><td>${Number(item.is_primary) === 1 ? '<span class="tag warn">主记录</span>' : '<span class="tag neutral">备用记录</span>'}</td><td>${statusTag(item.last_publish_status)}${item.last_publish_error ? `<span class="domain">${escapeHtml(item.last_publish_error)}</span>` : ''}</td><td>${Number(item.last_published_generation || 0) || '—'}</td><td><div class="actions"><button class="action" data-recovery-action="doh" data-id="${item.id}">DoH 回读</button><button class="action" data-recovery-action="edit-bootstrap" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-bootstrap" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="7" class="recovery-empty">尚未配置 Bootstrap DNS；已发布清单仍可在主站正常时同步到老用户浏览器。</td></tr>';
+    document.querySelector('#recovery-bootstrap-body').innerHTML = bootstraps.map(item => `<tr><td><strong>${escapeHtml(item.label)}</strong></td><td><strong>${escapeHtml(item.provider_label || item.provider_id)}</strong><span class="domain">${item.publish_mode === 'automatic' ? 'API 自动' : '手动 + DoH 验证'}</span></td><td class="recovery-code">${escapeHtml(item.record_name)}<span class="domain">${escapeHtml(item.zone_name)}</span></td><td><span class="tag ${item.share_role === 'LEGACY' ? 'neutral' : ''}">${escapeHtml(item.share_role || 'LEGACY')}</span></td><td>${Number(item.portable_record_bytes || 240)} / ${Number(item.max_character_string_bytes || 255)} 字节</td><td>${statusTag(item.last_publish_status)}${item.last_publish_error ? `<span class="domain">${escapeHtml(item.last_publish_error)}</span>` : ''}</td><td>${Number(item.last_published_generation || 0) || '—'}</td><td><div class="actions"><button class="action" data-recovery-action="doh" data-id="${item.id}">DoH 回读</button><button class="action" data-recovery-action="edit-bootstrap" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-bootstrap" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="8" class="recovery-empty">尚未配置 Bootstrap DNS；已发布清单仍可在主站正常时同步到老用户浏览器。</td></tr>';
+    const bootstrapForm = document.querySelector('#recovery-bootstrap-form');
+    bootstrapForm.elements.providerId.innerHTML = dnsProviders.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} · ${Number(item.portable_record_bytes)} 字节安全上限</option>`).join('');
     const routeForm = document.querySelector('#recovery-route-form');
     routeForm.elements.resolverId.innerHTML = `<option value="">请选择 DNS 服务商</option>${resolvers.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} · ${escapeHtml(item.category)}</option>`).join('')}`;
     routeForm.elements.bootstrapId.innerHTML = `<option value="">请选择 Bootstrap TXT</option>${bootstraps.filter(item => Number(item.status) === 1).map(item => `<option value="${Number(item.id)}">${escapeHtml(item.label)} · ${escapeHtml(item.record_name)}</option>`).join('')}`;
@@ -184,8 +186,8 @@
       }
       if (action === 'open-domain') { const form = document.querySelector('#recovery-domain-form'); form.reset(); form.elements.id.value = ''; form.elements.status.checked = true; return openModal('#recovery-domain-modal'); }
       if (action === 'edit-domain') { const item = domainById(id); if (!item) return; const form = document.querySelector('#recovery-domain-form'); form.elements.id.value = item.id; form.elements.title.value = item.title; form.elements.url.value = item.url; form.elements.priority.value = item.priority; form.elements.status.checked = Number(item.status) === 1; return openModal('#recovery-domain-modal'); }
-      if (action === 'open-bootstrap') { const form = document.querySelector('#recovery-bootstrap-form'); form.reset(); form.elements.id.value = ''; form.elements.status.checked = true; return openModal('#recovery-bootstrap-modal'); }
-      if (action === 'edit-bootstrap') { const item = bootstrapById(id); if (!item) return; const form = document.querySelector('#recovery-bootstrap-form'); form.elements.id.value = item.id; form.elements.label.value = item.label; form.elements.recordName.value = item.record_name; form.elements.zoneName.value = item.zone_name; form.elements.sortOrder.value = item.sort_order; form.elements.isPrimary.checked = Number(item.is_primary) === 1; form.elements.status.checked = Number(item.status) === 1; return openModal('#recovery-bootstrap-modal'); }
+      if (action === 'open-bootstrap') { const form = document.querySelector('#recovery-bootstrap-form'); form.reset(); form.elements.id.value = ''; form.elements.status.checked = true; form.elements.providerId.value = 'cloudflare'; form.elements.shareRole.value = 'A'; form.elements.publishMode.value = 'automatic'; return openModal('#recovery-bootstrap-modal'); }
+      if (action === 'edit-bootstrap') { const item = bootstrapById(id); if (!item) return; const form = document.querySelector('#recovery-bootstrap-form'); form.elements.id.value = item.id; form.elements.label.value = item.label; form.elements.recordName.value = item.record_name; form.elements.zoneName.value = item.zone_name; form.elements.sortOrder.value = item.sort_order; form.elements.providerId.value = item.provider_id || 'cloudflare'; form.elements.shareRole.value = item.share_role || 'LEGACY'; form.elements.publishMode.value = item.publish_mode || (item.provider_id === 'cloudflare' ? 'automatic' : 'manual'); form.elements.status.checked = Number(item.status) === 1; return openModal('#recovery-bootstrap-modal'); }
       if (action === 'delete-domain' && confirm('确定删除这条恢复专用线路吗？已发布的历史版本不会被修改。')) { await request(`/api/admin/recovery/domains/${id}`, { method: 'DELETE' }); notify('恢复线路已删除'); return load(); }
       if (action === 'delete-bootstrap' && confirm('确定删除这个 Bootstrap DNS 配置吗？Cloudflare 中已发布的 TXT 不会自动删除。')) { await request(`/api/admin/recovery/bootstrap/${id}`, { method: 'DELETE' }); notify('Bootstrap DNS 已删除'); return load(); }
       if (action === 'delete-route' && confirm('确定删除这条 DNS/TXT 查询线路吗？')) { await request(`/api/admin/recovery/lookup-routes/${id}`, { method: 'DELETE' }); notify('查询线路已删除'); return load(); }
@@ -206,6 +208,9 @@
   async function publish(button, id) {
     if (!confirm('发布会写入已配置的 Bootstrap DNS，并替换当前正式版本。确认继续吗？')) return;
     const result = await busy(button, '发布中…', () => request(`/api/admin/recovery/releases/${id}/publish`, { method: 'POST', body: '{}' }));
+    if (result.manualRecords?.length) {
+      document.querySelector('#recovery-doh-results').innerHTML = result.manualRecords.map(record => `<div class="recovery-result"><strong>${escapeHtml(record.providerId)} · ${escapeHtml(record.recordName)} · ${escapeHtml(record.role)} 分片</strong><p>请逐条建立同名 TXT（每条不超过 ${Number(record.byteLimit)} 字节）：</p>${record.values.map(value => `<code class="recovery-manual-value">${escapeHtml(value)}</code>`).join('')}</div>`).join('');
+    }
     notify(result.warning || `恢复清单已发布到 ${result.dnsPublished} 个 DNS 记录`);
     return load();
   }
@@ -215,6 +220,10 @@
     panel.querySelectorAll('[data-close-recovery-modal]').forEach(button => button.addEventListener('click', closeModals));
     panel.querySelectorAll('.recovery-modal').forEach(modal => modal.addEventListener('click', event => { if (event.target === modal) closeModals(); }));
     panel.querySelector('#recovery-profile-select').addEventListener('change', event => { currentProfileId = Number(event.currentTarget.value) || 1; void load(); });
+    panel.querySelector('#recovery-bootstrap-form').elements.providerId.addEventListener('change', event => {
+      const form = event.currentTarget.form;
+      form.elements.publishMode.value = event.currentTarget.value === 'cloudflare' ? 'automatic' : 'manual';
+    });
     panel.querySelector('#recovery-route-form').addEventListener('submit', async event => {
       event.preventDefault(); const form = event.currentTarget, submit = form.querySelector('button[type="submit"]');
       const payload = Object.fromEntries(new FormData(form)); payload.status = 1;
@@ -240,7 +249,7 @@
     });
     panel.querySelector('#recovery-bootstrap-form').addEventListener('submit', async event => {
       event.preventDefault(); const form = event.currentTarget, id = form.elements.id.value, submit = form.querySelector('button[type="submit"]');
-      const payload = Object.fromEntries(new FormData(form)); payload.isPrimary = form.elements.isPrimary.checked ? 1 : 0; payload.status = form.elements.status.checked ? 1 : 0;
+      const payload = Object.fromEntries(new FormData(form)); payload.isPrimary = 0; payload.status = form.elements.status.checked ? 1 : 0;
       try { await busy(submit, '保存中…', () => request(id ? `/api/admin/recovery/bootstrap/${id}` : '/api/admin/recovery/bootstrap', { method: id ? 'PUT' : 'POST', body: JSON.stringify(payload) })); closeModals(); notify('Bootstrap DNS 已保存'); await load(); } catch (error) { notify(error.message); }
     });
   }

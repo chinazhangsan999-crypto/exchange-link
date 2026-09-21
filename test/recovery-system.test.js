@@ -38,7 +38,8 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     const draft = await RecoveryService.createDraft();
     assert.equal(draft.envelope.generation, 1);
     assert.equal(draft.envelope.domains.length, 2);
-    assert.equal(draft.envelope.fallback.email, 'recovery@example.com');
+    assert.equal(draft.envelope.schema, 3);
+    assert.equal(draft.envelope.fallback, undefined);
     assert.equal(draft.envelope.trustedKeys.length, 1);
 
     const settings = await RecoveryModel.getSettings();
@@ -48,6 +49,19 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     const rebuilt = RecoveryService.assembleTxt(chunks.parts);
     assert.equal(rebuilt.length, 1);
     assert.deepEqual(rebuilt[0].envelope, draft.envelope);
+    const shards = RecoveryService.shardEnvelope(draft.envelope);
+    assert.ok(shards.A.parts.every(value => Buffer.byteLength(value, 'utf8') <= 240));
+    assert.ok(shards.B.parts.every(value => Buffer.byteLength(value, 'utf8') <= 240));
+    assert.equal(RecoveryService.combineShards(RecoveryService.assembleShardedTxt(shards.A.parts)).length, 0);
+    const combined = RecoveryService.combineShards(RecoveryService.assembleShardedTxt([...shards.A.parts, ...shards.B.parts]));
+    assert.equal(combined.length, 1);
+    assert.deepEqual(combined[0].envelope, draft.envelope);
+    const stableShards = RecoveryService.shardEnvelope(draft.envelope, 240, 'test-release-secret');
+    const stableShardsAgain = RecoveryService.shardEnvelope(draft.envelope, 240, 'test-release-secret');
+    assert.deepEqual(stableShards, stableShardsAgain);
+    const damagedB = [...stableShards.B.parts];
+    damagedB[0] = damagedB[0].replace(/data=(.)/, (_match, first) => `data=${first === 'X' ? 'Y' : 'X'}`);
+    assert.equal(RecoveryService.combineShards(RecoveryService.assembleShardedTxt([...stableShards.A.parts, ...damagedB])).length, 0);
 
     const published = await RecoveryService.publishRelease(draft.id);
     assert.equal(published.dnsPublished, 0);
@@ -57,6 +71,7 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     assert.equal(manifest.enabled, true);
     assert.equal(manifest.envelope.generation, 1);
     assert.equal(manifest.publicKeys.length, 1);
+    assert.equal(manifest.localFallback.email, 'recovery@example.com');
     assert.deepEqual(manifest.bootstrapNames, []);
 
     const browserContext = {
@@ -96,11 +111,8 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     await RecoveryModel.createLookupRoute(RecoveryService.validateLookupRouteInput({ resolverId: 'dnspod', bootstrapId: txtA.id, priorityGroup: 1, timeoutMs: 1800, status: 1 }), second.id);
     await RecoveryModel.createLookupRoute(RecoveryService.validateLookupRouteInput({ resolverId: 'google', bootstrapId: txtB.id, priorityGroup: 2, timeoutMs: 2600, status: 1 }), second.id);
     const secondDraft = await RecoveryService.createDraft({ profileId: second.id });
-    assert.equal(secondDraft.envelope.schema, 2);
-    assert.deepEqual(secondDraft.envelope.lookupRoutes.map(item => [item.resolverId, item.bootstrapName, item.priority]), [
-      ['dnspod', '_recover.cn.example.org', 1],
-      ['google', '_recover.global.example.org', 2]
-    ]);
+    assert.equal(secondDraft.envelope.schema, 3);
+    assert.equal(secondDraft.envelope.lookupRoutes, undefined);
     await RecoveryModel.deleteBootstrapRecord(txtA.id, second.id);
     await RecoveryModel.deleteBootstrapRecord(txtB.id, second.id);
     await RecoveryService.publishRelease(secondDraft.id, second.id);
@@ -114,7 +126,8 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     const boundManifest = await RecoveryService.getPublicManifest('https://global.example.test');
     assert.equal(boundManifest.enabled, true);
     assert.equal(boundManifest.envelope.project, second.project_id);
-    assert.equal(boundManifest.envelope.fallback.email, 'global@example.com');
+    assert.equal(boundManifest.localFallback.email, 'global@example.com');
+    assert.deepEqual(boundManifest.lookupRoutes, []);
     const unboundManifest = await RecoveryService.getPublicManifest('https://unbound.example.test');
     assert.equal(unboundManifest.enabled, false);
     assert.equal(unboundManifest.reason, 'frontend_unbound');

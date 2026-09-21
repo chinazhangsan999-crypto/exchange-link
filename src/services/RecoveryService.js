@@ -23,6 +23,7 @@ const DOH_RESOLVERS = Object.freeze([
   { id: 'controld-free', label: 'Control D Free', endpoint: 'https://freedns.controld.com/p0' }
 ]);
 const TXT_DATA_SIZE = 180;
+const PORTABLE_TXT_BYTES = 240;
 const MAX_ENCODED_SIZE = 4096;
 
 function stableStringify(value) {
@@ -78,13 +79,23 @@ function validateBootstrapInput(input = {}) {
   const zoneName = normalizeDnsName(input.zoneName, 'DNS Zone');
   const recordName = normalizeDnsName(input.recordName, 'TXT 记录名');
   if (!(recordName === zoneName || recordName.endsWith(`.${zoneName}`))) throw new Error('TXT 记录必须位于所填写的 DNS Zone 内');
+  const providerId = String(input.providerId || 'cloudflare').trim().toLowerCase();
+  if (!['cloudflare', 'desec', 'cloudns', 'route53', 'he'].includes(providerId)) throw new Error('请选择受支持的权威 DNS 托管商');
+  const shareRole = String(input.shareRole || 'LEGACY').trim().toUpperCase();
+  if (!['A', 'B', 'LEGACY'].includes(shareRole)) throw new Error('TXT 分片角色只能是 A、B 或旧版兼容');
+  const publishMode = String(input.publishMode || (providerId === 'cloudflare' ? 'automatic' : 'manual')).trim().toLowerCase();
+  if (!['automatic', 'manual'].includes(publishMode)) throw new Error('发布方式不正确');
+  if (publishMode === 'automatic' && providerId !== 'cloudflare') throw new Error('当前版本仅 Cloudflare 支持自动写入；其他托管商请使用手动发布并由 DoH 回读验证');
   return {
     label,
     zoneName,
     recordName,
     isPrimary: ['1', 1, true, 'true', 'on'].includes(input.isPrimary) ? 1 : 0,
     status: ['1', 1, true, 'true', 'on'].includes(input.status) ? 1 : 0,
-    sortOrder: Math.max(-100000, Math.min(100000, Number.parseInt(input.sortOrder, 10) || 0))
+    sortOrder: Math.max(-100000, Math.min(100000, Number.parseInt(input.sortOrder, 10) || 0)),
+    providerId,
+    shareRole,
+    publishMode
   };
 }
 
@@ -255,10 +266,9 @@ function verifyEnvelope(envelope, publicKeys) {
 }
 
 async function createDraft({ sourceReleaseId = null, profileId = 1 } = {}) {
-  const [settings, domains, bootstraps] = await Promise.all([
+  const [settings, domains] = await Promise.all([
     RecoveryModel.getSettings(profileId),
-    RecoveryModel.listDomains({ enabledOnly: true, profileId }),
-    RecoveryModel.listLookupRoutes(profileId, { enabledOnly: true })
+    RecoveryModel.listDomains({ enabledOnly: true, profileId })
   ]);
   if (!domains.length) throw new Error('至少需要一条已启用的恢复线路');
   if (domains.length > settings.max_domains) throw new Error(`已启用线路超过后台限制（最多 ${settings.max_domains} 条）`);
@@ -266,35 +276,22 @@ async function createDraft({ sourceReleaseId = null, profileId = 1 } = {}) {
   const generation = await RecoveryModel.nextGeneration(profileId);
   const issuedAt = Math.floor(Date.now() / 1000);
   const expiresAt = issuedAt + Number(settings.manifest_valid_days) * 86400;
-  const payload = {
-    schema: 2,
+  const releaseId = `${generation}-${crypto.randomBytes(8).toString('hex')}`;
+  const payloadCore = {
+    schema: 3,
     project: settings.project_id,
     generation,
+    releaseId,
     issuedAt,
     expiresAt,
     domains: domains.map(item => ({ title: item.title, url: item.url, priority: Number(item.priority) })),
-    fallback: {
-      email: settings.recovery_email || '',
-      publishUrl: settings.recovery_publish_url || '',
-      contact: settings.recovery_contact || '',
-      message: settings.recovery_message || ''
-    },
-    foundMessage: settings.found_message || '',
-    lookupRoutes: bootstraps.map(item => ({
-      resolverId: item.resolver_id,
-      resolverLabel: item.resolver_label,
-      endpoint: item.endpoint,
-      format: item.response_format,
-      bootstrapName: item.record_name,
-      priority: Number(item.priority_group),
-      timeoutMs: Number(item.timeout_ms)
-    })),
     trustedKeys: [
       { keyId: settings.public_key_id || key.keyId, spki: publicKeyPemToSpkiBase64(settings.public_key || key.publicKey) },
       { keyId: settings.next_public_key_id, spki: publicKeyPemToSpkiBase64(settings.next_public_key) }
     ].filter(item => item.keyId && item.spki),
     keyId: key.keyId
   };
+  const payload = { ...payloadCore, manifestHash: crypto.createHash('sha256').update(stableStringify(payloadCore)).digest('hex') };
   const payloadJson = stableStringify(payload);
   const release = await RecoveryModel.createRelease({
     generation,
@@ -333,6 +330,43 @@ function chunkEnvelope(envelope) {
   return { set, parts };
 }
 
+function assertPortableTxt(parts, byteLimit = PORTABLE_TXT_BYTES) {
+  for (const value of parts) {
+    const bytes = Buffer.byteLength(value, 'utf8');
+    if (bytes > byteLimit) throw new Error(`TXT 单条内容为 ${bytes} 字节，超过托管商安全上限 ${byteLimit} 字节`);
+  }
+  return parts;
+}
+
+function chunkShare(envelope, role, shareBytes, byteLimit = PORTABLE_TXT_BYTES) {
+  const encoded = Buffer.from(shareBytes).toString('base64url');
+  const set = `${envelope.generation}-${envelope.releaseId}-${envelope.manifestHash.slice(0, 12)}`;
+  const header = index => `r2;set=${set};role=${role};part=${index}/999;data=`;
+  const dataSize = Math.max(32, Math.min(140, byteLimit - Buffer.byteLength(header(999), 'utf8')));
+  const total = Math.ceil(encoded.length / dataSize);
+  if (total < 1 || total > 50) throw new Error('恢复清单 TXT 分片过多');
+  const parts = Array.from({ length: total }, (_, index) => `r2;set=${set};role=${role};part=${index + 1}/${total};data=${encoded.slice(index * dataSize, (index + 1) * dataSize)}`);
+  return { set, role, parts: assertPortableTxt(parts, byteLimit) };
+}
+
+function deterministicShare(length, secret, context) {
+  if (!secret) return crypto.randomBytes(length);
+  const blocks = [];
+  for (let counter = 0; Buffer.concat(blocks).length < length; counter += 1) {
+    blocks.push(crypto.createHmac('sha256', secret).update(`${context}:${counter}`).digest());
+  }
+  return Buffer.concat(blocks).subarray(0, length);
+}
+
+function shardEnvelope(envelope, byteLimit = PORTABLE_TXT_BYTES, secret = '') {
+  const manifest = Buffer.from(JSON.stringify(envelope));
+  if (manifest.length > MAX_ENCODED_SIZE) throw new Error('恢复清单超过 4KB，无法安全发布到 DNS TXT');
+  const shareA = deterministicShare(manifest.length, secret, `${envelope.project}:${envelope.generation}:${envelope.releaseId}:${envelope.manifestHash}`);
+  const shareB = Buffer.alloc(manifest.length);
+  for (let index = 0; index < manifest.length; index += 1) shareB[index] = shareA[index] ^ manifest[index];
+  return { A: chunkShare(envelope, 'A', shareA, byteLimit), B: chunkShare(envelope, 'B', shareB, byteLimit) };
+}
+
 function parseTxtValue(input) {
   let text = String(input || '').trim();
   if (text.startsWith('"') && text.endsWith('"')) text = text.slice(1, -1);
@@ -360,6 +394,49 @@ function assembleTxt(values) {
       const encoded = Array.from({ length: group.total }, (_, index) => group.parts.get(index + 1)).join('');
       envelopes.push({ set, envelope: JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8')) });
     } catch { /* 忽略损坏或被污染的分片 */ }
+  }
+  return envelopes;
+}
+
+function assembleShardedTxt(values) {
+  const sets = new Map();
+  for (const raw of values || []) {
+    const text = parseTxtValue(raw);
+    const match = /^r2;set=([^;]+);role=([AB]);part=(\d+)\/(\d+);data=([A-Za-z0-9_-]+)$/.exec(text);
+    if (!match) continue;
+    const [, set, role, indexRaw, totalRaw, data] = match;
+    const index = Number(indexRaw), total = Number(totalRaw);
+    if (index < 1 || total < 1 || total > 50 || index > total) continue;
+    const key = `${set}:${role}`;
+    if (!sets.has(key)) sets.set(key, { set, role, total, parts: new Map() });
+    const group = sets.get(key);
+    if (group.total === total) group.parts.set(index, data);
+  }
+  return [...sets.values()].filter(group => group.parts.size === group.total).map(group => ({
+    set: group.set,
+    role: group.role,
+    bytes: Buffer.from(Array.from({ length: group.total }, (_, index) => group.parts.get(index + 1)).join(''), 'base64url')
+  }));
+}
+
+function combineShards(shares) {
+  const bySet = new Map();
+  for (const share of shares || []) {
+    if (!bySet.has(share.set)) bySet.set(share.set, {});
+    bySet.get(share.set)[share.role] = share.bytes;
+  }
+  const envelopes = [];
+  for (const [set, pair] of bySet) {
+    if (!pair.A || !pair.B || pair.A.length !== pair.B.length) continue;
+    try {
+      const manifest = Buffer.alloc(pair.A.length);
+      for (let index = 0; index < manifest.length; index += 1) manifest[index] = pair.A[index] ^ pair.B[index];
+      const envelope = JSON.parse(manifest.toString('utf8'));
+      const { signature, manifestHash, ...core } = envelope;
+      const actual = crypto.createHash('sha256').update(stableStringify(core)).digest('hex');
+      if (!signature || actual !== manifestHash) continue;
+      envelopes.push({ set, envelope });
+    } catch { /* ignore polluted shares */ }
   }
   return envelopes;
 }
@@ -419,9 +496,9 @@ async function queryDoh(resolver, recordName, timeoutMs = 4000) {
     const response = await fetch(url, { headers: { Accept: 'application/dns-message' }, signal: controller.signal, cache: 'no-store' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const values = parseDnsWireTxt(await response.arrayBuffer());
-    return { id: resolver.id, label: resolver.label, ok: true, envelopes: assembleTxt(values) };
+    return { id: resolver.id, label: resolver.label, ok: true, values, shares: assembleShardedTxt(values), envelopes: assembleTxt(values) };
   } catch (error) {
-    return { id: resolver.id, label: resolver.label, ok: false, error: error.name === 'AbortError' ? '查询超时' : String(error.message || '查询失败'), envelopes: [] };
+    return { id: resolver.id, label: resolver.label, ok: false, error: error.name === 'AbortError' ? '查询超时' : String(error.message || '查询失败'), values: [], shares: [], envelopes: [] };
   } finally { clearTimeout(timer); }
 }
 
@@ -438,6 +515,7 @@ async function diagnoseDoh(recordName, profileId = 1, bootstrapId = null) {
   }, recordName, route.timeout_ms)));
   return results.map(result => ({
     ...result,
+    shares: (result.shares || []).map(item => ({ set: item.set, role: item.role, bytes: item.bytes.length })),
     envelopes: result.envelopes.map(item => ({
       set: item.set,
       generation: Number(item.envelope?.generation || 0),
@@ -477,9 +555,26 @@ async function resolveZoneId(zoneName) {
   return exact.id;
 }
 
-async function publishRecord(record, release, profileId = 1) {
+async function publishRecord(record, release, profileId = 1, releaseShards = null) {
   const envelope = envelopeForRelease(release);
-  const chunked = chunkEnvelope(envelope);
+  const byteLimit = Math.min(PORTABLE_TXT_BYTES, Number(record.portable_record_bytes) || PORTABLE_TXT_BYTES);
+  const sharded = releaseShards || shardEnvelope(envelope, byteLimit);
+  const role = String(record.share_role || 'LEGACY').toUpperCase();
+  const chunked = role === 'LEGACY' ? chunkEnvelope(envelope) : sharded[role];
+  if (!chunked) throw new Error('Bootstrap TXT 分片角色不正确');
+  assertPortableTxt(chunked.parts, byteLimit);
+  if (String(record.publish_mode || '').toLowerCase() === 'manual' || record.provider_id !== 'cloudflare') {
+    const diagnosis = await diagnoseDoh(record.record_name, profileId, record.id);
+    const verified = role === 'LEGACY'
+      ? diagnosis.some(result => result.envelopes.some(item => item.generation === release.generation && item.signatureValid))
+      : diagnosis.some(result => result.shares?.some(item => item.set === chunked.set && item.role === role));
+    if (verified) {
+      await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'verified', generation: release.generation, verified: true });
+      return { recordId: record.id, recordName: record.record_name, providerId: record.provider_id, role, verified: true, chunks: chunked.parts.length, byteLimit, diagnosis };
+    }
+    await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'manual_required', error: '请在对应权威 DNS 控制台写入以下 TXT，再执行 DoH 回读验证' });
+    return { recordId: record.id, recordName: record.record_name, providerId: record.provider_id, role, verified: false, manualRequired: true, byteLimit, values: chunked.parts, diagnosis };
+  }
   const zoneId = await resolveZoneId(record.zone_name);
   const existing = await cloudflareRequest('GET', `/zones/${zoneId}/dns_records?type=TXT&name=${encodeURIComponent(record.record_name)}&per_page=100`);
   const created = [];
@@ -494,17 +589,19 @@ async function publishRecord(record, release, profileId = 1) {
     for (let attempt = 0; attempt < 3 && !verified; attempt += 1) {
       if (attempt) await new Promise(resolve => setTimeout(resolve, 1500));
       diagnosis = await diagnoseDoh(record.record_name, profileId, record.id);
-      verified = diagnosis.some(result => result.envelopes.some(item => item.generation === release.generation && item.signatureValid));
+      verified = diagnosis.some(result => role === 'LEGACY'
+        ? result.envelopes.some(item => item.generation === release.generation && item.signatureValid)
+        : result.shares?.some(item => item.set === chunked.set && item.role === role));
     }
     if (!verified) throw new Error('新 TXT 已写入，但多 DoH 回读尚未发现有效的新版本');
     for (const old of existing) {
       if (String(old.content || '').includes(`set=${chunked.set};`)) continue;
-      if (String(old.content || '').startsWith('r1;set=')) {
+      if (/^r[12];set=/.test(String(old.content || '').replace(/^"|"$/g, ''))) {
         await cloudflareRequest('DELETE', `/zones/${zoneId}/dns_records/${encodeURIComponent(old.id)}`);
       }
     }
     await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'verified', generation: release.generation, verified: true });
-    return { recordId: record.id, recordName: record.record_name, verified: true, chunks: chunked.parts.length, diagnosis };
+    return { recordId: record.id, recordName: record.record_name, providerId: record.provider_id, role, verified: true, chunks: chunked.parts.length, byteLimit, diagnosis };
   } catch (error) {
     for (const item of created) {
       if (item?.id) await cloudflareRequest('DELETE', `/zones/${zoneId}/dns_records/${encodeURIComponent(item.id)}`).catch(() => undefined);
@@ -527,13 +624,35 @@ async function publishRelease(id, profileId = null) {
   const envelope = envelopeForRelease(release);
   if (!verifyEnvelope(envelope, publicKeys)) throw new Error('恢复版本签名校验失败，拒绝发布');
   const records = await RecoveryModel.listBootstrapRecords({ enabledOnly: true, profileId });
+  const signing = RecoveryCredentialStore.signingKeys(profileId);
+  const releaseSecret = signing.current?.keyId === release.key_id ? signing.current.privateKey : '';
+  if (records.some(item => ['A', 'B'].includes(String(item.share_role || '').toUpperCase())) && !releaseSecret) {
+    throw new Error('无法读取该版本对应的签名私钥，不能生成稳定的 A/B 分片');
+  }
+  const releaseShards = releaseSecret ? shardEnvelope(envelope, PORTABLE_TXT_BYTES, releaseSecret) : null;
   const results = [];
   try {
-    for (const record of records.filter(item => Number(item.is_primary) === 0)) results.push(await publishRecord(record, release, profileId));
-    for (const record of records.filter(item => Number(item.is_primary) === 1)) results.push(await publishRecord(record, release, profileId));
+    for (const record of records) results.push(await publishRecord(record, release, profileId, releaseShards));
+    const shardedRecords = records.filter(item => ['A', 'B'].includes(String(item.share_role || '').toUpperCase()));
+    if (shardedRecords.length) {
+      const verifiedA = results.filter(item => item.verified && item.role === 'A');
+      const verifiedB = results.filter(item => item.verified && item.role === 'B');
+      const crossProvider = verifiedA.some(a => verifiedB.some(b => a.providerId !== b.providerId));
+      if (!verifiedA.length || !verifiedB.length || !crossProvider) {
+        await RecoveryModel.markRelease(id, 'failed', { error: 'A/B 分片尚未形成跨权威 DNS 的可恢复组合' });
+        return {
+          published: false,
+          release: serializeRelease(await RecoveryModel.getRelease(id)),
+          dnsPublished: results.filter(item => item.verified).length,
+          records: results,
+          manualRecords: results.filter(item => item.manualRequired),
+          warning: '尚未满足发布门槛：至少需要一个已验证 A 分片和一个来自不同权威 DNS 托管商的已验证 B 分片。手动记录写入后请重新发布。'
+        };
+      }
+    }
     await RecoveryModel.publishReleaseAtomically(release.id, release.generation, profileId);
     await RecoveryModel.addAudit('release.publish', { id, generation: release.generation, dnsRecords: results.length }, true, '', profileId);
-    return { release: serializeRelease(await RecoveryModel.getRelease(id)), dnsPublished: results.length, records: results, warning: records.length ? '' : '尚未配置 Bootstrap DNS；当前版本只会通过主站同步给已访问用户。' };
+    return { published: true, release: serializeRelease(await RecoveryModel.getRelease(id)), dnsPublished: results.filter(item => item.verified).length, records: results, warning: records.length ? '' : '尚未配置 Bootstrap DNS；当前版本只会通过主站同步给已访问用户。' };
   } catch (error) {
     await RecoveryModel.markRelease(id, 'failed', { error: error.message });
     await RecoveryModel.addAudit('release.publish', { id, generation: release.generation }, false, error.message, profileId);
@@ -550,13 +669,17 @@ async function rollbackTo(sourceId, profileId = null) {
   const generation = await RecoveryModel.nextGeneration(profileId);
   const issuedAt = Math.floor(Date.now() / 1000);
   const expiresAt = issuedAt + Number(settings.manifest_valid_days) * 86400;
-  const payload = {
+  const payloadCore = {
     ...JSON.parse(source.payload_json), generation, issuedAt, expiresAt, keyId: key.keyId,
     trustedKeys: [
       { keyId: settings.public_key_id || key.keyId, spki: publicKeyPemToSpkiBase64(settings.public_key || key.publicKey) },
       { keyId: settings.next_public_key_id, spki: publicKeyPemToSpkiBase64(settings.next_public_key) }
     ].filter(item => item.keyId && item.spki)
   };
+  delete payloadCore.manifestHash;
+  const payload = Number(payloadCore.schema) >= 3
+    ? { ...payloadCore, manifestHash: crypto.createHash('sha256').update(stableStringify(payloadCore)).digest('hex') }
+    : payloadCore;
   const payloadJson = stableStringify(payload);
   const release = await RecoveryModel.createRelease({
     generation,
@@ -598,7 +721,17 @@ async function getPublicManifest(frontendOrigin = '') {
     enabled: true,
     componentVersion: settings.component_version,
     envelope,
-    publicKeys: Array.isArray(envelope.trustedKeys) ? envelope.trustedKeys : [],
+    publicKeys: [...(Array.isArray(envelope.trustedKeys) ? envelope.trustedKeys : []),
+      { keyId: settings.public_key_id, spki: publicKeyPemToSpkiBase64(settings.public_key) },
+      { keyId: settings.next_public_key_id, spki: publicKeyPemToSpkiBase64(settings.next_public_key) }
+    ].filter((item, index, items) => item.keyId && item.spki && items.findIndex(candidate => candidate.keyId === item.keyId) === index),
+    localFallback: {
+      email: settings.recovery_email || '',
+      publishUrl: settings.recovery_publish_url || '',
+      contact: settings.recovery_contact || '',
+      message: settings.recovery_message || '',
+      foundMessage: settings.found_message || ''
+    },
     bootstrapNames: [...new Set(bootstraps.map(item => item.record_name))],
     lookupRoutes: bootstraps.map(item => ({
       resolverId: item.resolver_id, resolverLabel: item.resolver_label,
@@ -610,9 +743,9 @@ async function getPublicManifest(frontendOrigin = '') {
 }
 
 async function overview(profileId = 1) {
-  const [profiles, settings, domains, bootstraps, routes, releases, keys, audit, frontendOrigins, resolvers] = await Promise.all([
+  const [profiles, settings, domains, bootstraps, routes, releases, keys, audit, frontendOrigins, resolvers, dnsProviders] = await Promise.all([
     RecoveryModel.listProfiles(), RecoveryModel.getSettings(profileId), RecoveryModel.listDomains({ profileId }), RecoveryModel.listBootstrapRecords({ profileId }),
-    RecoveryModel.listLookupRoutes(profileId), RecoveryModel.listReleases(50, profileId), keyStatus(profileId), RecoveryModel.listAudit(100, profileId), FrontendOriginModel.listEnabledOrigins(), RecoveryModel.listResolvers()
+    RecoveryModel.listLookupRoutes(profileId), RecoveryModel.listReleases(50, profileId), keyStatus(profileId), RecoveryModel.listAudit(100, profileId), FrontendOriginModel.listEnabledOrigins(), RecoveryModel.listResolvers(), RecoveryModel.listDnsProviders()
   ]);
   const credential = RecoveryCredentialStore.cloudflareConfig();
   const central = IntegrationCredentialStore.cloudflareApiEdgeConfig();
@@ -633,6 +766,7 @@ async function overview(profileId = 1) {
       tokenConfigured: credential.reuseCentral ? Boolean(central.apiToken) : Boolean(credential.apiToken)
     },
     resolvers,
+    dnsProviders,
     lookupRoutes: routes,
     publicPreviewOrigin: frontendOrigins[0]?.origin || '',
     audit
@@ -703,6 +837,10 @@ module.exports = {
   saveCloudflareCredentials,
   verifyEnvelope,
   chunkEnvelope,
-  assembleTxt
-  ,assertProfileReady
+  assembleTxt,
+  shardEnvelope,
+  assembleShardedTxt,
+  combineShards,
+  assertPortableTxt,
+  assertProfileReady
 };
