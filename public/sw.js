@@ -1,10 +1,13 @@
-/** 星环导航轻量离线缓存：验证和敏感操作永不缓存，普通页面网络优先。 */
-const CACHE_NAME = 'nav-cache-v12-read-proof';
+/** 星环导航离线恢复缓存：导航失败进入独立恢复页，敏感操作永不缓存。 */
+const CACHE_NAME = 'nav-cache-v13-recovery';
 const STATIC_ASSETS = [
   '/', '/index.html', '/read-client.js?v=20260915-read-proof3', '/script.js?v=20260914-post-entry-page-view-all-pages', '/style.css', '/manifest.json',
   '/tooltip.css', '/apply.css', '/apply-category.css', '/no-icons.css',
   '/header-cleanup.css', '/mobile-nav.css', '/enhance.css', '/pwa.css',
-  '/icons/icon-192.png', '/icons/icon-512.png'
+  '/icons/icon-192.png', '/icons/icon-512.png',
+  '/recovery.html', '/recovery.css?v=20260921-recovery-1',
+  '/recovery-crypto.js?v=20260921-recovery-1', '/recovery-client.js?v=20260921-recovery-1',
+  '/recovery.js?v=20260921-recovery-1'
 ];
 const NEVER_CACHE_PATHS = new Set([
   '/verify.html', '/verify.css', '/verify.js', '/go', '/api/links/apply', '/api/read/bootstrap', '/api/read/proof'
@@ -21,7 +24,10 @@ self.addEventListener('activate', event => {
 });
 
 function mustUseNetwork(url) {
-  return NEVER_CACHE_PATHS.has(url.pathname) || url.pathname.startsWith('/api/verify/');
+  return NEVER_CACHE_PATHS.has(url.pathname)
+    || url.pathname === '/.well-known/route-health.gif'
+    || url.pathname === '/api/recovery/manifest'
+    || url.pathname.startsWith('/api/verify/');
 }
 
 function isSafeCacheResponse(response) {
@@ -57,9 +63,9 @@ self.addEventListener('fetch', event => {
       }
       return response;
     } catch {
+      if (event.request.mode === 'navigate') return caches.match('/recovery.html');
       const cached = await caches.match(event.request);
       if (cached) return cached;
-      if (event.request.mode === 'navigate') return caches.match('/index.html');
       throw new Error('离线且没有可用缓存');
     }
   })());

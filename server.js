@@ -16,6 +16,7 @@ const { initializePartnerPageViewTable } = require('./src/models/PartnerPageView
 const { initializeIpProfileTable } = require('./src/models/IpProfileModel');
 const { initializeFrontendOriginTable } = require('./src/models/FrontendOriginModel');
 const { initializeCloudflareFrontendTables } = require('./src/models/CloudflareFrontendModel');
+const { initializeRecoveryTables } = require('./src/models/RecoveryModel');
 const SiteTrafficService = require('./src/services/SiteTrafficService');
 const PartnerPageViewService = require('./src/services/PartnerPageViewService');
 const IpIntelligenceService = require('./src/services/IpIntelligenceService');
@@ -49,6 +50,7 @@ initializeDatabase()
   .then(initializeIpProfileTable)
   .then(initializeFrontendOriginTable)
   .then(initializeCloudflareFrontendTables)
+  .then(initializeRecoveryTables)
   .then(CloudflareBootstrapService.adoptStoredState)
   .then(CloudflarePublicFrontendService.adoptStoredProfiles)
   .then(initializeSourceTokenTables)

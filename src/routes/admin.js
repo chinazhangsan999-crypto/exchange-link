@@ -2,6 +2,7 @@
 
 const express = require('express');
 const AdminController = require('../controllers/AdminController');
+const RecoveryController = require('../controllers/RecoveryController');
 const { requireAdmin, requireAdminCsrf } = require('../middlewares/auth');
 const { createRateLimiter } = require('../middlewares/rateLimit');
 const { siteLogoUpload } = require('../middlewares/siteLogoUpload');
@@ -45,6 +46,24 @@ router.post('/api/admin/cloudflare/central/redeploy/:target', AdminController.re
 router.post('/api/admin/cloudflare/central/sync-origins', AdminController.syncCloudflareOrigins);
 router.get('/api/admin/cloudflare/ip-whitelist', AdminController.getCloudflareIpWhitelist);
 router.post('/api/admin/cloudflare/ip-whitelist/sync', AdminController.syncCloudflareIpWhitelist);
+router.get('/api/admin/recovery', RecoveryController.getOverview);
+router.put('/api/admin/recovery/settings', RecoveryController.saveSettings);
+router.post('/api/admin/recovery/domains', RecoveryController.createDomain);
+router.put('/api/admin/recovery/domains/:id', RecoveryController.updateDomain);
+router.delete('/api/admin/recovery/domains/:id', RecoveryController.deleteDomain);
+router.post('/api/admin/recovery/domains/:id/probe', RecoveryController.probeDomain);
+router.post('/api/admin/recovery/domains/probe-all', RecoveryController.probeAll);
+router.post('/api/admin/recovery/bootstrap', RecoveryController.createBootstrap);
+router.put('/api/admin/recovery/bootstrap/:id', RecoveryController.updateBootstrap);
+router.delete('/api/admin/recovery/bootstrap/:id', RecoveryController.deleteBootstrap);
+router.get('/api/admin/recovery/bootstrap/:id/doh', RecoveryController.diagnoseDoh);
+router.put('/api/admin/recovery/cloudflare', RecoveryController.saveCloudflare);
+router.post('/api/admin/recovery/keys/ensure', RecoveryController.ensureKey);
+router.post('/api/admin/recovery/keys/next', RecoveryController.generateNextKey);
+router.post('/api/admin/recovery/keys/promote', RecoveryController.promoteNextKey);
+router.post('/api/admin/recovery/releases/draft', RecoveryController.createDraft);
+router.post('/api/admin/recovery/releases/:id/publish', RecoveryController.publishRelease);
+router.post('/api/admin/recovery/releases/:id/rollback', RecoveryController.rollbackRelease);
 router.post('/api/admin/cloudflare/accounts/:id/verify', AdminController.verifyCloudflareFrontendAccount);
 router.put('/api/admin/cloudflare/accounts/:id/token', AdminController.updateCloudflareFrontendAccountToken);
 router.post('/api/admin/cloudflare/accounts/:id/reconcile', AdminController.reconcileCloudflareFrontendAccount);

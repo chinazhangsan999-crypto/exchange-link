@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="theme-color" content="#eef3ff">
+  <title>网站线路恢复</title>
+  <link rel="stylesheet" href="/recovery.css?v=20260921-recovery-1">
+</head>
+<body>
+  <main class="recovery-page">
+    <section class="recovery-card" aria-labelledby="recovery-title">
+      <div class="recovery-mark" aria-hidden="true"><svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3a9 9 0 1 0 8.5 6"/><path d="M21 3v6h-6"/><path d="M12 7v5l3 2"/></svg></div>
+      <p class="eyebrow">SECURE RECOVERY</p>
+      <h1 id="recovery-title">网站暂时无法连接</h1>
+      <p id="recovery-status" class="recovery-status" role="status" aria-live="polite">正在读取浏览器中已保存的恢复清单…</p>
+      <div id="recovery-progress" class="progress-track" aria-hidden="true"><span></span></div>
+
+      <section id="recovery-found" class="result-panel" hidden>
+        <span class="result-label">发现最新地址</span>
+        <strong id="recovery-found-title"></strong>
+        <code id="recovery-found-url"></code>
+        <a id="recovery-go" class="primary-action" target="_blank" rel="noopener">立即前往</a>
+        <p id="recovery-found-message" class="result-note"></p>
+      </section>
+
+      <section id="recovery-fallback" class="result-panel fallback-panel" hidden>
+        <span class="result-label">暂时没有找到可用地址</span>
+        <p id="recovery-fallback-message" class="result-note"></p>
+        <div id="recovery-contact-list" class="contact-list"></div>
+        <button id="recovery-retry" class="secondary-action" type="button">重新检查</button>
+      </section>
+
+      <details id="recovery-details" class="diagnostic-panel">
+        <summary>查看检查过程</summary>
+        <ol id="recovery-log"></ol>
+      </details>
+    </section>
+  </main>
+  <script src="/recovery-crypto.js?v=20260921-recovery-1"></script>
+  <script src="/recovery.js?v=20260921-recovery-1"></script>
+</body>
+</html>

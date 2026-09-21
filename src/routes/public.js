@@ -2,6 +2,7 @@
 
 const express = require('express');
 const PublicController = require('../controllers/PublicController');
+const RecoveryController = require('../controllers/RecoveryController');
 const {
   createRateLimiter,
   createVisitorRateLimiter,
@@ -34,6 +35,7 @@ router.get('/.well-known/route-health.gif', PublicController.routeHealthGif);
 // 仅供经过 HMAC 验签的静态前端边缘代理调用；浏览器无法直接伪造来源或客户端 IP。
 router.post('/internal/frontend/landing', requireTrustedFrontendProxy, PublicController.prepareFrontendLanding);
 router.use(requireFrontendProxy);
+router.get('/api/recovery/manifest', RecoveryController.getPublicManifest);
 router.get('/api/browser/challenge', browserChallengeRateLimiter, PublicController.getBrowserChallenge);
 router.post('/api/browser/verify', browserChallengeRateLimiter, PublicController.verifyBrowserChallenge);
 router.get('/api/read/bootstrap', requireBrowserAccess, readBootstrapRateLimiter, PublicController.getReadBootstrap);
