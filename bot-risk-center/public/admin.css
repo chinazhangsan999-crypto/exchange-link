@@ -97,6 +97,7 @@ input {
   background: var(--surface-muted);
   color: var(--text);
 }
+input + label { margin-top: 16px; }
 input:focus-visible, button:focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;

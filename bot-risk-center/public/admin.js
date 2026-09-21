@@ -132,16 +132,20 @@
   loginForm.addEventListener('submit', async event => {
     event.preventDefault();
     loginError.hidden = true;
-    const token = String(new FormData(loginForm).get('token') || '').trim();
-    if (!token) {
-      loginError.textContent = '请输入管理令牌。';
+    const formData = new FormData(loginForm);
+    const username = String(formData.get('username') || '').trim();
+    const password = String(formData.get('password') || '');
+    if (!username || !password) {
+      loginError.textContent = '请输入账号和密码。';
       loginError.hidden = false;
       return;
     }
     loginButton.disabled = true;
     loginButton.textContent = '正在登录…';
     try {
-      const result = await request('/admin/api/login', { method: 'POST', body: JSON.stringify({ token }) });
+      const result = await request('/admin/api/login', {
+        method: 'POST', body: JSON.stringify({ username, password })
+      });
       csrfToken = result.data.csrfToken;
       loginForm.reset();
       setAuthenticated(true);

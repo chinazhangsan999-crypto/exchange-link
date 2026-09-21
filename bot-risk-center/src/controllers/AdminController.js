@@ -21,9 +21,10 @@ function script(req, res) {
   return res.sendFile(path.join(PUBLIC_DIR, 'admin.js'));
 }
 
-function login(req, res) {
-  const session = AdminAuthService.createSession(req.body?.token);
-  if (!session) return res.status(401).json({ code: 401, message: '管理令牌错误' });
+async function login(req, res) {
+  const source = String(req.get('CF-Connecting-IP') || req.ip || 'unknown');
+  const session = await AdminAuthService.createSession(req.body?.username, req.body?.password, source);
+  if (!session) return res.status(401).json({ code: 401, message: '账号或密码错误' });
   res.cookie(AdminAuthService.COOKIE_NAME, session.sessionId, AdminAuthService.cookieOptions());
   return res.json({ code: 200, data: { csrfToken: session.csrfToken, expiresAt: session.expiresAt } });
 }

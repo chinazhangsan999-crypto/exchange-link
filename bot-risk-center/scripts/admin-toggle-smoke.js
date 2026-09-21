@@ -4,12 +4,13 @@ const crypto = require('crypto');
 const { sign } = require('../src/security/hmac');
 
 const baseUrl = String(process.env.RISK_SMOKE_BASE_URL || 'http://127.0.0.1:4100').replace(/\/$/, '');
-const adminToken = String(process.env.BOT_RISK_ADMIN_TOKEN || '');
+const adminUsername = String(process.env.RISK_SMOKE_ADMIN_USERNAME || 'admin');
+const adminPassword = String(process.env.RISK_SMOKE_ADMIN_PASSWORD || 'admin123');
 const clientId = String(process.env.RISK_SMOKE_CLIENT_ID || '');
 const clientSecret = String(process.env.RISK_SMOKE_CLIENT_SECRET || '');
 const siteKey = String(process.env.RISK_SMOKE_SITE_KEY || clientId);
 
-if (adminToken.length < 32 || !clientId || clientSecret.length < 32 || !siteKey) {
+if (!adminUsername || !adminPassword || !clientId || clientSecret.length < 32 || !siteKey) {
   throw new Error('缺少风险中心后台或客户端烟雾测试环境变量');
 }
 
@@ -47,7 +48,7 @@ async function main() {
   const login = await jsonRequest('/admin/api/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: adminToken })
+    body: JSON.stringify({ username: adminUsername, password: adminPassword })
   });
   if (!login.response.ok) throw new Error(`后台登录失败: ${login.response.status}`);
   const csrfToken = login.result?.data?.csrfToken;

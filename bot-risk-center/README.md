@@ -17,7 +17,7 @@
 ## 管理后台
 
 - 管理入口：`https://fengxian.changzhangsan.ccwu.cc/admin`
-- 使用 `BOT_RISK_ADMIN_TOKEN` 登录；令牌仅在登录请求中提交，成功后改用 HttpOnly、Secure、SameSite=Strict 会话。
+- 使用账号和密码登录；默认账号为 `admin`，默认密码为 `admin123`。生产环境可通过 `BOT_RISK_ADMIN_USERNAME` 与 `BOT_RISK_ADMIN_PASSWORD_HASH` 覆盖，服务端只保存 scrypt 哈希。登录成功后改用 HttpOnly、Secure、SameSite=Strict 会话。
 - 后台可实时开启或关闭每个 `site_key` 的风险中心对接。关闭后 `/v1/*` 返回 403，导航站继续独立运行。
 - `ops/Caddyfile` 只公开 `/admin*` 与 `/health`；HMAC 数据线路继续使用 Google Cloud 私网地址。
 
