@@ -123,8 +123,8 @@ if (BOT_RISK_CENTER_ENABLED) {
   }
 }
 
-if (BOT_GATE_MODE === 'enforce' && EDGE_ACCESS_SECRET.length < 32) {
-  throw new Error('BOT_GATE_MODE=enforce 时必须配置至少 32 字符的 EDGE_ACCESS_SECRET。');
+if (BOT_GATE_MODE !== 'off' && EDGE_ACCESS_SECRET.length < 32) {
+  throw new Error('BOT_GATE_MODE=observe 或 enforce 时必须配置至少 32 字符的 EDGE_ACCESS_SECRET。');
 }
 
 const ADMIN_ORIGIN_PATTERN = IS_PRODUCTION ? /^https:\/\/[^/]+$/i : /^https?:\/\/[^/]+$/i;
