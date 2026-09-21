@@ -3,10 +3,10 @@
 const crypto = require('crypto');
 const { LRUCache } = require('lru-cache');
 const {
-  BOT_GATE_MODE,
   EDGE_ACCESS_SECRET,
   BROWSER_ACCESS_TTL_MS
 } = require('../config/env');
+const BotRiskClient = require('./BotRiskClient');
 
 const COOKIE_NAME = 'browser_access_token';
 const CHALLENGE_TTL_MS = 30_000;
@@ -100,7 +100,7 @@ function verifyAccessToken(token, visitorId, userAgent, now = Date.now()) {
   }
 }
 
-function isEnforced() { return BOT_GATE_MODE === 'enforce'; }
+function isEnforced() { return BotRiskClient.isEnforced(); }
 function resetForTests() { challenges.clear(); }
 
 module.exports = {

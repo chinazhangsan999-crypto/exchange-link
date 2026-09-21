@@ -33,6 +33,7 @@ const CloudflareIpWhitelistService = require('../services/CloudflareIpWhitelistS
 const IntegrationState = require('../services/IntegrationStateService');
 const ControlCenterAgentService = require('../services/ControlCenterAgentService');
 const IpIntelligenceService = require('../services/IpIntelligenceService');
+const BotRiskClient = require('../services/BotRiskClient');
 const WebhookDeliveryModel = require('../models/WebhookDeliveryModel');
 const { sendAdminAlert, sendBarkTestAlert, providerForUrl } = require('../services/AlertService');
 const InspectionAlertService = require('../services/InspectionAlertService');
@@ -316,6 +317,31 @@ async function saveIpIntelligenceIntegration(req, res) {
   } catch (error) {
     console.error('保存 IP 情报接入失败：', error);
     return fail(res, '保存失败：请核对服务地址、Client ID 和 Client Secret', 400);
+  }
+}
+
+async function getBotRiskIntegration(req, res) {
+  try { return ok(res, BotRiskClient.status()); }
+  catch { return fail(res, '读取风险中心接入状态失败', 500); }
+}
+
+async function testBotRiskIntegration(req, res) {
+  try {
+    await BotRiskClient.testConfig(req.body || {});
+    return ok(res, { connected: true }, '风险中心连接与凭据验证成功');
+  } catch (error) {
+    console.error('验证风险中心接入失败：', error);
+    return fail(res, '风险中心地址或接入凭据验证失败', 400);
+  }
+}
+
+async function saveBotRiskIntegration(req, res) {
+  try {
+    const status = await BotRiskClient.saveAndReconfigure(req.body || {});
+    return ok(res, status, status.enabled ? '风险中心接入配置已保存并即时生效' : '风险中心接入已停用');
+  } catch (error) {
+    console.error('保存风险中心接入失败：', error);
+    return fail(res, '保存失败：请核对线路类型、服务地址、站点标识和接入凭据', 400);
   }
 }
 
@@ -2187,6 +2213,9 @@ module.exports = {
   getIpIntelligenceIntegration,
   testIpIntelligenceIntegration,
   saveIpIntelligenceIntegration,
+  getBotRiskIntegration,
+  testBotRiskIntegration,
+  saveBotRiskIntegration,
   getAnalyticsConfig,
   saveAnalyticsConfig,
   getSettings,

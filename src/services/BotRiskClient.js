@@ -2,16 +2,12 @@
 
 const crypto = require('crypto');
 const {
-  BOT_GATE_MODE,
-  BOT_RISK_CENTER_ENABLED,
-  BOT_RISK_CENTER_URL,
-  BOT_RISK_CLIENT_ID,
-  BOT_RISK_CLIENT_SECRET,
-  BOT_RISK_SITE_KEY,
   BOT_RISK_TIMEOUT_MS,
-  BOT_RISK_SYNC_INTERVAL_MS
+  BOT_RISK_SYNC_INTERVAL_MS,
+  EDGE_ACCESS_SECRET
 } = require('../config/env');
 const LocalRiskDecisionCache = require('./LocalRiskDecisionCache');
+const CredentialStore = require('./IntegrationCredentialStore');
 
 const MAX_QUEUE_SIZE = 10000;
 const BATCH_SIZE = 100;
@@ -22,13 +18,54 @@ let flushing = false;
 let syncing = false;
 let stopped = true;
 let integrationDisabled = false;
+let runtimeConfig = CredentialStore.botRiskConfig();
+let lastConnectedAt = null;
+let lastError = '';
+
+function isPrivateHostname(hostname) {
+  return hostname === 'localhost'
+    || hostname === '127.0.0.1'
+    || /^10\./.test(hostname)
+    || /^192\.168\./.test(hostname)
+    || /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
+}
+
+function normalizeConfig(input = {}, current = runtimeConfig) {
+  const enabledValue = input.enabled === undefined ? current.enabled : input.enabled;
+  const enabled = enabledValue === true || ['1', 'true', 'on', 'yes'].includes(String(enabledValue).toLowerCase());
+  const connectionType = String(input.connectionType || input.connection_type || current.connectionType || 'https').trim().toLowerCase();
+  const baseUrl = String(input.baseUrl || input.base_url || current.baseUrl || '').trim().replace(/\/$/, '');
+  const clientId = String(input.clientId || input.client_id || current.clientId || '').trim();
+  const secret = String(input.secret || current.secret || '').trim();
+  const siteKey = String(input.siteKey || input.site_key || current.siteKey || '').trim();
+  const mode = String(input.mode || current.mode || 'observe').trim().toLowerCase();
+  if (!['internal', 'https'].includes(connectionType)) throw new Error('连接方式只能是内网或 HTTPS 外网');
+  if (!['observe', 'enforce'].includes(mode)) throw new Error('运行模式只能是观察或执行');
+  if (mode === 'enforce' && EDGE_ACCESS_SECRET.length < 32) {
+    throw new Error('执行模式需要先在服务器配置至少 32 位 EDGE_ACCESS_SECRET');
+  }
+  let parsed;
+  try { parsed = new URL(baseUrl); } catch { throw new Error('风险中心地址格式不正确'); }
+  if (parsed.username || parsed.password || parsed.search || parsed.hash || parsed.pathname !== '/') {
+    throw new Error('风险中心地址必须是纯 Origin，不能包含路径、账号或查询参数');
+  }
+  if (connectionType === 'https' && parsed.protocol !== 'https:') throw new Error('HTTPS 外网连接必须使用 https:// 地址');
+  if (connectionType === 'internal'
+    && !(parsed.protocol === 'https:' || (parsed.protocol === 'http:' && isPrivateHostname(parsed.hostname)))) {
+    throw new Error('内网 HTTP 地址必须使用 localhost、127.0.0.1 或 RFC1918 私网 IP');
+  }
+  if (!/^[A-Za-z0-9_-]{3,64}$/.test(clientId)) throw new Error('Client ID 格式不正确');
+  if (!/^[A-Za-z0-9_-]{3,64}$/.test(siteKey)) throw new Error('站点标识格式不正确');
+  if (secret.length < 32 || secret.length > 512) throw new Error('Client Secret 长度必须为 32–512 位');
+  return { enabled, connectionType, baseUrl, clientId, secret, siteKey, mode };
+}
 
 function enabled() {
-  return BOT_RISK_CENTER_ENABLED && BOT_GATE_MODE !== 'off';
+  return runtimeConfig.enabled === true;
 }
 
 function subjectHash(visitorId) {
-  return crypto.createHmac('sha256', BOT_RISK_CLIENT_SECRET || 'local-disabled-risk-client')
+  return crypto.createHmac('sha256', runtimeConfig.secret || 'local-disabled-risk-client')
     .update(String(visitorId || ''))
     .digest('hex');
 }
@@ -43,24 +80,24 @@ function canonical(method, pathAndQuery, timestamp, nonce, rawBody) {
   ].join('\n');
 }
 
-async function signedRequest(method, pathAndQuery, body) {
+async function signedRequest(method, pathAndQuery, body, config = runtimeConfig) {
   const rawBody = body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
   const timestamp = String(Date.now());
   const nonce = crypto.randomBytes(18).toString('base64url');
-  const signature = crypto.createHmac('sha256', BOT_RISK_CLIENT_SECRET)
+  const signature = crypto.createHmac('sha256', config.secret)
     .update(canonical(method, pathAndQuery, timestamp, nonce, rawBody))
     .digest('hex');
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), BOT_RISK_TIMEOUT_MS);
   try {
-    const response = await fetch(`${BOT_RISK_CENTER_URL}${pathAndQuery}`, {
+    const response = await fetch(`${config.baseUrl}${pathAndQuery}`, {
       method,
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
         ...(rawBody.length ? { 'Content-Type': 'application/json' } : {}),
-        'X-Risk-Client': BOT_RISK_CLIENT_ID,
-        'X-Risk-Site': BOT_RISK_SITE_KEY,
+        'X-Risk-Client': config.clientId,
+        'X-Risk-Site': config.siteKey,
         'X-Risk-Timestamp': timestamp,
         'X-Risk-Nonce': nonce,
         'X-Risk-Signature': signature
@@ -73,6 +110,8 @@ async function signedRequest(method, pathAndQuery, body) {
       throw error;
     }
     integrationDisabled = false;
+    lastConnectedAt = new Date().toISOString();
+    lastError = '';
     return response.json();
   } finally {
     clearTimeout(timeout);
@@ -123,6 +162,7 @@ async function syncDecisions() {
     const result = await signedRequest('GET', `/v1/decisions/delta?cursor=${cursor}&limit=1000`);
     return { applied: LocalRiskDecisionCache.setMany(result?.data?.items || []) };
   } catch (error) {
+    lastError = error.name === 'AbortError' ? '风险中心连接超时' : String(error.message || error);
     if (error.status === 403) {
       integrationDisabled = true;
       LocalRiskDecisionCache.clear();
@@ -139,7 +179,7 @@ function getDecision(visitorId) {
   const hash = subjectHash(visitorId);
   const decision = LocalRiskDecisionCache.get(hash);
   if (!decision) return null;
-  return { ...decision, subjectHash: hash, enforce: BOT_GATE_MODE === 'enforce' };
+  return { ...decision, subjectHash: hash, enforce: runtimeConfig.mode === 'enforce' };
 }
 
 function markChallengePassed(visitorId) {
@@ -163,6 +203,26 @@ function start() {
   void syncDecisions();
 }
 
+async function testConfig(input) {
+  const config = normalizeConfig(input);
+  await signedRequest('GET', '/v1/decisions/delta?cursor=0&limit=1', undefined, config);
+  return { connected: true, config };
+}
+
+async function saveAndReconfigure(input) {
+  const config = normalizeConfig(input);
+  if (config.enabled) await signedRequest('GET', '/v1/decisions/delta?cursor=0&limit=1', undefined, config);
+  await CredentialStore.saveBotRisk(config);
+  if (!stopped) await stop();
+  runtimeConfig = config;
+  queue = [];
+  integrationDisabled = false;
+  lastError = '';
+  LocalRiskDecisionCache.clear();
+  if (config.enabled) start();
+  return status();
+}
+
 async function stop() {
   stopped = true;
   if (flushTimer) clearInterval(flushTimer);
@@ -175,12 +235,21 @@ async function stop() {
 function status() {
   return {
     enabled: enabled(),
-    mode: BOT_GATE_MODE,
+    mode: runtimeConfig.mode,
+    connectionType: runtimeConfig.connectionType,
+    baseUrl: runtimeConfig.baseUrl,
+    clientId: runtimeConfig.clientId,
+    siteKey: runtimeConfig.siteKey,
+    secretConfigured: Boolean(runtimeConfig.secret),
     integrationDisabled,
     queued: queue.length,
-    cursor: LocalRiskDecisionCache.getCursor()
+    cursor: LocalRiskDecisionCache.getCursor(),
+    lastConnectedAt,
+    lastError: lastError ? '风险中心暂时不可用' : ''
   };
 }
+
+function isEnforced() { return enabled() && runtimeConfig.mode === 'enforce'; }
 
 module.exports = {
   subjectHash,
@@ -190,7 +259,11 @@ module.exports = {
   getDecision,
   markChallengePassed,
   hasChallengeBypass,
+  testConfig,
+  saveAndReconfigure,
+  isEnforced,
   start,
   stop,
-  status
+  status,
+  normalizeConfig
 };

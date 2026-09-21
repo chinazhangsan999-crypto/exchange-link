@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS manual_overrides (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE(site_key, visitor_hash)
 );
+ALTER TABLE manual_overrides ALTER COLUMN expires_at DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_manual_overrides_active
   ON manual_overrides(site_key, visitor_hash, expires_at DESC);
 
@@ -161,5 +162,6 @@ CREATE TABLE IF NOT EXISTS signal_rules (
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE signal_rules ALTER COLUMN duration_minutes DROP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_signal_rules_match
   ON signal_rules(site_key, signal, enabled, expires_at);

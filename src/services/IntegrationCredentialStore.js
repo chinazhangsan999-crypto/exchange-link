@@ -12,7 +12,15 @@ const {
   IP_INTELLIGENCE_BASE_URL,
   IP_INTELLIGENCE_CLIENT_ID,
   IP_INTELLIGENCE_CLIENT_SECRET,
-  IP_INTELLIGENCE_ENABLED
+  IP_INTELLIGENCE_ENABLED,
+  BOT_RISK_CREDENTIAL_FILE,
+  BOT_RISK_CENTER_URL,
+  BOT_RISK_CLIENT_ID,
+  BOT_RISK_CLIENT_SECRET,
+  BOT_RISK_SITE_KEY,
+  BOT_RISK_CENTER_ENABLED,
+  BOT_RISK_ALLOW_PRIVATE_HTTP,
+  BOT_GATE_MODE
 } = require('../config/env');
 
 function resolveCredentialPath(configuredPath, fallbackName) {
@@ -24,6 +32,7 @@ function resolveCredentialPath(configuredPath, fallbackName) {
 const paths = {
   controlCenter: resolveCredentialPath(CONTROL_CENTER_CREDENTIAL_FILE, 'control-center-site.json'),
   ipIntelligence: resolveCredentialPath(IP_INTELLIGENCE_CREDENTIAL_FILE, 'ip-intelligence.json'),
+  botRisk: resolveCredentialPath(BOT_RISK_CREDENTIAL_FILE, 'bot-risk-center.json'),
   // Cloudflare API Token 仅用于把后台维护的前端 Origin 同步到 API Edge Worker。
   // 与其他外部接入凭据一致，生产环境保存在权限 600 的独立文件中，而非 SQLite。
   cloudflareApiEdge: resolveCredentialPath('', 'cloudflare-api-edge.json')
@@ -63,6 +72,20 @@ function ipIntelligenceConfig() {
   };
 }
 
+function botRiskConfig() {
+  const stored = readJson(paths.botRisk) || {};
+  return {
+    enabled: stored.enabled === undefined ? BOT_RISK_CENTER_ENABLED : stored.enabled === true,
+    connectionType: String(stored.connection_type || stored.connectionType
+      || (BOT_RISK_ALLOW_PRIVATE_HTTP ? 'internal' : 'https')).trim().toLowerCase(),
+    baseUrl: String(stored.base_url || stored.baseUrl || BOT_RISK_CENTER_URL || '').trim().replace(/\/$/, ''),
+    clientId: String(stored.client_id || stored.clientId || BOT_RISK_CLIENT_ID || '').trim(),
+    secret: String(stored.secret || BOT_RISK_CLIENT_SECRET || '').trim(),
+    siteKey: String(stored.site_key || stored.siteKey || BOT_RISK_SITE_KEY || 'webring-main').trim(),
+    mode: String(stored.mode || BOT_GATE_MODE || 'off').trim().toLowerCase()
+  };
+}
+
 function cloudflareApiEdgeConfig() {
   const stored = readJson(paths.cloudflareApiEdge) || {};
   return {
@@ -99,6 +122,18 @@ async function saveIpIntelligence(config) {
     base_url: config.baseUrl,
     client_id: config.clientId,
     secret: config.secret
+  });
+}
+
+async function saveBotRisk(config) {
+  await writeJsonAtomic(paths.botRisk, {
+    enabled: config.enabled === true,
+    connection_type: config.connectionType,
+    base_url: config.baseUrl,
+    client_id: config.clientId,
+    secret: config.secret,
+    site_key: config.siteKey,
+    mode: config.mode
   });
 }
 
@@ -155,11 +190,13 @@ module.exports = {
   paths,
   controlCenterConfig,
   ipIntelligenceConfig,
+  botRiskConfig,
   cloudflareApiEdgeConfig,
   cloudflareBootstrapConfig,
   cloudflarePublicFrontendProfiles,
   saveControlCenter,
   saveIpIntelligence,
+  saveBotRisk,
   saveCloudflareApiEdge,
   saveCloudflareBootstrap,
   saveCloudflareCentral,

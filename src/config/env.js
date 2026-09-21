@@ -92,6 +92,7 @@ const BOT_RISK_CENTER_URL = String(process.env.BOT_RISK_CENTER_URL || '').trim()
 const BOT_RISK_CLIENT_ID = String(process.env.BOT_RISK_CLIENT_ID || '').trim();
 const BOT_RISK_CLIENT_SECRET = String(process.env.BOT_RISK_CLIENT_SECRET || '').trim();
 const BOT_RISK_SITE_KEY = String(process.env.BOT_RISK_SITE_KEY || 'webring-main').trim();
+const BOT_RISK_CREDENTIAL_FILE = String(process.env.BOT_RISK_CREDENTIAL_FILE || '').trim();
 const BOT_RISK_CENTER_ENABLED = process.env.BOT_RISK_CENTER_ENABLED === '1';
 const BOT_RISK_ALLOW_PRIVATE_HTTP = process.env.BOT_RISK_ALLOW_PRIVATE_HTTP === '1';
 const BOT_RISK_TIMEOUT_MS = Math.max(100, Math.min(5_000,
@@ -189,6 +190,7 @@ module.exports = {
   BOT_RISK_CLIENT_ID,
   BOT_RISK_CLIENT_SECRET,
   BOT_RISK_SITE_KEY,
+  BOT_RISK_CREDENTIAL_FILE,
   BOT_RISK_TIMEOUT_MS,
   BOT_RISK_SYNC_INTERVAL_MS,
   EDGE_ACCESS_SECRET,

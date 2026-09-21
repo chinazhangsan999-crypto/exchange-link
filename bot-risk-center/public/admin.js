@@ -2,6 +2,16 @@
 (() => {
   const $ = id => document.getElementById(id);
   const state = { csrf: '', sites: [], suspectPage: 1, suspectTotal: 0, currentSuspect: null, activeTab: 'connections' };
+  const signalLabels = Object.freeze({
+    cloudflare_confirmed_bot: 'Cloudflare 已确认机器人', verified_search_bot: '已验证搜索引擎蜘蛛',
+    known_ai_crawler: '已知 AI 爬虫', token_replay: '读取凭证重放', sequential_detail_scan: '连续枚举详情页',
+    high_concurrency: '异常并发读取', botd_detected: '浏览器自动化特征', webdriver_detected: 'WebDriver 特征',
+    browser_automation_confirmed: '多项自动化证据确认', script_user_agent: '脚本型 User-Agent',
+    trapdoor_hit: '访问隐藏探针', repeated_trapdoor: '重复访问隐藏探针', challenge_failed: '浏览器验证失败',
+    missing_fetch_metadata: '缺少浏览器请求元数据', valid_browser_access: '持有有效浏览器通行证',
+    valid_read_token: '持有有效读取凭证', challenge_passed: '已通过风险验证',
+    browser_challenge_passed: '已通过浏览器挑战', normal_dwell: '正常页面停留', outbound_interaction: '存在真实出站交互'
+  });
   let toastTimer;
 
   async function request(path, options = {}) {
@@ -20,6 +30,22 @@
   function emptyRow(body, text, columns) { body.replaceChildren(); const tr = node('tr'); const td = node('td', text, 'empty-cell'); td.colSpan = columns; tr.append(td); body.append(tr); }
   function chip(text, on = true) { return node('span', text, `status-chip ${on ? 'on' : 'off'}`); }
   function actionButton(text, action, extra = '', id = '') { const button = node('button', text, `button small ${extra || 'secondary'}`); button.type = 'button'; button.dataset.action = action; if (id) button.dataset.id = id; return button; }
+  function signalLabel(signal) { return signalLabels[signal] || signal; }
+  function reasonLabel(reason) {
+    const value = String(reason || '');
+    if (value.startsWith('manual_override:')) return `人工处置：${value.slice(16) || '管理员指定'}`;
+    if (value.startsWith('manual_rule:')) return `命中人工规则 #${value.slice(12)}`;
+    return signalLabel(value);
+  }
+  function renderSignalChips(signals = []) {
+    const box = node('div', '', 'signal-list');
+    for (const item of signals.slice(0, 4)) {
+      const score = Number(item.scoreImpact) || 0;
+      box.append(node('span', `${signalLabel(item.signal)} ×${item.count}${score ? ` (${score > 0 ? '+' : ''}${score})` : ''}`, `signal-chip ${score < 0 ? 'positive' : ''}`));
+    }
+    if (signals.length > 4) box.append(node('span', `另有 ${signals.length - 4} 项`, 'signal-chip'));
+    return box;
+  }
 
   function setAuthenticated(value) { $('login-view').hidden = value; $('dashboard-view').hidden = !value; }
   function fillSiteSelects() {
@@ -86,20 +112,21 @@
     $('risk-visitors').textContent = summary.data.visitors24h; $('risk-suspects').textContent = summary.data.suspects24h; $('risk-challenged').textContent = summary.data.challenged24h; $('risk-blocked').textContent = summary.data.blocked24h;
     $('signal-summary').replaceChildren(...(summary.data.signals || []).map(item => node('span', `${item.signal} · ${item.visitors} 人 / ${item.count} 次`, 'signal-chip')));
     const body = $('suspects-body'); body.replaceChildren(); const data = suspects.data; state.suspectTotal = data.total;
-    if (!data.items.length) emptyRow(body, '当前筛选条件下没有疑似访客。', 6);
-    for (const item of data.items) { const tr = node('tr'); tr.dataset.siteKey = item.siteKey; tr.dataset.visitorHash = item.visitorHash; const who = node('td'); who.append(node('strong', item.siteName), node('span', `${item.visitorHash.slice(0, 12)}…`, 'site-key')); const decision = node('td'); decision.append(chip(item.manualAction ? `人工：${item.manualAction}` : item.decision, !['deny', 'strong_challenge'].includes(item.manualAction || item.decision))); const action = node('td', '', 'action-column'); action.append(actionButton('查看证据 / 处置', 'view-suspect')); tr.append(who, node('td', String(item.score), 'numeric'), decision, node('td', String(item.eventCount), 'numeric'), node('td', formatDate(item.lastSeen)), action); body.append(tr); }
+    if (!data.items.length) emptyRow(body, '当前筛选条件下没有疑似访客。', 8);
+    for (const item of data.items) { const tr = node('tr'); tr.dataset.siteKey = item.siteKey; tr.dataset.visitorHash = item.visitorHash; const who = node('td'); who.append(node('strong', item.siteName), node('span', `${item.visitorHash.slice(0, 12)}…`, 'site-key')); const decision = node('td'); decision.append(chip(item.manualAction ? `人工：${item.manualAction}` : item.decision, !['deny', 'strong_challenge'].includes(item.manualAction || item.decision))); const reasons = node('td', '', 'reason-cell'); reasons.append(...(item.reasons || []).slice(0, 3).map(reason => node('span', reasonLabel(reason)))); const signalItems = (item.signals || []).length ? item.signals : (item.reasons || []).filter(reason => !String(reason).startsWith('manual_')).map(signal => ({ signal, count: 1, scoreImpact: 0 })); const signals = node('td'); signals.append(renderSignalChips(signalItems)); const action = node('td', '', 'action-column'); action.append(actionButton('查看证据 / 处置', 'view-suspect')); tr.append(who, node('td', String(item.score), 'numeric'), decision, reasons, signals, node('td', String(item.eventCount), 'numeric'), node('td', formatDate(item.lastSeen)), action); body.append(tr); }
     const pages = Math.max(1, Math.ceil(data.total / data.limit)); $('suspect-page').textContent = `第 ${data.page} / ${pages} 页 · 共 ${data.total} 人`; $('suspect-prev').disabled = data.page <= 1; $('suspect-next').disabled = data.page >= pages;
   }
 
   async function openSuspect(siteKey, visitorHash) {
     const result = await request(`/admin/api/risk/suspects/${encodeURIComponent(siteKey)}/${visitorHash}`); const data = result.data; state.currentSuspect = { siteKey, visitorHash };
     $('suspect-title').textContent = `${data.siteName} · ${visitorHash.slice(0, 12)}…`;
-    $('suspect-overview').replaceChildren(...[['风险分', data.score], ['当前结论', data.decision], ['触发原因', (data.reasons || []).join('、') || '无']].map(([label, value]) => { const box = node('article'); box.append(node('span', label), node('strong', String(value))); return box; }));
+    $('suspect-overview').replaceChildren(...[['风险分', data.score], ['当前结论', data.decision], ['详细原因', (data.reasons || []).map(reasonLabel).join('；') || '无']].map(([label, value]) => { const box = node('article'); box.append(node('span', label), node('strong', String(value))); return box; }));
+    $('suspect-signal-details').replaceChildren(...(data.signals || []).map(signal => { const box = node('article'); const score = Number(signal.scoreImpact) || 0; box.append(node('strong', signalLabel(signal.signal)), node('span', `${signal.count} 次 · 分值影响 ${score > 0 ? '+' : ''}${score} · 最近 ${formatDate(signal.lastSeen)}`)); return box; }));
     $('suspect-events').replaceChildren(...data.events.map(event => { const item = node('article', '', 'event-item'); item.append(node('code', event.eventType), node('span', ` · ${formatDate(event.occurredAt)}`), node('pre', JSON.stringify(event.evidence || {}, null, 2))); return item; }));
-    $('suspect-reason').value = ''; $('suspect-dialog').showModal();
+    $('suspect-reason').value = ''; $('suspect-permanent').checked = false; $('suspect-duration').disabled = false; $('suspect-dialog').showModal();
   }
 
-  async function loadRules() { const result = await request('/admin/api/risk/rules'); const body = $('rules-body'); body.replaceChildren(); if (!result.data.length) return emptyRow(body, '尚未配置人工信号规则。', 6); for (const rule of result.data) { const tr = node('tr'); tr.dataset.ruleId = rule.id; const actions = node('td', '', 'action-column'); const group = node('div', '', 'inline-actions'); group.append(actionButton(rule.enabled ? '停用' : '启用', 'toggle-rule', rule.enabled ? 'danger' : 'success'), actionButton('删除', 'delete-rule', 'danger')); actions.append(group); tr.append(node('td', rule.siteName), node('td', rule.signal), node('td', rule.action), node('td', `${rule.durationMinutes} 分钟`), node('td', rule.enabled ? '已启用' : '已停用'), actions); body.append(tr); } }
+  async function loadRules() { const result = await request('/admin/api/risk/rules'); const body = $('rules-body'); body.replaceChildren(); if (!result.data.length) return emptyRow(body, '尚未配置人工信号规则。', 6); for (const rule of result.data) { const tr = node('tr'); tr.dataset.ruleId = rule.id; const actions = node('td', '', 'action-column'); const group = node('div', '', 'inline-actions'); group.append(actionButton(rule.enabled ? '停用' : '启用', 'toggle-rule', rule.enabled ? 'danger' : 'success'), actionButton('删除', 'delete-rule', 'danger')); actions.append(group); tr.append(node('td', rule.scope === 'all' ? '任意站点' : rule.siteName), node('td', `${signalLabel(rule.signal)}\n${rule.signal}`), node('td', rule.action), node('td', rule.permanent ? '永久' : `${rule.durationMinutes} 分钟`), node('td', rule.enabled ? '已启用' : '已停用'), actions); body.append(tr); } }
   async function loadAudits() { const result = await request('/admin/api/audits?limit=100'); const body = $('audits-body'); body.replaceChildren(); if (!result.data.length) return emptyRow(body, '尚无管理操作记录。', 5); for (const item of result.data) { const tr = node('tr'); tr.append(node('td', formatDate(item.createdAt)), node('td', item.action), node('td', item.target), node('td', item.actor), node('td', JSON.stringify(item.details))); body.append(tr); } }
   async function loadActiveTab() { if (state.activeTab === 'suspects') await loadSuspects(); else if (state.activeTab === 'rules') await loadRules(); else if (state.activeTab === 'audits') await loadAudits(); }
   async function loadDashboard() { await loadOverviewAndSites(); await loadActiveTab(); }
@@ -117,11 +144,14 @@
 
   $('suspect-site-filter').addEventListener('change', () => { state.suspectPage = 1; loadSuspects().catch(error => toast(error.message)); }); $('suspect-score-filter').addEventListener('change', () => { state.suspectPage = 1; loadSuspects().catch(error => toast(error.message)); }); $('suspect-prev').addEventListener('click', () => { state.suspectPage--; loadSuspects().catch(error => toast(error.message)); }); $('suspect-next').addEventListener('click', () => { state.suspectPage++; loadSuspects().catch(error => toast(error.message)); });
   $('suspects-body').addEventListener('click', event => { const button = event.target.closest('[data-action="view-suspect"]'); const row = button?.closest('tr'); if (row) openSuspect(row.dataset.siteKey, row.dataset.visitorHash).catch(error => toast(error.message)); });
-  $('suspect-action-form').addEventListener('submit', async event => { event.preventDefault(); if (!state.currentSuspect) return; try { const { siteKey, visitorHash } = state.currentSuspect; await request(`/admin/api/risk/suspects/${encodeURIComponent(siteKey)}/${visitorHash}/action`, { method: 'POST', body: JSON.stringify({ action: $('suspect-action').value, durationMinutes: Number($('suspect-duration').value), reason: $('suspect-reason').value.trim() }) }); $('suspect-dialog').close(); toast('人工处置已生效'); await loadSuspects(); } catch (error) { toast(error.message); } });
+  $('suspect-permanent').addEventListener('change', event => { $('suspect-duration').disabled = event.currentTarget.checked; });
+  $('suspect-action-form').addEventListener('submit', async event => { event.preventDefault(); if (!state.currentSuspect) return; try { const { siteKey, visitorHash } = state.currentSuspect; await request(`/admin/api/risk/suspects/${encodeURIComponent(siteKey)}/${visitorHash}/action`, { method: 'POST', body: JSON.stringify({ action: $('suspect-action').value, durationMinutes: Number($('suspect-duration').value), permanent: $('suspect-permanent').checked, reason: $('suspect-reason').value.trim() }) }); $('suspect-dialog').close(); toast($('suspect-permanent').checked ? '永久人工处置已生效' : '人工处置已生效'); await loadSuspects(); } catch (error) { toast(error.message); } });
   $('clear-suspect-action').addEventListener('click', async () => { if (!state.currentSuspect) return; const { siteKey, visitorHash } = state.currentSuspect; try { await request(`/admin/api/risk/suspects/${encodeURIComponent(siteKey)}/${visitorHash}/action`, { method: 'DELETE' }); $('suspect-dialog').close(); toast('人工处置已解除'); await loadSuspects(); } catch (error) { toast(error.message); } });
 
-  $('preview-rule').addEventListener('click', async () => { try { const query = new URLSearchParams({ siteKey: $('rule-site').value, signal: $('rule-signal').value.trim() }); const result = await request(`/admin/api/risk/rules/preview?${query}`); $('rule-preview-result').textContent = `近 24 小时将影响 ${result.data.visitors24h} 个访客、${result.data.events24h} 次事件。`; } catch (error) { toast(error.message); } });
-  $('rule-form').addEventListener('submit', async event => { event.preventDefault(); try { await request('/admin/api/risk/rules', { method: 'POST', body: JSON.stringify({ siteKey: $('rule-site').value, signal: $('rule-signal').value.trim(), action: $('rule-action').value, durationMinutes: Number($('rule-duration').value), reason: $('rule-reason').value.trim() }) }); toast('规则已创建'); $('rule-signal').value = ''; $('rule-reason').value = ''; await loadRules(); } catch (error) { toast(error.message); } });
+  $('rule-scope').addEventListener('change', event => { const anySite = event.currentTarget.value === 'all'; $('rule-site').disabled = anySite; $('rule-site').required = !anySite; });
+  $('rule-permanent').addEventListener('change', event => { $('rule-duration').disabled = event.currentTarget.checked; $('rule-duration').required = !event.currentTarget.checked; });
+  $('preview-rule').addEventListener('click', async () => { try { const siteKey = $('rule-scope').value === 'all' ? '*' : $('rule-site').value; const query = new URLSearchParams({ siteKey, signal: $('rule-signal').value.trim() }); const result = await request(`/admin/api/risk/rules/preview?${query}`); $('rule-preview-result').textContent = `近 24 小时将影响 ${result.data.visitors24h} 个访客、${result.data.events24h} 次事件。`; } catch (error) { toast(error.message); } });
+  $('rule-form').addEventListener('submit', async event => { event.preventDefault(); try { const siteKey = $('rule-scope').value === 'all' ? '*' : $('rule-site').value; await request('/admin/api/risk/rules', { method: 'POST', body: JSON.stringify({ siteKey, signal: $('rule-signal').value.trim(), action: $('rule-action').value, permanent: $('rule-permanent').checked, durationMinutes: $('rule-permanent').checked ? null : Number($('rule-duration').value), reason: $('rule-reason').value.trim() }) }); toast('规则已创建'); $('rule-signal').value = ''; $('rule-reason').value = ''; $('rule-permanent').checked = false; $('rule-duration').disabled = false; $('rule-duration').required = true; await loadRules(); } catch (error) { toast(error.message); } });
   $('rules-body').addEventListener('click', async event => { const button = event.target.closest('[data-action]'); const row = button?.closest('tr'); if (!row) return; try { if (button.dataset.action === 'delete-rule') { if (!confirm('确定删除该规则吗？')) return; await request(`/admin/api/risk/rules/${row.dataset.ruleId}`, { method: 'DELETE' }); } else { const enabled = row.children[4].textContent !== '已启用'; await request(`/admin/api/risk/rules/${row.dataset.ruleId}/status`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } await loadRules(); toast('规则已更新'); } catch (error) { toast(error.message); } });
 
   request('/admin/api/session').then(result => { state.csrf = result.data.csrfToken; setAuthenticated(true); return loadDashboard(); }).catch(() => setAuthenticated(false));

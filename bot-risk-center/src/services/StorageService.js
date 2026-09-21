@@ -15,6 +15,7 @@ const {
 } = require('../config/env');
 const DecisionService = require('./DecisionService');
 const CredentialService = require('./CredentialService');
+const { SIGNAL_WEIGHTS } = require('./RiskScoringService');
 
 let pool = null;
 let redis = null;
@@ -101,13 +102,16 @@ async function applyManualControls(siteKey, events, decisions) {
     pool.query(
       `SELECT visitor_hash, action, reason, expires_at
          FROM manual_overrides
-        WHERE site_key = $1 AND visitor_hash = ANY($2::text[]) AND expires_at > NOW()`,
+        WHERE site_key = $1 AND visitor_hash = ANY($2::text[])
+          AND (expires_at IS NULL OR expires_at > NOW())`,
       [siteKey, visitors]
     ),
     pool.query(
       `SELECT id, signal, action, reason, duration_minutes, expires_at
          FROM signal_rules
-        WHERE site_key = $1 AND enabled = TRUE AND (expires_at IS NULL OR expires_at > NOW())`,
+        WHERE (site_key = $1 OR site_key = '*') AND enabled = TRUE
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY CASE WHEN site_key = $1 THEN 0 ELSE 1 END, created_at DESC`,
       [siteKey]
     )
   ]);
@@ -127,7 +131,9 @@ async function applyManualControls(siteKey, events, decisions) {
         score: manual.action === 'allow' ? 0 : scoreForAction(manual.action, item.score),
         decision: manual.action,
         reasons: [`manual_override:${manual.reason || manual.action}`],
-        expiresAt: Math.min(item.expiresAt, new Date(manual.expires_at).getTime())
+        expiresAt: manual.expires_at
+          ? Math.min(item.expiresAt, new Date(manual.expires_at).getTime())
+          : item.expiresAt
       };
     }
     const signals = signalsByVisitor.get(item.subjectHash) || new Set();
@@ -135,7 +141,9 @@ async function applyManualControls(siteKey, events, decisions) {
     if (!matched) return item;
     const ruleExpiresAt = matched.expires_at
       ? new Date(matched.expires_at).getTime()
-      : now + Math.max(1, Number(matched.duration_minutes) || 60) * 60_000;
+      : matched.duration_minutes == null
+        ? now + (10 * 365 * 24 * 60 * 60 * 1000)
+        : now + Math.max(1, Number(matched.duration_minutes) || 60) * 60_000;
     return {
       ...item,
       score: matched.action === 'allow' ? 0 : scoreForAction(matched.action, item.score),
@@ -606,13 +614,23 @@ async function listSuspects({ siteKey = '', page = 1, limit = 50, minScore = 25 
        FROM latest l
        JOIN sites s ON s.site_key = l.site_key
        LEFT JOIN LATERAL (
-         SELECT COUNT(*)::int AS event_count, MIN(occurred_at) AS first_seen, MAX(occurred_at) AS last_seen
-           FROM risk_events re
-          WHERE re.site_key = l.site_key AND re.visitor_hash = l.subject_hash
-            AND re.created_at >= NOW() - INTERVAL '24 hours'
+         SELECT COALESCE(SUM(g.signal_count), 0)::int AS event_count,
+                MIN(g.first_seen) AS first_seen, MAX(g.last_seen) AS last_seen,
+                COALESCE(jsonb_agg(jsonb_build_object(
+                  'signal', g.event_type, 'count', g.signal_count,
+                  'firstSeen', g.first_seen, 'lastSeen', g.last_seen
+                ) ORDER BY g.signal_count DESC), '[]'::jsonb) AS signal_details
+           FROM (
+             SELECT re.event_type, COUNT(*)::int AS signal_count,
+                    MIN(re.occurred_at) AS first_seen, MAX(re.occurred_at) AS last_seen
+               FROM risk_events re
+              WHERE re.site_key = l.site_key AND re.visitor_hash = l.subject_hash
+                AND re.created_at >= NOW() - INTERVAL '24 hours'
+              GROUP BY re.event_type
+           ) g
        ) e ON TRUE
        LEFT JOIN manual_overrides o ON o.site_key = l.site_key AND o.visitor_hash = l.subject_hash
-                                    AND o.expires_at > NOW()
+                                    AND (o.expires_at IS NULL OR o.expires_at > NOW())
       ORDER BY l.score DESC, l.created_at DESC
       OFFSET $${offsetParam} LIMIT $${limitParam}`,
     [...params, (safePage - 1) * safeLimit, safeLimit]
@@ -628,6 +646,13 @@ async function listSuspects({ siteKey = '', page = 1, limit = 50, minScore = 25 
       score: Number(row.score),
       decision: row.decision,
       reasons: row.reasons || [],
+      signals: (row.signal_details || []).map(detail => ({
+        signal: detail.signal,
+        count: Number(detail.count) || 0,
+        scoreImpact: Number(SIGNAL_WEIGHTS[detail.signal] || 0),
+        firstSeen: detail.firstSeen,
+        lastSeen: detail.lastSeen
+      })),
       eventCount: Number(row.event_count) || 0,
       firstSeen: row.first_seen,
       lastSeen: row.last_seen,
@@ -658,6 +683,20 @@ async function getSuspectDetail(siteKey, visitorHash) {
     )
   ]);
   if (!site.rows[0] || !decision.rows[0]) return null;
+  const groupedSignals = new Map();
+  for (const row of events.rows) {
+    const current = groupedSignals.get(row.event_type) || {
+      signal: row.event_type,
+      count: 0,
+      scoreImpact: Number(SIGNAL_WEIGHTS[row.event_type] || 0),
+      firstSeen: row.occurred_at,
+      lastSeen: row.occurred_at
+    };
+    current.count += 1;
+    if (new Date(row.occurred_at) < new Date(current.firstSeen)) current.firstSeen = row.occurred_at;
+    if (new Date(row.occurred_at) > new Date(current.lastSeen)) current.lastSeen = row.occurred_at;
+    groupedSignals.set(row.event_type, current);
+  }
   return {
     siteKey,
     siteName: site.rows[0].name,
@@ -665,6 +704,7 @@ async function getSuspectDetail(siteKey, visitorHash) {
     score: Number(decision.rows[0].score),
     decision: decision.rows[0].decision,
     reasons: decision.rows[0].reasons || [],
+    signals: [...groupedSignals.values()].sort((a, b) => Math.abs(b.scoreImpact) - Math.abs(a.scoreImpact) || b.count - a.count),
     decisionAt: decision.rows[0].created_at,
     expiresAt: decision.rows[0].expires_at,
     events: events.rows.map(row => ({
@@ -676,7 +716,7 @@ async function getSuspectDetail(siteKey, visitorHash) {
   };
 }
 
-async function applyManualDecision(siteKey, visitorHash, action, durationMinutes, reason, actor = 'risk-admin') {
+async function applyManualDecision(siteKey, visitorHash, action, durationMinutes, reason, actor = 'risk-admin', permanent = false) {
   if (!pool || !ACTIONS.has(action)) return null;
   const minutes = Math.max(1, Math.min(43_200, Number(durationMinutes) || 60));
   const client = await pool.connect();
@@ -686,15 +726,18 @@ async function applyManualDecision(siteKey, visitorHash, action, durationMinutes
     await client.query(
       `INSERT INTO manual_overrides
         (site_key, visitor_hash, action, reason, expires_at, created_by)
-       VALUES ($1, $2, $3, $4, NOW() + ($5 * INTERVAL '1 minute'), $6)
+       VALUES ($1, $2, $3, $4,
+         CASE WHEN $7::boolean THEN NULL ELSE NOW() + ($5 * INTERVAL '1 minute') END, $6)
        ON CONFLICT (site_key, visitor_hash) DO UPDATE SET
          action = EXCLUDED.action, reason = EXCLUDED.reason, expires_at = EXCLUDED.expires_at,
          created_by = EXCLUDED.created_by, updated_at = NOW()`,
-      [siteKey, visitorHash, action, reason, minutes, actor]
+      [siteKey, visitorHash, action, reason, minutes, actor, permanent === true]
     );
     const seq = await client.query('SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM risk_decisions');
     const sequence = Number(seq.rows[0].sequence);
-    const expiresAt = Date.now() + minutes * 60_000;
+    const expiresAt = permanent
+      ? Date.now() + (10 * 365 * 24 * 60 * 60_000)
+      : Date.now() + minutes * 60_000;
     const item = {
       sequence, siteKey, subjectType: 'visitor', subjectHash: visitorHash,
       score: action === 'allow' ? 0 : scoreForAction(action),
@@ -711,7 +754,7 @@ async function applyManualDecision(siteKey, visitorHash, action, durationMinutes
     await client.query(
       `INSERT INTO admin_audits (actor, action, target, details)
        VALUES ($1, 'manual_visitor_action', $2, $3::jsonb)`,
-      [actor, `${siteKey}:${visitorHash}`, JSON.stringify({ action, minutes, reason })]
+      [actor, `${siteKey}:${visitorHash}`, JSON.stringify({ action, minutes: permanent ? null : minutes, permanent, reason })]
     );
     await client.query('COMMIT');
     DecisionService.setSequenceFloor(sequence);
@@ -743,24 +786,29 @@ async function clearManualDecision(siteKey, visitorHash, actor = 'risk-admin') {
 async function listSignalRules() {
   if (!pool) return [];
   const result = await pool.query(
-    `SELECT r.*, s.name AS site_name FROM signal_rules r
-       JOIN sites s ON s.site_key = r.site_key ORDER BY r.created_at DESC`
+    `SELECT r.*, COALESCE(s.name, '任意站点') AS site_name FROM signal_rules r
+       LEFT JOIN sites s ON s.site_key = r.site_key ORDER BY r.created_at DESC`
   );
   return result.rows.map(row => ({
     id: Number(row.id), siteKey: row.site_key, siteName: row.site_name,
+    scope: row.site_key === '*' ? 'all' : 'site',
     signal: row.signal, action: row.action, reason: row.reason,
-    enabled: Boolean(row.enabled), durationMinutes: Number(row.duration_minutes),
+    enabled: Boolean(row.enabled),
+    permanent: row.duration_minutes == null,
+    durationMinutes: row.duration_minutes == null ? null : Number(row.duration_minutes),
     expiresAt: row.expires_at, createdAt: row.created_at
   }));
 }
 
 async function previewSignalRule(siteKey, signal) {
   if (!pool) return { events24h: 0, visitors24h: 0 };
+  const anySite = siteKey === '*';
   const result = await pool.query(
-    `SELECT COUNT(*)::int AS events_24h, COUNT(DISTINCT visitor_hash)::int AS visitors_24h
-       FROM risk_events WHERE site_key = $1 AND event_type = $2
+    `SELECT COUNT(*)::int AS events_24h, COUNT(DISTINCT (site_key, visitor_hash))::int AS visitors_24h
+       FROM risk_events WHERE event_type = $1
+        AND ($2::boolean OR site_key = $3)
         AND created_at >= NOW() - INTERVAL '24 hours'`,
-    [siteKey, signal]
+    [signal, anySite, siteKey]
   );
   return {
     events24h: Number(result.rows[0]?.events_24h) || 0,
@@ -770,7 +818,8 @@ async function previewSignalRule(siteKey, signal) {
 
 async function createSignalRule(input, actor = 'risk-admin') {
   if (!pool || !ACTIONS.has(input.action)) return null;
-  const minutes = Math.max(1, Math.min(43_200, Number(input.durationMinutes) || 60));
+  const permanent = input.permanent === true;
+  const minutes = permanent ? null : Math.max(1, Math.min(43_200, Number(input.durationMinutes) || 60));
   const result = await pool.query(
     `INSERT INTO signal_rules
       (site_key, signal, action, reason, enabled, duration_minutes, created_by, expires_at)

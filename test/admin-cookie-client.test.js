@@ -26,6 +26,9 @@ test('后台数据模块以 HttpOnly Cookie 会话状态启动加载', () => {
 
   const integrations = fs.readFileSync(path.join(directory, 'password.js'), 'utf8');
   assert.match(integrations, /const form = event\.currentTarget;/);
+  assert.match(integrations, /ip-intelligence-integration[\s\S]+bot-risk-center-integration/);
+  assert.match(integrations, /integrations\/bot-risk-center\/test/);
+  assert.match(integrations, /Client Secret[\s\S]+不会回显/);
   assert.doesNotMatch(integrations, /await[^;]+;\s*event\.currentTarget\.elements/s);
 
   const review = fs.readFileSync(path.join(directory, 'review.js'), 'utf8');
