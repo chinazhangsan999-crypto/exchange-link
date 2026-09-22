@@ -197,7 +197,44 @@
 
   async function loadRules() { const result = await request('/admin/api/risk/rules'); const body = $('rules-body'); body.replaceChildren(); if (!result.data.length) return emptyRow(body, '尚未配置人工信号规则。', 6); for (const rule of result.data) { const tr = node('tr'); tr.dataset.ruleId = rule.id; const actions = node('td', '', 'action-column'); const group = node('div', '', 'inline-actions'); group.append(actionButton(rule.enabled ? '停用' : '启用', 'toggle-rule', rule.enabled ? 'danger' : 'success'), actionButton('删除', 'delete-rule', 'danger')); actions.append(group); tr.append(node('td', rule.scope === 'all' ? '任意站点' : rule.siteName), node('td', `${signalLabel(rule.signal)}\n${rule.signal}`), node('td', rule.action), node('td', rule.permanent ? '永久' : `${rule.durationMinutes} 分钟`), node('td', rule.enabled ? '已启用' : '已停用'), actions); body.append(tr); } }
   async function loadAudits() { const result = await request('/admin/api/audits?limit=100'); const body = $('audits-body'); body.replaceChildren(); if (!result.data.length) return emptyRow(body, '尚无管理操作记录。', 5); for (const item of result.data) { const tr = node('tr'); tr.append(node('td', formatDate(item.createdAt)), node('td', item.action), node('td', item.target), node('td', item.actor), node('td', JSON.stringify(item.details))); body.append(tr); } }
-  async function loadActiveTab() { if (state.activeTab === 'suspects') await loadSuspects(); else if (state.activeTab === 'rules') await loadRules(); else if (state.activeTab === 'audits') await loadAudits(); }
+  function numberValue(id) { return Number($(id).value); }
+  function renderAlertActivity(data) {
+    const activityBody = $('alert-activity-body'); activityBody.replaceChildren();
+    if (!data.active.length) emptyRow(activityBody, '尚未产生聚合告警。', 6);
+    for (const item of data.active) {
+      const tr = node('tr');
+      tr.append(
+        node('td', formatDate(item.lastSeenAt)),
+        node('td', item.details?.siteName || item.siteKey || '所有站点'),
+        node('td', item.kind),
+        node('td', item.severity === 'critical' ? '紧急' : '高风险'),
+        node('td', item.active ? '持续中' : '已恢复'),
+        node('td', formatDate(item.lastNotifiedAt))
+      );
+      activityBody.append(tr);
+    }
+    const deliveryBody = $('alert-delivery-body'); deliveryBody.replaceChildren();
+    if (!data.deliveries.length) emptyRow(deliveryBody, '尚无渠道投递记录。', 5);
+    for (const item of data.deliveries) {
+      const tr = node('tr');
+      tr.append(node('td', formatDate(item.createdAt)), node('td', item.provider), node('td', item.alertKey), node('td', item.success ? '成功' : `失败：${item.error || '未知错误'}`), node('td', String(item.payloadSize || 0)));
+      deliveryBody.append(tr);
+    }
+  }
+  async function loadAlerts() {
+    const [settingsResult, activityResult] = await Promise.all([
+      request('/admin/api/alerts/settings'), request('/admin/api/alerts/activity?limit=100')
+    ]);
+    const data = settingsResult.data;
+    $('alert-enabled').checked = data.enabled; $('alert-hourly').checked = data.hourlyDigestEnabled; $('alert-daily').checked = data.dailyDigestEnabled;
+    $('alert-cooldown').value = data.cooldownMinutes; $('alert-telegram-enabled').checked = data.telegramEnabled; $('alert-telegram-chat').value = data.telegramChatId || '';
+    $('alert-telegram-token').value = ''; $('alert-telegram-token').placeholder = data.telegramConfigured ? '已配置，留空保持不变' : '尚未配置'; $('alert-telegram-interval').value = data.telegramIntervalMs;
+    $('alert-bark-enabled').checked = data.barkEnabled; $('alert-bark-server').value = data.barkServerUrl || 'https://api.day.app'; $('alert-bark-key').value = ''; $('alert-bark-key').placeholder = data.barkConfigured ? '已配置，留空保持不变' : '尚未配置'; $('alert-bark-group').value = data.barkGroup || '风险中心'; $('alert-bark-interval').value = data.barkIntervalMs;
+    $('alert-denied').value = data.deniedCount5m; $('alert-suspicious').value = data.suspiciousCount10m; $('alert-failure-count').value = data.challengeFailureCount10m; $('alert-failure-ratio').value = data.challengeFailureRatio; $('alert-replay').value = data.replayCount5m; $('alert-cross-site').value = data.crossSiteCount10m;
+    $('alert-master-status').textContent = data.enabled ? '告警已开启' : '告警已关闭'; $('alert-master-status').className = `status-chip ${data.enabled ? 'on' : 'off'}`;
+    renderAlertActivity(activityResult.data);
+  }
+  async function loadActiveTab() { if (state.activeTab === 'suspects') await loadSuspects(); else if (state.activeTab === 'rules') await loadRules(); else if (state.activeTab === 'alerts') await loadAlerts(); else if (state.activeTab === 'audits') await loadAudits(); }
   async function loadDashboard() { await loadOverviewAndSites(); await loadActiveTab(); }
 
   $('login-form').addEventListener('submit', async event => { event.preventDefault(); const formElement = event.currentTarget; $('login-error').hidden = true; $('login-button').disabled = true; try { const form = new FormData(formElement); const result = await request('/admin/api/login', { method: 'POST', body: JSON.stringify({ username: String(form.get('username') || '').trim(), password: String(form.get('password') || '') }) }); state.csrf = result.data.csrfToken; formElement.reset(); setAuthenticated(true); await loadDashboard(); } catch (error) { $('login-error').textContent = error.message; $('login-error').hidden = false; } finally { $('login-button').disabled = false; } });
@@ -228,6 +265,29 @@
   $('preview-rule').addEventListener('click', async () => { try { const siteKey = $('rule-scope').value === 'all' ? '*' : $('rule-site').value; const query = new URLSearchParams({ siteKey, signal: $('rule-signal').value.trim() }); const result = await request(`/admin/api/risk/rules/preview?${query}`); $('rule-preview-result').textContent = `近 24 小时将影响 ${result.data.visitors24h} 个访客、${result.data.events24h} 次事件。`; } catch (error) { toast(error.message); } });
   $('rule-form').addEventListener('submit', async event => { event.preventDefault(); try { const siteKey = $('rule-scope').value === 'all' ? '*' : $('rule-site').value; await request('/admin/api/risk/rules', { method: 'POST', body: JSON.stringify({ siteKey, signal: $('rule-signal').value.trim(), action: $('rule-action').value, permanent: $('rule-permanent').checked, durationMinutes: $('rule-permanent').checked ? null : Number($('rule-duration').value), reason: $('rule-reason').value.trim() }) }); toast('规则已创建'); $('rule-signal').value = ''; $('rule-reason').value = ''; $('rule-permanent').checked = false; $('rule-duration').disabled = false; $('rule-duration').required = true; await loadRules(); } catch (error) { toast(error.message); } });
   $('rules-body').addEventListener('click', async event => { const button = event.target.closest('[data-action]'); const row = button?.closest('tr'); if (!row) return; try { if (button.dataset.action === 'delete-rule') { if (!confirm('确定删除该规则吗？')) return; await request(`/admin/api/risk/rules/${row.dataset.ruleId}`, { method: 'DELETE' }); } else { const enabled = row.children[4].textContent !== '已启用'; await request(`/admin/api/risk/rules/${row.dataset.ruleId}/status`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } await loadRules(); toast('规则已更新'); } catch (error) { toast(error.message); } });
+
+  $('alert-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    try {
+      const result = await request('/admin/api/alerts/settings', { method: 'PUT', body: JSON.stringify({
+        enabled: $('alert-enabled').checked, hourlyDigestEnabled: $('alert-hourly').checked, dailyDigestEnabled: $('alert-daily').checked,
+        cooldownMinutes: numberValue('alert-cooldown'), telegramEnabled: $('alert-telegram-enabled').checked,
+        telegramToken: $('alert-telegram-token').value.trim(), telegramChatId: $('alert-telegram-chat').value.trim(), telegramIntervalMs: numberValue('alert-telegram-interval'),
+        barkEnabled: $('alert-bark-enabled').checked, barkServerUrl: $('alert-bark-server').value.trim(), barkDeviceKey: $('alert-bark-key').value.trim(), barkGroup: $('alert-bark-group').value.trim(), barkIntervalMs: numberValue('alert-bark-interval'),
+        deniedCount5m: numberValue('alert-denied'), suspiciousCount10m: numberValue('alert-suspicious'), challengeFailureCount10m: numberValue('alert-failure-count'), challengeFailureRatio: numberValue('alert-failure-ratio'), replayCount5m: numberValue('alert-replay'), crossSiteCount10m: numberValue('alert-cross-site')
+      }) });
+      toast(result.message); await loadAlerts();
+    } catch (error) { toast(error.message); }
+  });
+  async function testAlert(provider) {
+    const button = provider === 'telegram' ? $('test-telegram') : $('test-bark');
+    const original = button.textContent; button.disabled = true; button.textContent = '发送中…';
+    try { const result = await request(`/admin/api/alerts/test/${provider}`, { method: 'POST' }); toast(result.message); await loadAlerts(); }
+    catch (error) { toast(error.message); }
+    finally { button.disabled = false; button.textContent = original; }
+  }
+  $('test-telegram').addEventListener('click', () => testAlert('telegram'));
+  $('test-bark').addEventListener('click', () => testAlert('bark'));
 
   request('/admin/api/session').then(result => { state.csrf = result.data.csrfToken; setAuthenticated(true); return loadDashboard(); }).catch(() => setAuthenticated(false));
 })();

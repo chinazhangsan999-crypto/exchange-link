@@ -29,8 +29,10 @@ async function initialize() {
   if (ready) return;
   if (DATABASE_URL) {
     pool = new Pool({ connectionString: DATABASE_URL, max: 10, idleTimeoutMillis: 30_000 });
-    const migration = fs.readFileSync(path.join(__dirname, '..', '..', 'migrations', '001_initial.sql'), 'utf8');
-    await pool.query(migration);
+    for (const filename of ['001_initial.sql', '002_alerting.sql']) {
+      const migration = fs.readFileSync(path.join(__dirname, '..', '..', 'migrations', filename), 'utf8');
+      await pool.query(migration);
+    }
     const sequenceResult = await pool.query('SELECT COALESCE(MAX(sequence), 0) AS sequence FROM risk_decisions');
     DecisionService.setSequenceFloor(sequenceResult.rows[0]?.sequence);
   }
@@ -905,6 +907,208 @@ async function listAdminAudits(limit = 100) {
   }));
 }
 
+function encryptedColumns(prefix, encrypted) {
+  return {
+    [`${prefix}_ciphertext`]: encrypted?.ciphertext || null,
+    [`${prefix}_iv`]: encrypted?.iv || null,
+    [`${prefix}_tag`]: encrypted?.tag || null
+  };
+}
+
+async function getAlertSettings({ includeSecrets = false } = {}) {
+  if (!pool) return null;
+  const result = await pool.query('SELECT * FROM alert_settings WHERE id = 1');
+  const row = result.rows[0];
+  if (!row) return null;
+  const settings = {
+    enabled: Boolean(row.enabled),
+    telegramEnabled: Boolean(row.telegram_enabled),
+    telegramChatId: row.telegram_chat_id || '',
+    telegramConfigured: Boolean(row.telegram_token_ciphertext),
+    barkEnabled: Boolean(row.bark_enabled),
+    barkServerUrl: row.bark_server_url || 'https://api.day.app',
+    barkGroup: row.bark_group || '风险中心',
+    barkConfigured: Boolean(row.bark_key_ciphertext),
+    deniedCount5m: Number(row.denied_count_5m) || 10,
+    suspiciousCount10m: Number(row.suspicious_count_10m) || 20,
+    challengeFailureCount10m: Number(row.challenge_failure_count_10m) || 10,
+    challengeFailureRatio: Number(row.challenge_failure_ratio) || 0.4,
+    replayCount5m: Number(row.replay_count_5m) || 3,
+    crossSiteCount10m: Number(row.cross_site_count_10m) || 3,
+    cooldownMinutes: Number(row.cooldown_minutes) || 30,
+    hourlyDigestEnabled: Boolean(row.hourly_digest_enabled),
+    dailyDigestEnabled: Boolean(row.daily_digest_enabled),
+    telegramIntervalMs: Math.max(1000, Number(row.telegram_interval_ms) || 1200),
+    barkIntervalMs: Math.max(1000, Number(row.bark_interval_ms) || 2000),
+    updatedAt: row.updated_at
+  };
+  if (includeSecrets) {
+    settings.telegramToken = CredentialService.decrypt({
+      secret_ciphertext: row.telegram_token_ciphertext,
+      secret_iv: row.telegram_token_iv,
+      secret_tag: row.telegram_token_tag
+    });
+    settings.barkDeviceKey = CredentialService.decrypt({
+      secret_ciphertext: row.bark_key_ciphertext,
+      secret_iv: row.bark_key_iv,
+      secret_tag: row.bark_key_tag
+    });
+  }
+  return settings;
+}
+
+async function saveAlertSettings(input, actor = 'risk-admin') {
+  if (!pool) return null;
+  const current = await getAlertSettings({ includeSecrets: true });
+  const telegramToken = String(input.telegramToken || '').trim() || current?.telegramToken || '';
+  const barkDeviceKey = String(input.barkDeviceKey || '').trim() || current?.barkDeviceKey || '';
+  const telegram = telegramToken ? encryptedColumns('telegram_token', CredentialService.encrypt(telegramToken)) : encryptedColumns('telegram_token');
+  const bark = barkDeviceKey ? encryptedColumns('bark_key', CredentialService.encrypt(barkDeviceKey)) : encryptedColumns('bark_key');
+  const value = (name, fallback, min, max) => Math.max(min, Math.min(max, Number(input[name]) || fallback));
+  await pool.query(
+    `UPDATE alert_settings SET
+       enabled=$1, telegram_enabled=$2, telegram_chat_id=$3,
+       telegram_token_ciphertext=$4, telegram_token_iv=$5, telegram_token_tag=$6,
+       bark_enabled=$7, bark_server_url=$8, bark_group=$9,
+       bark_key_ciphertext=$10, bark_key_iv=$11, bark_key_tag=$12,
+       denied_count_5m=$13, suspicious_count_10m=$14,
+       challenge_failure_count_10m=$15, challenge_failure_ratio=$16,
+       replay_count_5m=$17, cross_site_count_10m=$18, cooldown_minutes=$19,
+       hourly_digest_enabled=$20, daily_digest_enabled=$21,
+       telegram_interval_ms=$22, bark_interval_ms=$23, updated_at=NOW()
+     WHERE id=1`,
+    [input.enabled === true, input.telegramEnabled === true, String(input.telegramChatId || '').trim().slice(0, 100),
+      telegram.telegram_token_ciphertext, telegram.telegram_token_iv, telegram.telegram_token_tag,
+      input.barkEnabled === true, String(input.barkServerUrl || 'https://api.day.app').trim().replace(/\/$/, '').slice(0, 300),
+      String(input.barkGroup || '风险中心').trim().slice(0, 80),
+      bark.bark_key_ciphertext, bark.bark_key_iv, bark.bark_key_tag,
+      value('deniedCount5m', 10, 1, 10000), value('suspiciousCount10m', 20, 1, 10000),
+      value('challengeFailureCount10m', 10, 1, 10000), value('challengeFailureRatio', 0.4, 0.01, 1),
+      value('replayCount5m', 3, 1, 10000), value('crossSiteCount10m', 3, 2, 1000),
+      value('cooldownMinutes', 30, 5, 1440), input.hourlyDigestEnabled === true, input.dailyDigestEnabled === true,
+      value('telegramIntervalMs', 1200, 1000, 60000), value('barkIntervalMs', 2000, 1000, 60000)]
+  );
+  await pool.query(
+    `INSERT INTO admin_audits (actor, action, target, details)
+     VALUES ($1, 'save_alert_settings', 'alerts', $2::jsonb)`,
+    [actor, JSON.stringify({ enabled: input.enabled === true, telegramEnabled: input.telegramEnabled === true, barkEnabled: input.barkEnabled === true })]
+  );
+  return getAlertSettings();
+}
+
+async function listAlertCandidates(settings) {
+  if (!pool) return [];
+  const candidates = [];
+  const denied = await pool.query(
+    `SELECT d.site_key, COALESCE(s.name, d.site_key) AS site_name,
+            COUNT(DISTINCT d.subject_hash)::int AS visitors, COUNT(*)::int AS events
+       FROM risk_decisions d LEFT JOIN sites s ON s.site_key=d.site_key
+      WHERE d.created_at >= NOW() - INTERVAL '5 minutes' AND d.decision='deny'
+      GROUP BY d.site_key, s.name HAVING COUNT(DISTINCT d.subject_hash) >= $1`,
+    [settings.deniedCount5m]
+  );
+  for (const row of denied.rows) candidates.push({ key: `deny_5m:${row.site_key}`, kind: 'deny_5m', severity: 'critical', siteKey: row.site_key, siteName: row.site_name, value: Number(row.visitors), details: { visitors: Number(row.visitors), events: Number(row.events), window: '5分钟' } });
+
+  const suspicious = await pool.query(
+    `WITH latest AS (
+       SELECT DISTINCT ON (site_key, subject_hash) site_key, subject_hash, score
+         FROM risk_decisions WHERE created_at >= NOW() - INTERVAL '10 minutes'
+        ORDER BY site_key, subject_hash, sequence DESC)
+     SELECT l.site_key, COALESCE(s.name,l.site_key) AS site_name, COUNT(*)::int AS visitors
+       FROM latest l LEFT JOIN sites s ON s.site_key=l.site_key WHERE l.score >= 25
+      GROUP BY l.site_key,s.name HAVING COUNT(*) >= $1`,
+    [settings.suspiciousCount10m]
+  );
+  for (const row of suspicious.rows) candidates.push({ key: `suspicious_10m:${row.site_key}`, kind: 'suspicious_10m', severity: 'high', siteKey: row.site_key, siteName: row.site_name, value: Number(row.visitors), details: { visitors: Number(row.visitors), window: '10分钟' } });
+
+  const failures = await pool.query(
+    `SELECT e.site_key, COALESCE(s.name,e.site_key) AS site_name,
+            COUNT(DISTINCT e.visitor_hash) FILTER (WHERE e.event_type='challenge_failed')::int AS failed,
+            COUNT(DISTINCT e.visitor_hash)::int AS total
+       FROM risk_events e LEFT JOIN sites s ON s.site_key=e.site_key
+      WHERE e.created_at >= NOW() - INTERVAL '10 minutes'
+      GROUP BY e.site_key,s.name`, []);
+  for (const row of failures.rows) {
+    const failed = Number(row.failed) || 0; const total = Number(row.total) || 0; const ratio = total ? failed / total : 0;
+    if (failed >= settings.challengeFailureCount10m && ratio >= settings.challengeFailureRatio) candidates.push({ key: `challenge_fail:${row.site_key}`, kind: 'challenge_fail', severity: 'high', siteKey: row.site_key, siteName: row.site_name, value: failed, details: { failed, total, ratio, window: '10分钟' } });
+  }
+
+  const replay = await pool.query(
+    `SELECT e.site_key, COALESCE(s.name,e.site_key) AS site_name,
+            COUNT(DISTINCT e.visitor_hash)::int AS visitors, COUNT(*)::int AS events
+       FROM risk_events e LEFT JOIN sites s ON s.site_key=e.site_key
+      WHERE e.created_at >= NOW() - INTERVAL '5 minutes' AND e.event_type='token_replay'
+      GROUP BY e.site_key,s.name HAVING COUNT(*) >= $1`, [settings.replayCount5m]);
+  for (const row of replay.rows) candidates.push({ key: `token_replay:${row.site_key}`, kind: 'token_replay', severity: 'critical', siteKey: row.site_key, siteName: row.site_name, value: Number(row.events), details: { visitors: Number(row.visitors), events: Number(row.events), window: '5分钟' } });
+
+  const crossSite = await pool.query(
+    `SELECT event_type, COUNT(DISTINCT site_key)::int AS sites,
+            COUNT(DISTINCT (site_key, visitor_hash))::int AS visitors
+       FROM risk_events WHERE created_at >= NOW() - INTERVAL '10 minutes'
+        AND event_type NOT IN ('valid_browser_access','valid_read_token','challenge_passed','browser_challenge_passed','normal_dwell','outbound_interaction')
+      GROUP BY event_type HAVING COUNT(DISTINCT site_key) >= $1`, [settings.crossSiteCount10m]);
+  for (const row of crossSite.rows) candidates.push({ key: `cross_site:${row.event_type}`, kind: 'cross_site', severity: 'high', siteKey: null, siteName: '所有站点', value: Number(row.sites), details: { signal: row.event_type, sites: Number(row.sites), visitors: Number(row.visitors), window: '10分钟' } });
+  return candidates;
+}
+
+async function claimAlertNotifications(candidates, cooldownMinutes) {
+  if (!pool || !candidates.length) return [];
+  const client = await pool.connect(); const claimed = [];
+  try {
+    await client.query('BEGIN');
+    for (const item of candidates) {
+      const result = await client.query(
+        `INSERT INTO alert_states
+          (alert_key,kind,site_key,severity,current_value,last_seen_at,details)
+         VALUES ($1,$2,$3,$4,$5,NOW(),$6::jsonb)
+         ON CONFLICT (alert_key) DO UPDATE SET active=TRUE, severity=EXCLUDED.severity,
+           current_value=EXCLUDED.current_value,last_seen_at=NOW(),resolved_at=NULL,details=EXCLUDED.details
+         RETURNING *, (last_notified_at IS NULL OR last_notified_at <= NOW()-($7::int * INTERVAL '1 minute')
+           OR current_value >= GREATEST(last_notified_value * 2, last_notified_value + 5)) AS notify`,
+        [item.key,item.kind,item.siteKey,item.severity,item.value,JSON.stringify({ ...item.details, siteName: item.siteName }),cooldownMinutes]
+      );
+      if (result.rows[0]?.notify) {
+        await client.query('UPDATE alert_states SET last_notified_at=NOW(),last_notified_value=current_value WHERE alert_key=$1', [item.key]);
+        claimed.push(item);
+      }
+    }
+    await client.query('COMMIT');
+    return claimed;
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+
+async function resolveRecoveredAlerts(cooldownMinutes) {
+  if (!pool) return [];
+  const result = await pool.query(
+    `UPDATE alert_states SET active=FALSE,resolved_at=NOW()
+      WHERE active=TRUE AND last_seen_at < NOW()-($1::int * INTERVAL '1 minute')
+      RETURNING alert_key,kind,site_key,severity,current_value,details`, [cooldownMinutes]);
+  return result.rows.map(row => ({ key: row.alert_key, kind: row.kind, siteKey: row.site_key, severity: row.severity, value: Number(row.current_value), details: row.details || {}, recovered: true }));
+}
+
+async function recordAlertDelivery(item) {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO alert_delivery_logs (alert_key,provider,success,status_code,error_message,payload_size)
+     VALUES ($1,$2,$3,$4,$5,$6)`,
+    [item.alertKey,item.provider,item.success,item.statusCode || null,String(item.error || '').slice(0,500),item.payloadSize || 0]
+  );
+}
+
+async function listAlertActivity(limit = 100) {
+  if (!pool) return { active: [], deliveries: [] };
+  const safeLimit = Math.max(1, Math.min(200, Number(limit) || 100));
+  const [states, deliveries] = await Promise.all([
+    pool.query('SELECT * FROM alert_states ORDER BY last_seen_at DESC LIMIT $1', [safeLimit]),
+    pool.query('SELECT * FROM alert_delivery_logs ORDER BY created_at DESC LIMIT $1', [safeLimit])
+  ]);
+  return {
+    active: states.rows.map(row => ({ alertKey: row.alert_key, kind: row.kind, siteKey: row.site_key, severity: row.severity, active: Boolean(row.active), currentValue: Number(row.current_value), details: row.details || {}, lastSeenAt: row.last_seen_at, lastNotifiedAt: row.last_notified_at, resolvedAt: row.resolved_at })),
+    deliveries: deliveries.rows.map(row => ({ id: Number(row.id), alertKey: row.alert_key, provider: row.provider, success: Boolean(row.success), statusCode: row.status_code, error: row.error_message, payloadSize: Number(row.payload_size), createdAt: row.created_at }))
+  };
+}
+
 async function claimNonce(clientId, nonce) {
   if (!redis) return true;
   const result = await redis.set(`risk:nonce:${clientId}:${nonce}`, '1', { NX: true, PX: 300_000 });
@@ -980,6 +1184,13 @@ module.exports = {
   setSignalRuleEnabled,
   deleteSignalRule,
   listAdminAudits,
+  getAlertSettings,
+  saveAlertSettings,
+  listAlertCandidates,
+  claimAlertNotifications,
+  resolveRecoveredAlerts,
+  recordAlertDelivery,
+  listAlertActivity,
   setSiteEnabled,
   close,
   isReady

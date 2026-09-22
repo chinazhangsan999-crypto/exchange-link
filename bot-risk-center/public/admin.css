@@ -246,6 +246,16 @@ td.action-column .button { min-width: 68px; }
 .global-rule-box legend { padding: 0 6px; color: var(--primary); font-size: 13px; font-weight: 800; }
 .global-rule-box p { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: 12px; }
 .global-rule-box small { display: block; margin-top: 4px; color: var(--muted); font-weight: 400; }
+.alert-form { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+.alert-block { display: grid; align-content: start; gap: 10px; padding: 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-muted); }
+.alert-block h3, .panel-subhead h3 { margin: 0; font-size: 15px; }
+.alert-block label { margin: 0; }
+.alert-block.thresholds { grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.alert-block.thresholds h3 { grid-column: 1 / -1; }
+.alert-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
+.panel-subhead { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 4px; }
+.panel-subhead p { margin: 3px 0 0; }
+.alert-deliveries { border-top: 1px solid var(--border); }
 
 .toast {
   position: fixed;
@@ -265,7 +275,8 @@ td.action-column .button { min-width: 68px; }
   .shell { width: min(100% - 24px, 680px); padding-top: 24px; }
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .topbar, .panel-head { align-items: flex-start; }
-  .risk-metrics, .inline-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .risk-metrics, .inline-form, .alert-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .alert-block.thresholds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .signal-detail-grid { grid-template-columns: 1fr; }
   .global-rule-box { grid-template-columns: 1fr; }
   .global-rule-box p { grid-column: 1; }
@@ -280,7 +291,8 @@ td.action-column .button { min-width: 68px; }
   .metric-card { padding: 18px 16px; }
   .metric-card strong { font-size: 26px; }
   .button-row, .filter-row { width: 100%; flex-wrap: wrap; }
-  .risk-metrics, .inline-form, .form-grid, .action-form, .detail-overview { grid-template-columns: 1fr; }
+  .risk-metrics, .inline-form, .form-grid, .action-form, .detail-overview, .alert-form, .alert-block.thresholds { grid-template-columns: 1fr; }
+  .alert-block.thresholds h3 { grid-column: 1; }
   .wide { grid-column: 1; }
 }
 

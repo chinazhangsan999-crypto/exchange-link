@@ -3,6 +3,7 @@
 const path = require('path');
 const AdminAuthService = require('../services/AdminAuthService');
 const StorageService = require('../services/StorageService');
+const AlertService = require('../services/AlertService');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 
@@ -200,9 +201,51 @@ async function audits(req, res) {
   return res.json({ code: 200, data: await StorageService.listAdminAudits(req.query.limit) });
 }
 
+async function alertSettings(req, res) {
+  return res.json({ code: 200, data: await StorageService.getAlertSettings() });
+}
+
+async function saveAlertSettings(req, res) {
+  const input = req.body || {};
+  const current = await StorageService.getAlertSettings();
+  if (typeof input.enabled !== 'boolean'
+    || typeof input.telegramEnabled !== 'boolean'
+    || typeof input.barkEnabled !== 'boolean') {
+    return res.status(400).json({ code: 400, message: '告警开关参数无效' });
+  }
+  if (input.telegramEnabled && !String(input.telegramChatId || '').trim()) {
+    return res.status(400).json({ code: 400, message: '启用 Telegram 时必须填写 Chat ID' });
+  }
+  if (input.telegramEnabled && !String(input.telegramToken || '').trim() && !current?.telegramConfigured) {
+    return res.status(400).json({ code: 400, message: '启用 Telegram 时必须填写 Bot Token' });
+  }
+  if (input.barkEnabled && !/^https:\/\//i.test(String(input.barkServerUrl || ''))) {
+    return res.status(400).json({ code: 400, message: 'Bark 服务地址必须使用 HTTPS' });
+  }
+  if (input.barkEnabled && !String(input.barkDeviceKey || '').trim() && !current?.barkConfigured) {
+    return res.status(400).json({ code: 400, message: '启用 Bark 时必须填写 Device Key' });
+  }
+  const data = await StorageService.saveAlertSettings(input, actor(req));
+  return res.json({ code: 200, data, message: '告警配置已保存' });
+}
+
+async function alertActivity(req, res) {
+  return res.json({ code: 200, data: await StorageService.listAlertActivity(req.query.limit) });
+}
+
+async function testAlert(req, res) {
+  const provider = String(req.params.provider || '');
+  if (!['telegram', 'bark'].includes(provider)) {
+    return res.status(400).json({ code: 400, message: '不支持的推送渠道' });
+  }
+  const data = await AlertService.test(provider);
+  return res.json({ code: 200, data, message: `${provider === 'telegram' ? 'Telegram' : 'Bark'} 测试推送成功` });
+}
+
 module.exports = {
   page, stylesheet, script, login, session, logout, overview, sites, setSiteStatus,
   saveIntegration, setSiteControls, setClientStatus, rotateClientSecret,
   riskSummary, suspects, suspectDetail, setSuspectAction, clearSuspectAction,
-  rules, previewRule, createRule, setRuleStatus, deleteRule, audits
+  rules, previewRule, createRule, setRuleStatus, deleteRule, audits,
+  alertSettings, saveAlertSettings, alertActivity, testAlert
 };
