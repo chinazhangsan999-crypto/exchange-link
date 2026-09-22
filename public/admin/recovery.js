@@ -79,20 +79,16 @@
             <div id="recovery-key-state" class="recovery-key-state"></div>
             <div class="recovery-actions recovery-key-actions"><button class="button ghost" type="button" data-recovery-action="ensure-key">确保当前密钥</button><button class="button ghost" type="button" data-recovery-action="next-key">生成下一代密钥</button><button class="button danger" type="button" data-recovery-action="promote-key">提升下一代密钥</button></div>
           </div>
-          <div class="box"><div class="box-head"><div><h2>Cloudflare DNS 凭据</h2><p class="hint">只用于写入 Bootstrap TXT；Token 保存后不回显。</p></div></div>
-            <form id="recovery-cloudflare-form" class="recovery-form">
-              <label class="recovery-switch"><input name="reuseCentral" type="checkbox" value="1"><span><strong>复用中央 Cloudflare 凭据</strong><small class="hint">Token 需要 Zone DNS 编辑权限。</small></span></label>
-              <label class="full">Account ID<input name="accountId" autocomplete="off"></label>
-              <label class="full">API Token<input name="apiToken" type="password" autocomplete="new-password" placeholder="留空表示不修改"></label>
-              <div class="recovery-form-actions"><button class="button" type="submit">保存 DNS 凭据</button></div>
-            </form>
+          <div class="box"><div class="box-head"><div><h2>DNS API 通道</h2><p class="hint">同一服务商可保存多个独立账号；密钥只留在服务器，浏览器不会回显。</p></div><button class="button" type="button" data-recovery-action="open-channel">新增通道</button></div>
+            <div class="table-wrap"><table class="recovery-table"><thead><tr><th>通道</th><th>服务商</th><th>账号</th><th>配置</th><th>最近验证</th><th>操作</th></tr></thead><tbody id="recovery-channel-body"></tbody></table></div>
           </div>
           <div class="box"><div class="box-head"><div><h2>安全边界</h2></div></div><div class="recovery-note">主域名正常时不测活、不查询备用线路、不访问 DoH。只有真实导航或核心接口失败后，才检查主域动态图片并进入恢复流程；找到地址后也只展示“立即前往”，不会自动跳转。</div></div>
           <div class="box"><div class="box-head"><div><h2>操作审计</h2><p class="hint">保留最近 100 条配置、检测、密钥和发布记录。</p></div></div><div id="recovery-audit" class="recovery-audit"></div></div>
         </div>
       </div>
       <div id="recovery-domain-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-domain-title"><form id="recovery-domain-form" class="dialog"><h3 id="recovery-domain-title">恢复线路</h3><input name="id" type="hidden"><div class="form-grid"><label>线路名称<input name="title" maxlength="80" required></label><label>优先级<input name="priority" type="number" value="0" required></label><label class="full">HTTPS 地址<input name="url" type="url" placeholder="https://recovery.example" required></label><label class="full exemption-option"><input name="status" type="checkbox" value="1" checked><span>启用该线路</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存线路</button></div></form></div>
-      <div id="recovery-bootstrap-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-bootstrap-title"><form id="recovery-bootstrap-form" class="dialog"><h3 id="recovery-bootstrap-title">Bootstrap DNS</h3><input name="id" type="hidden"><input name="isPrimary" type="hidden" value="0"><div class="form-grid"><label>显示名称<input name="label" maxlength="80" required></label><label>排序<input name="sortOrder" type="number" value="0" required></label><label>权威 DNS 托管商<select name="providerId" required></select></label><label>分片角色<select name="shareRole" required><option value="A">A 分片</option><option value="B">B 分片</option><option value="LEGACY">旧版 r1 兼容</option></select></label><label>发布方式<select name="publishMode" required><option value="automatic">API 自动发布（Cloudflare）</option><option value="manual">手动发布并 DoH 验证</option></select></label><label class="full">TXT 记录名<input name="recordName" placeholder="_recovery-a.bootstrap.example" required></label><label class="full">权威 DNS Zone<input name="zoneName" placeholder="bootstrap.example" required></label><p class="hint full">Cloudflare、deSEC、ClouDNS、AWS Route 53、HE Free DNS 均按单字符字符串 255 字节边界处理；系统实际使用 240 字节上限，为引号和接口差异留出余量。</p><label class="exemption-option full"><input name="status" type="checkbox" value="1" checked><span>启用</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存 DNS</button></div></form></div>
+      <div id="recovery-bootstrap-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-bootstrap-title"><form id="recovery-bootstrap-form" class="dialog"><h3 id="recovery-bootstrap-title">Bootstrap DNS</h3><input name="id" type="hidden"><input name="isPrimary" type="hidden" value="0"><input name="providerZoneId" type="hidden"><div class="form-grid"><label>显示名称<input name="label" maxlength="80" required></label><label>排序<input name="sortOrder" type="number" value="0" required></label><label>权威 DNS 托管商<select name="providerId" required></select></label><label>分片角色<select name="shareRole" required><option value="A">A 分片</option><option value="B">B 分片</option><option value="LEGACY">旧版 r1 兼容</option></select></label><label>发布方式<select name="publishMode" required><option value="automatic">API 自动发布</option><option value="manual">手动发布并 DoH 验证</option></select></label><label id="recovery-bootstrap-channel-field">API 通道<select name="dnsChannelId"></select></label><p id="recovery-bootstrap-publish-hint" class="hint full"></p><label class="full">TXT 记录名<input name="recordName" placeholder="_recovery-a.bootstrap.example" required></label><label class="full">权威 DNS Zone<input name="zoneName" placeholder="bootstrap.example" required></label><p class="hint full">每条 TXT 使用 240 字节安全上限；自动发布只清理本系统旧代分片，不会删除同名的其他 TXT。</p><label class="exemption-option full"><input name="status" type="checkbox" value="1" checked><span>启用</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存 DNS</button></div></form></div>
+      <div id="recovery-channel-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-channel-title"><form id="recovery-channel-form" class="dialog"><h3 id="recovery-channel-title">DNS API 通道</h3><input name="id" type="hidden"><div class="form-grid"><label>通道名称<input name="label" maxlength="80" placeholder="例如：Cloudflare 主账号" required></label><label>DNS 服务商<select name="providerId" required></select></label><div id="recovery-channel-credentials" class="recovery-credential-fields full"></div><p class="hint full">敏感字段留空表示保持原值。保存后只显示脱敏账号标识，不回显密钥。</p><label class="exemption-option full"><input name="status" type="checkbox" value="1" checked><span>启用该 API 通道</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存通道</button></div></form></div>
     `;
     document.querySelector('.shell')?.append(panel);
     bindPanel(panel);
@@ -106,7 +102,7 @@
 
   function renderOverview() {
     if (!state) return;
-    const { settings, domains, bootstraps, releases, keys, cloudflare, audit, profiles = [], resolvers = [], dnsProviders = [], lookupRoutes = [] } = state;
+    const { settings, domains, bootstraps, releases, keys, audit, profiles = [], resolvers = [], dnsProviders = [], dnsChannels = [], lookupRoutes = [] } = state;
     currentProfileId = Number(state.selectedProfileId || settings.id || currentProfileId);
     const profileSelect = document.querySelector('#recovery-profile-select');
     profileSelect.innerHTML = profiles.map(item => `<option value="${Number(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.code)}${item.ready ? ' · 可发布' : ''}</option>`).join('');
@@ -130,17 +126,13 @@
 
     const settingsForm = document.querySelector('#recovery-settings-form');
     Object.entries(settings).forEach(([key, value]) => { const field = settingsForm.elements[key]; if (!field) return; if (field.type === 'checkbox') field.checked = Number(value) === 1; else field.value = value ?? ''; });
-    const credentialForm = document.querySelector('#recovery-cloudflare-form');
-    credentialForm.elements.reuseCentral.checked = cloudflare.reuseCentral === true;
-    credentialForm.elements.accountId.value = cloudflare.accountId || '';
-    credentialForm.elements.apiToken.value = '';
-    credentialForm.elements.accountId.disabled = cloudflare.reuseCentral === true;
-    credentialForm.elements.apiToken.disabled = cloudflare.reuseCentral === true;
-
     document.querySelector('#recovery-domain-body').innerHTML = domains.map(item => `<tr><td><strong>${escapeHtml(item.title)}</strong></td><td class="recovery-url">${escapeHtml(item.url)}</td><td>${Number(item.priority)}</td><td>${Number(item.status) === 1 ? '<span class="tag">启用</span>' : '<span class="tag neutral">停用</span>'}</td><td>${statusTag(item.last_probe_status)}${item.last_probe_ms ? ` <span class="hint">${item.last_probe_ms}ms</span>` : ''}${item.last_probe_error ? `<span class="domain">${escapeHtml(item.last_probe_error)}</span>` : ''}</td><td>${formatTime(item.last_probe_at)}</td><td><div class="actions"><button class="action" data-recovery-action="probe-domain" data-id="${item.id}">检测</button><button class="action" data-recovery-action="edit-domain" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-domain" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="7" class="recovery-empty">尚未添加恢复专用线路</td></tr>';
-    document.querySelector('#recovery-bootstrap-body').innerHTML = bootstraps.map(item => `<tr><td><strong>${escapeHtml(item.label)}</strong></td><td><strong>${escapeHtml(item.provider_label || item.provider_id)}</strong><span class="domain">${item.publish_mode === 'automatic' ? 'API 自动' : '手动 + DoH 验证'}</span></td><td class="recovery-code">${escapeHtml(item.record_name)}<span class="domain">${escapeHtml(item.zone_name)}</span></td><td><span class="tag ${item.share_role === 'LEGACY' ? 'neutral' : ''}">${escapeHtml(item.share_role || 'LEGACY')}</span></td><td>${Number(item.portable_record_bytes || 240)} / ${Number(item.max_character_string_bytes || 255)} 字节</td><td>${statusTag(item.last_publish_status)}${item.last_publish_error ? `<span class="domain">${escapeHtml(item.last_publish_error)}</span>` : ''}</td><td>${Number(item.last_published_generation || 0) || '—'}</td><td><div class="actions"><button class="action" data-recovery-action="doh" data-id="${item.id}">DoH 回读</button><button class="action" data-recovery-action="edit-bootstrap" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-bootstrap" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="8" class="recovery-empty">尚未配置 Bootstrap DNS；已发布清单仍可在主站正常时同步到老用户浏览器。</td></tr>';
+    document.querySelector('#recovery-channel-body').innerHTML = dnsChannels.map(item => `<tr><td><strong>${escapeHtml(item.label)}</strong>${item.legacy ? '<span class="domain">兼容现有配置</span>' : ''}</td><td>${escapeHtml(item.provider_label || item.provider_id)}</td><td>${escapeHtml(item.account_hint || '—')}</td><td>${item.configured ? '<span class="tag">凭据已配置</span>' : '<span class="tag off">凭据不完整</span>'}${Number(item.status) === 1 ? '' : '<span class="domain">通道已停用</span>'}</td><td>${statusTag(item.last_test_status)}${item.last_test_error ? `<span class="domain">${escapeHtml(item.last_test_error)}</span>` : ''}${item.last_test_at ? `<span class="domain">${formatTime(item.last_test_at)}</span>` : ''}</td><td><div class="actions"><button class="action" data-recovery-action="test-channel" data-id="${item.id}">验证</button><button class="action" data-recovery-action="edit-channel" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-channel" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="6" class="recovery-empty">尚未配置 DNS API 通道；新增通道后即可自动发布 TXT。</td></tr>';
+    document.querySelector('#recovery-bootstrap-body').innerHTML = bootstraps.map(item => `<tr><td><strong>${escapeHtml(item.label)}</strong></td><td><strong>${escapeHtml(item.provider_label || item.provider_id)}</strong><span class="domain">${item.publish_mode === 'automatic' ? `API 自动 · ${escapeHtml(item.channel_label || '未绑定通道')}` : '手动 + DoH 验证'}</span></td><td class="recovery-code">${escapeHtml(item.record_name)}<span class="domain">${escapeHtml(item.zone_name)}</span></td><td><span class="tag ${item.share_role === 'LEGACY' ? 'neutral' : ''}">${escapeHtml(item.share_role || 'LEGACY')}</span></td><td>${Number(item.portable_record_bytes || 240)} / ${Number(item.max_character_string_bytes || 255)} 字节</td><td>${statusTag(item.last_publish_status)}${item.last_publish_error ? `<span class="domain">${escapeHtml(item.last_publish_error)}</span>` : ''}</td><td>${Number(item.last_published_generation || 0) || '—'}</td><td><div class="actions"><button class="action" data-recovery-action="doh" data-id="${item.id}">DoH 回读</button><button class="action" data-recovery-action="edit-bootstrap" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-bootstrap" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="8" class="recovery-empty">尚未配置 Bootstrap DNS；已发布清单仍可在主站正常时同步到老用户浏览器。</td></tr>';
     const bootstrapForm = document.querySelector('#recovery-bootstrap-form');
     bootstrapForm.elements.providerId.innerHTML = dnsProviders.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} · ${Number(item.portable_record_bytes)} 字节安全上限</option>`).join('');
+    const channelForm = document.querySelector('#recovery-channel-form');
+    channelForm.elements.providerId.innerHTML = dnsProviders.filter(item => item.automatic_publish).map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join('');
     const routeForm = document.querySelector('#recovery-route-form');
     routeForm.elements.resolverId.innerHTML = `<option value="">请选择 DNS 服务商</option>${resolvers.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} · ${escapeHtml(item.category)}</option>`).join('')}`;
     routeForm.elements.bootstrapId.innerHTML = `<option value="">请选择 Bootstrap TXT</option>${bootstraps.filter(item => Number(item.status) === 1).map(item => `<option value="${Number(item.id)}">${escapeHtml(item.label)} · ${escapeHtml(item.record_name)}</option>`).join('')}`;
@@ -170,7 +162,46 @@
   function closeModals() { document.querySelectorAll('#recovery .recovery-modal.open').forEach(item => item.classList.remove('open')); }
   function domainById(id) { return state?.domains.find(item => Number(item.id) === Number(id)); }
   function bootstrapById(id) { return state?.bootstraps.find(item => Number(item.id) === Number(id)); }
+  function channelById(id) { return state?.dnsChannels?.find(item => Number(item.id) === Number(id)); }
+  function providerById(id) { return state?.dnsProviders?.find(item => item.id === id); }
   function releaseById(id) { return state?.releases.find(item => Number(item.id) === Number(id)); }
+
+  function renderChannelCredentials(providerId, channel = null) {
+    const container = document.querySelector('#recovery-channel-credentials');
+    const secretPlaceholder = channel ? '留空表示保持原值' : '请输入凭据';
+    const templates = {
+      cloudflare: `<label class="recovery-switch"><input name="reuseCentral" type="checkbox" value="1" ${channel?.reuse_central ? 'checked' : ''}><span><strong>复用中央 Cloudflare 凭据</strong><small class="hint">使用“Cloudflare 管理”中已保存的 Account ID 与 Token。</small></span></label><label>Account ID<input name="accountId" autocomplete="off" placeholder="${secretPlaceholder}"></label><label>API Token<input name="apiToken" type="password" autocomplete="new-password" placeholder="${secretPlaceholder}"></label>`,
+      desec: `<label class="full">API Token<input name="apiToken" type="password" autocomplete="new-password" placeholder="${secretPlaceholder}"></label>`,
+      cloudns: `<label>认证类型<select name="authType"><option value="auth-id">主账号 Auth ID</option><option value="sub-auth-id">子账号 Sub Auth ID</option><option value="sub-auth-user">子账号用户名</option></select></label><label>账号标识<input name="authId" autocomplete="off" placeholder="${secretPlaceholder}"></label><label class="full">Auth Password<input name="authPassword" type="password" autocomplete="new-password" placeholder="${secretPlaceholder}"></label>`,
+      route53: `<label>Access Key ID<input name="accessKeyId" autocomplete="off" placeholder="${secretPlaceholder}"></label><label>Secret Access Key<input name="secretAccessKey" type="password" autocomplete="new-password" placeholder="${secretPlaceholder}"></label><label class="full">Session Token（可选）<input name="sessionToken" type="password" autocomplete="new-password" placeholder="临时凭据使用；留空保持原值"></label>`
+    };
+    container.innerHTML = templates[providerId] || '<p class="hint">该服务商当前没有自动发布接口。</p>';
+    if (providerId === 'cloudns' && container.querySelector('[name="authType"]')) container.querySelector('[name="authType"]').value = channel?.auth_type || 'auth-id';
+    const reuse = container.querySelector('[name="reuseCentral"]');
+    const syncCentral = () => container.querySelectorAll('[name="accountId"], [name="apiToken"]').forEach(field => { field.disabled = reuse?.checked === true; });
+    reuse?.addEventListener('change', syncCentral); syncCentral();
+  }
+
+  function syncBootstrapPublisher(preferredChannelId = '', preferredMode = '') {
+    const form = document.querySelector('#recovery-bootstrap-form');
+    const provider = providerById(form.elements.providerId.value);
+    const mode = form.elements.publishMode;
+    const supportsAutomatic = provider?.automatic_publish === true;
+    const previousMode = preferredMode || mode.value;
+    mode.innerHTML = `${supportsAutomatic ? '<option value="automatic">API 自动发布</option>' : ''}<option value="manual">手动发布并 DoH 验证</option>`;
+    mode.value = supportsAutomatic && previousMode !== 'manual' ? 'automatic' : 'manual';
+    const channels = (state?.dnsChannels || []).filter(item => item.provider_id === provider?.id && Number(item.status) === 1);
+    const select = form.elements.dnsChannelId;
+    select.innerHTML = `<option value="">请选择 API 通道</option>${channels.map(item => `<option value="${Number(item.id)}" ${item.configured ? '' : 'disabled'}>${escapeHtml(item.label)} · ${escapeHtml(item.account_hint || '未显示账号')}${item.configured ? '' : ' · 凭据不完整'}</option>`).join('')}`;
+    if (preferredChannelId && channels.some(item => String(item.id) === String(preferredChannelId) && item.configured)) select.value = String(preferredChannelId);
+    else if (channels.filter(item => item.configured).length === 1) select.value = String(channels.find(item => item.configured).id);
+    const automatic = mode.value === 'automatic';
+    document.querySelector('#recovery-bootstrap-channel-field').hidden = !automatic;
+    select.required = automatic;
+    document.querySelector('#recovery-bootstrap-publish-hint').innerHTML = automatic
+      ? (channels.some(item => item.configured) ? '发布时使用所选通道写入 TXT，并在 DoH 验证成功后清理本系统旧代分片。' : `尚未配置可用的 ${escapeHtml(provider?.label || '')} API 通道，请先在页面右侧新增通道。`)
+      : '系统生成 TXT 内容，由管理员写入权威 DNS 后再执行 DoH 回读验证。';
+  }
 
   async function handleAction(event) {
     const button = event.target.closest('[data-recovery-action]');
@@ -186,10 +217,14 @@
       }
       if (action === 'open-domain') { const form = document.querySelector('#recovery-domain-form'); form.reset(); form.elements.id.value = ''; form.elements.status.checked = true; return openModal('#recovery-domain-modal'); }
       if (action === 'edit-domain') { const item = domainById(id); if (!item) return; const form = document.querySelector('#recovery-domain-form'); form.elements.id.value = item.id; form.elements.title.value = item.title; form.elements.url.value = item.url; form.elements.priority.value = item.priority; form.elements.status.checked = Number(item.status) === 1; return openModal('#recovery-domain-modal'); }
-      if (action === 'open-bootstrap') { const form = document.querySelector('#recovery-bootstrap-form'); form.reset(); form.elements.id.value = ''; form.elements.status.checked = true; form.elements.providerId.value = 'cloudflare'; form.elements.shareRole.value = 'A'; form.elements.publishMode.value = 'automatic'; return openModal('#recovery-bootstrap-modal'); }
-      if (action === 'edit-bootstrap') { const item = bootstrapById(id); if (!item) return; const form = document.querySelector('#recovery-bootstrap-form'); form.elements.id.value = item.id; form.elements.label.value = item.label; form.elements.recordName.value = item.record_name; form.elements.zoneName.value = item.zone_name; form.elements.sortOrder.value = item.sort_order; form.elements.providerId.value = item.provider_id || 'cloudflare'; form.elements.shareRole.value = item.share_role || 'LEGACY'; form.elements.publishMode.value = item.publish_mode || (item.provider_id === 'cloudflare' ? 'automatic' : 'manual'); form.elements.status.checked = Number(item.status) === 1; return openModal('#recovery-bootstrap-modal'); }
+      if (action === 'open-channel') { const form = document.querySelector('#recovery-channel-form'); form.reset(); form.elements.id.value = ''; form.elements.providerId.disabled = false; form.elements.status.checked = true; renderChannelCredentials(form.elements.providerId.value); return openModal('#recovery-channel-modal'); }
+      if (action === 'edit-channel') { const item = channelById(id); if (!item) return; const form = document.querySelector('#recovery-channel-form'); form.reset(); form.elements.id.value = item.id; form.elements.label.value = item.label; form.elements.providerId.value = item.provider_id; form.elements.providerId.disabled = item.legacy === true; form.elements.status.checked = Number(item.status) === 1; renderChannelCredentials(item.provider_id, item); return openModal('#recovery-channel-modal'); }
+      if (action === 'test-channel') { const result = await busy(button, '验证中…', () => request(`/api/admin/recovery/dns-channels/${id}/test`, { method: 'POST', body: '{}' })); notify(`API 通道验证成功，可访问 ${result.zoneCount} 个 Zone`); return load(); }
+      if (action === 'delete-channel' && confirm('确定删除这个 DNS API 通道吗？仍被 Bootstrap DNS 使用的通道不能删除。')) { await request(`/api/admin/recovery/dns-channels/${id}`, { method: 'DELETE' }); notify('DNS API 通道已删除'); return load(); }
+      if (action === 'open-bootstrap') { const form = document.querySelector('#recovery-bootstrap-form'); form.reset(); form.elements.id.value = ''; form.elements.status.checked = true; form.elements.providerId.value = 'cloudflare'; form.elements.shareRole.value = 'A'; syncBootstrapPublisher('', 'automatic'); return openModal('#recovery-bootstrap-modal'); }
+      if (action === 'edit-bootstrap') { const item = bootstrapById(id); if (!item) return; const form = document.querySelector('#recovery-bootstrap-form'); form.reset(); form.elements.id.value = item.id; form.elements.label.value = item.label; form.elements.recordName.value = item.record_name; form.elements.zoneName.value = item.zone_name; form.elements.providerZoneId.value = item.provider_zone_id || ''; form.elements.sortOrder.value = item.sort_order; form.elements.providerId.value = item.provider_id || 'cloudflare'; form.elements.shareRole.value = item.share_role || 'LEGACY'; form.elements.status.checked = Number(item.status) === 1; syncBootstrapPublisher(item.dns_channel_id, item.publish_mode || 'manual'); return openModal('#recovery-bootstrap-modal'); }
       if (action === 'delete-domain' && confirm('确定删除这条恢复专用线路吗？已发布的历史版本不会被修改。')) { await request(`/api/admin/recovery/domains/${id}`, { method: 'DELETE' }); notify('恢复线路已删除'); return load(); }
-      if (action === 'delete-bootstrap' && confirm('确定删除这个 Bootstrap DNS 配置吗？Cloudflare 中已发布的 TXT 不会自动删除。')) { await request(`/api/admin/recovery/bootstrap/${id}`, { method: 'DELETE' }); notify('Bootstrap DNS 已删除'); return load(); }
+      if (action === 'delete-bootstrap' && confirm('确定删除这个 Bootstrap DNS 配置吗？权威 DNS 中已发布的 TXT 不会自动删除。')) { await request(`/api/admin/recovery/bootstrap/${id}`, { method: 'DELETE' }); notify('Bootstrap DNS 已删除'); return load(); }
       if (action === 'delete-route' && confirm('确定删除这条 DNS/TXT 查询线路吗？')) { await request(`/api/admin/recovery/lookup-routes/${id}`, { method: 'DELETE' }); notify('查询线路已删除'); return load(); }
       if (action === 'probe-domain') { await busy(button, '检测中…', () => request(`/api/admin/recovery/domains/${id}/probe`, { method: 'POST', body: '{}' })); notify('线路检测完成'); return load(); }
       if (action === 'probe-all') { const result = await busy(button, '正在检测…', () => request('/api/admin/recovery/domains/probe-all', { method: 'POST', body: '{}' })); notify(`检测完成：正常 ${result.healthy} 条，异常 ${result.failed} 条`); return load(); }
@@ -220,10 +255,11 @@
     panel.querySelectorAll('[data-close-recovery-modal]').forEach(button => button.addEventListener('click', closeModals));
     panel.querySelectorAll('.recovery-modal').forEach(modal => modal.addEventListener('click', event => { if (event.target === modal) closeModals(); }));
     panel.querySelector('#recovery-profile-select').addEventListener('change', event => { currentProfileId = Number(event.currentTarget.value) || 1; void load(); });
-    panel.querySelector('#recovery-bootstrap-form').elements.providerId.addEventListener('change', event => {
-      const form = event.currentTarget.form;
-      form.elements.publishMode.value = event.currentTarget.value === 'cloudflare' ? 'automatic' : 'manual';
-    });
+    const bootstrapForm = panel.querySelector('#recovery-bootstrap-form');
+    bootstrapForm.elements.providerId.addEventListener('change', () => syncBootstrapPublisher('', 'automatic'));
+    bootstrapForm.elements.publishMode.addEventListener('change', () => syncBootstrapPublisher(bootstrapForm.elements.dnsChannelId.value, bootstrapForm.elements.publishMode.value));
+    const channelForm = panel.querySelector('#recovery-channel-form');
+    channelForm.elements.providerId.addEventListener('change', event => renderChannelCredentials(event.currentTarget.value));
     panel.querySelector('#recovery-route-form').addEventListener('submit', async event => {
       event.preventDefault(); const form = event.currentTarget, submit = form.querySelector('button[type="submit"]');
       const payload = Object.fromEntries(new FormData(form)); payload.status = 1;
@@ -234,13 +270,14 @@
       const payload = Object.fromEntries(new FormData(form)); payload.enabled = form.elements.enabled.checked ? 1 : 0;
       try { await busy(submit, '保存中…', () => request('/api/admin/recovery/settings', { method: 'PUT', body: JSON.stringify(payload) })); notify('恢复系统设置已保存'); await load(); } catch (error) { notify(error.message); }
     });
-    panel.querySelector('#recovery-cloudflare-form').elements.reuseCentral.addEventListener('change', event => {
-      const form = event.currentTarget.form; form.elements.accountId.disabled = event.currentTarget.checked; form.elements.apiToken.disabled = event.currentTarget.checked;
-    });
-    panel.querySelector('#recovery-cloudflare-form').addEventListener('submit', async event => {
-      event.preventDefault(); const form = event.currentTarget, submit = form.querySelector('button[type="submit"]');
-      const payload = Object.fromEntries(new FormData(form)); payload.reuseCentral = form.elements.reuseCentral.checked;
-      try { await busy(submit, '保存中…', () => request('/api/admin/recovery/cloudflare', { method: 'PUT', body: JSON.stringify(payload) })); notify('DNS 凭据已保存'); await load(); } catch (error) { notify(error.message); }
+    channelForm.addEventListener('submit', async event => {
+      event.preventDefault(); const form = event.currentTarget, id = form.elements.id.value, submit = form.querySelector('button[type="submit"]');
+      const providerId = form.elements.providerId.value;
+      const payload = Object.fromEntries(new FormData(form));
+      payload.providerId = providerId;
+      payload.status = form.elements.status.checked ? 1 : 0;
+      payload.reuseCentral = form.elements.reuseCentral?.checked === true;
+      try { await busy(submit, '保存中…', () => request(id ? `/api/admin/recovery/dns-channels/${id}` : '/api/admin/recovery/dns-channels', { method: id ? 'PUT' : 'POST', body: JSON.stringify(payload) })); form.elements.providerId.disabled = false; closeModals(); notify('DNS API 通道已保存'); await load(); } catch (error) { notify(error.message); }
     });
     panel.querySelector('#recovery-domain-form').addEventListener('submit', async event => {
       event.preventDefault(); const form = event.currentTarget, id = form.elements.id.value, submit = form.querySelector('button[type="submit"]');

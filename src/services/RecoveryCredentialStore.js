@@ -67,10 +67,38 @@ async function saveCloudflareConfig(config) {
   });
 }
 
+function dnsChannel(credentialKey) {
+  const stored = read().dns_channels?.[String(credentialKey)] || {};
+  return {
+    providerId: String(stored.provider_id || '').trim().toLowerCase(),
+    credentials: stored.credentials && typeof stored.credentials === 'object' ? { ...stored.credentials } : {}
+  };
+}
+
+async function saveDnsChannel(credentialKey, providerId, credentials) {
+  const stored = read();
+  const channels = { ...(stored.dns_channels || {}) };
+  channels[String(credentialKey)] = {
+    provider_id: String(providerId || '').trim().toLowerCase(),
+    credentials: { ...(credentials || {}) }
+  };
+  await write({ ...stored, dns_channels: channels });
+}
+
+async function deleteDnsChannel(credentialKey) {
+  const stored = read();
+  const channels = { ...(stored.dns_channels || {}) };
+  delete channels[String(credentialKey)];
+  await write({ ...stored, dns_channels: channels });
+}
+
 module.exports = {
   credentialPath,
   signingKeys,
   saveSigningKeys,
   cloudflareConfig,
-  saveCloudflareConfig
+  saveCloudflareConfig,
+  dnsChannel,
+  saveDnsChannel,
+  deleteDnsChannel
 };

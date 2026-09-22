@@ -65,6 +65,11 @@ router.get('/api/admin/recovery/bootstrap/:id/doh', RecoveryController.diagnoseD
 router.post('/api/admin/recovery/lookup-routes', RecoveryController.createLookupRoute);
 router.delete('/api/admin/recovery/lookup-routes/:id', RecoveryController.deleteLookupRoute);
 router.put('/api/admin/recovery/cloudflare', RecoveryController.saveCloudflare);
+router.post('/api/admin/recovery/dns-channels', RecoveryController.createDnsChannel);
+router.put('/api/admin/recovery/dns-channels/:id', RecoveryController.updateDnsChannel);
+router.post('/api/admin/recovery/dns-channels/:id/test', RecoveryController.testDnsChannel);
+router.get('/api/admin/recovery/dns-channels/:id/zones', RecoveryController.listDnsChannelZones);
+router.delete('/api/admin/recovery/dns-channels/:id', RecoveryController.deleteDnsChannel);
 router.post('/api/admin/recovery/keys/ensure', RecoveryController.ensureKey);
 router.post('/api/admin/recovery/keys/next', RecoveryController.generateNextKey);
 router.post('/api/admin/recovery/keys/promote', RecoveryController.promoteNextKey);

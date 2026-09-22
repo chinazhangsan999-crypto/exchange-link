@@ -3,10 +3,10 @@
 const crypto = require('crypto');
 const axios = require('axios');
 const RecoveryModel = require('../models/RecoveryModel');
-const FrontendOriginModel = require('../models/FrontendOriginModel');
 const CloudflareFrontendModel = require('../models/CloudflareFrontendModel');
 const RecoveryCredentialStore = require('./RecoveryCredentialStore');
 const IntegrationCredentialStore = require('./IntegrationCredentialStore');
+const DnsPublisherService = require('./DnsPublisherService');
 const { assertSafeBacklinkUrl, createPinnedAxiosConfig } = require('./InspectionService');
 const { runPromisePool } = require('../utils/asyncPool');
 
@@ -85,7 +85,9 @@ function validateBootstrapInput(input = {}) {
   if (!['A', 'B', 'LEGACY'].includes(shareRole)) throw new Error('TXT 分片角色只能是 A、B 或旧版兼容');
   const publishMode = String(input.publishMode || (providerId === 'cloudflare' ? 'automatic' : 'manual')).trim().toLowerCase();
   if (!['automatic', 'manual'].includes(publishMode)) throw new Error('发布方式不正确');
-  if (publishMode === 'automatic' && providerId !== 'cloudflare') throw new Error('当前版本仅 Cloudflare 支持自动写入；其他托管商请使用手动发布并由 DoH 回读验证');
+  const capability = DnsPublisherService.providerCapabilities().find(item => item.id === providerId);
+  if (publishMode === 'automatic' && !capability?.automaticPublish) throw new Error('该 DNS 服务商当前不支持 API 自动发布');
+  const dnsChannelId = Number.parseInt(input.dnsChannelId, 10);
   return {
     label,
     zoneName,
@@ -95,8 +97,21 @@ function validateBootstrapInput(input = {}) {
     sortOrder: Math.max(-100000, Math.min(100000, Number.parseInt(input.sortOrder, 10) || 0)),
     providerId,
     shareRole,
-    publishMode
+    publishMode,
+    dnsChannelId: Number.isInteger(dnsChannelId) && dnsChannelId > 0 ? dnsChannelId : null,
+    providerZoneId: String(input.providerZoneId || '').trim()
   };
+}
+
+async function validateBootstrapConfiguration(input = {}, profileId = 1) {
+  const normalized = validateBootstrapInput(input);
+  if (normalized.publishMode !== 'automatic') return { ...normalized, dnsChannelId: null, providerZoneId: '' };
+  if (!normalized.dnsChannelId) throw new Error('API 自动发布必须选择 DNS API 通道');
+  const channel = await RecoveryModel.getDnsChannel(normalized.dnsChannelId, profileId);
+  if (!channel || Number(channel.status) !== 1) throw new Error('所选 DNS API 通道不存在或已停用');
+  if (channel.provider_id !== normalized.providerId) throw new Error('DNS API 通道与权威 DNS 服务商不匹配');
+  if (!credentialConfigured(channel.provider_id, credentialsForChannel(channel))) throw new Error('所选 DNS API 通道尚未配置完整凭据');
+  return normalized;
 }
 
 function publicKeyPemToSpkiBase64(pem) {
@@ -535,24 +550,194 @@ function cloudflareCredential() {
   return source;
 }
 
-async function cloudflareRequest(method, pathname, body) {
-  const credential = cloudflareCredential();
-  const response = await fetch(`https://api.cloudflare.com/client/v4${pathname}`, {
-    method,
-    headers: { Authorization: `Bearer ${credential.apiToken}`, 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
-  const payload = await response.json().catch(() => null);
-  if (!response.ok || payload?.success !== true) throw new Error(payload?.errors?.[0]?.message || `Cloudflare API 返回 HTTP ${response.status}`);
-  return payload.result;
+function credentialConfigured(providerId, credentials = {}) {
+  if (providerId === 'cloudflare') return /^[a-f0-9]{32}$/i.test(credentials.accountId || '') && String(credentials.apiToken || '').length >= 20;
+  if (providerId === 'desec') return String(credentials.apiToken || '').length >= 20;
+  if (providerId === 'cloudns') return ['auth-id', 'sub-auth-id', 'sub-auth-user'].includes(credentials.authType)
+    && Boolean(String(credentials.authId || '').trim()) && String(credentials.authPassword || '').length >= 4;
+  if (providerId === 'route53') return String(credentials.accessKeyId || '').length >= 16 && String(credentials.secretAccessKey || '').length >= 32;
+  return false;
 }
 
-async function resolveZoneId(zoneName) {
-  const credential = cloudflareCredential();
-  const zones = await cloudflareRequest('GET', `/zones?name=${encodeURIComponent(zoneName)}&status=active&account.id=${encodeURIComponent(credential.accountId)}`);
-  const exact = zones.find(item => String(item.name).toLowerCase() === zoneName.toLowerCase());
-  if (!exact?.id) throw new Error(`Cloudflare 未找到 Active Zone：${zoneName}`);
-  return exact.id;
+function credentialsForChannel(channel) {
+  if (!channel) return {};
+  if (String(channel.credential_key || '').startsWith('legacy-cloudflare:')) {
+    try { return cloudflareCredential(); } catch { return {}; }
+  }
+  const stored = RecoveryCredentialStore.dnsChannel(channel.credential_key);
+  const credentials = stored.credentials || {};
+  if (channel.provider_id === 'cloudflare' && credentials.reuseCentral === true) {
+    return IntegrationCredentialStore.cloudflareApiEdgeConfig();
+  }
+  return credentials;
+}
+
+function normalizeChannelCredentials(providerId, input = {}, previous = {}) {
+  const keep = (name, aliases = []) => {
+    const value = [name, ...aliases].map(key => input[key]).find(item => String(item || '').trim());
+    return String(value || previous[name] || '').trim();
+  };
+  if (providerId === 'cloudflare') {
+    const reuseCentral = ['1', 1, true, 'true', 'on'].includes(input.reuseCentral);
+    const credentials = { reuseCentral, accountId: keep('accountId'), apiToken: keep('apiToken') };
+    const effective = reuseCentral ? IntegrationCredentialStore.cloudflareApiEdgeConfig() : credentials;
+    if (!credentialConfigured(providerId, effective)) throw new Error(reuseCentral ? '中央 Cloudflare 凭据尚未配置完整' : 'Cloudflare Account ID 或 API Token 格式不正确');
+    return credentials;
+  }
+  if (providerId === 'desec') {
+    const credentials = { apiToken: keep('apiToken') };
+    if (!credentialConfigured(providerId, credentials)) throw new Error('deSEC API Token 格式不正确');
+    return credentials;
+  }
+  if (providerId === 'cloudns') {
+    const credentials = {
+      authType: String(input.authType || previous.authType || 'auth-id').trim(),
+      authId: keep('authId'),
+      authPassword: keep('authPassword')
+    };
+    if (!credentialConfigured(providerId, credentials)) throw new Error('ClouDNS 认证类型、账号或密码格式不正确');
+    return credentials;
+  }
+  if (providerId === 'route53') {
+    const credentials = {
+      accessKeyId: keep('accessKeyId'),
+      secretAccessKey: keep('secretAccessKey'),
+      sessionToken: keep('sessionToken')
+    };
+    if (!credentialConfigured(providerId, credentials)) throw new Error('AWS Access Key ID 或 Secret Access Key 格式不正确');
+    return credentials;
+  }
+  throw new Error('该 DNS 服务商当前不支持 API 自动发布');
+}
+
+function channelAccountHint(providerId, credentials) {
+  const mask = value => {
+    const text = String(value || '');
+    if (text.length <= 8) return text ? `${text.slice(0, 2)}***` : '';
+    return `${text.slice(0, 4)}…${text.slice(-4)}`;
+  };
+  if (providerId === 'cloudflare') return credentials.reuseCentral ? '复用中央凭据' : mask(credentials.accountId);
+  if (providerId === 'desec') return mask(credentials.apiToken);
+  if (providerId === 'cloudns') return `${credentials.authType}:${mask(credentials.authId)}`;
+  if (providerId === 'route53') return mask(credentials.accessKeyId);
+  return '';
+}
+
+function serializeDnsChannel(channel) {
+  const credentials = credentialsForChannel(channel);
+  const legacy = String(channel.credential_key || '').startsWith('legacy-cloudflare:');
+  const stored = legacy ? RecoveryCredentialStore.cloudflareConfig() : RecoveryCredentialStore.dnsChannel(channel.credential_key).credentials;
+  return {
+    ...channel,
+    configured: credentialConfigured(channel.provider_id, credentials),
+    reuse_central: channel.provider_id === 'cloudflare' && stored.reuseCentral === true,
+    auth_type: channel.provider_id === 'cloudns' ? String(stored.authType || 'auth-id') : undefined,
+    legacy,
+    credential_key: undefined
+  };
+}
+
+async function ensureLegacyCloudflareChannel(profileId = 1) {
+  const channels = await RecoveryModel.listDnsChannels(profileId);
+  const existing = channels.find(item => item.credential_key === `legacy-cloudflare:${profileId}`);
+  if (existing) {
+    await RecoveryModel.assignDnsChannelToLegacyCloudflare(existing.id, profileId);
+    return existing;
+  }
+  const records = await RecoveryModel.listBootstrapRecords({ profileId });
+  const hasLegacyRecord = records.some(item => item.provider_id === 'cloudflare' && item.publish_mode === 'automatic' && !item.dns_channel_id);
+  const credential = (() => { try { return cloudflareCredential(); } catch { return {}; } })();
+  if (!hasLegacyRecord && !credentialConfigured('cloudflare', credential)) return null;
+  const channel = await RecoveryModel.createDnsChannel({
+    providerId: 'cloudflare', label: '默认 Cloudflare 通道',
+    credentialKey: `legacy-cloudflare:${profileId}`,
+    accountHint: channelAccountHint('cloudflare', credential), status: 1
+  }, profileId);
+  await RecoveryModel.assignDnsChannelToLegacyCloudflare(channel.id, profileId);
+  return channel;
+}
+
+function validateChannelLabel(value) {
+  const label = String(value || '').trim();
+  if (!label || label.length > 80) throw new Error('API 通道名称需为 1 到 80 个字符');
+  return label;
+}
+
+async function createDnsChannel(input = {}, profileId = 1) {
+  const providerId = String(input.providerId || '').trim().toLowerCase();
+  const capability = DnsPublisherService.providerCapabilities().find(item => item.id === providerId);
+  if (!capability?.automaticPublish) throw new Error('该 DNS 服务商当前不支持 API 自动发布');
+  const credentials = normalizeChannelCredentials(providerId, input);
+  const credentialKey = `dns-${crypto.randomBytes(12).toString('hex')}`;
+  await RecoveryCredentialStore.saveDnsChannel(credentialKey, providerId, credentials);
+  try {
+    const channel = await RecoveryModel.createDnsChannel({
+      providerId, label: validateChannelLabel(input.label), credentialKey,
+      accountHint: channelAccountHint(providerId, credentials),
+      status: ['0', 0, false, 'false'].includes(input.status) ? 0 : 1
+    }, profileId);
+    await RecoveryModel.addAudit('dns-channel.create', { id: channel.id, providerId, label: channel.label }, true, '', profileId);
+    return serializeDnsChannel(channel);
+  } catch (error) {
+    await RecoveryCredentialStore.deleteDnsChannel(credentialKey).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function updateDnsChannel(id, input = {}, profileId = 1) {
+  const current = await RecoveryModel.getDnsChannel(id, profileId);
+  if (!current) throw new Error('DNS API 通道不存在');
+  const providerId = String(input.providerId || current.provider_id).trim().toLowerCase();
+  const capability = DnsPublisherService.providerCapabilities().find(item => item.id === providerId);
+  if (!capability?.automaticPublish) throw new Error('该 DNS 服务商当前不支持 API 自动发布');
+  const isLegacy = String(current.credential_key).startsWith('legacy-cloudflare:');
+  const stored = RecoveryCredentialStore.dnsChannel(current.credential_key);
+  const previous = providerId === current.provider_id ? (isLegacy ? credentialsForChannel(current) : stored.credentials) : {};
+  const credentials = normalizeChannelCredentials(providerId, input, previous);
+  if (isLegacy) {
+    if (providerId !== 'cloudflare') throw new Error('默认兼容通道不能更换服务商，请新建 API 通道');
+    await RecoveryCredentialStore.saveCloudflareConfig(credentials);
+  } else {
+    await RecoveryCredentialStore.saveDnsChannel(current.credential_key, providerId, credentials);
+  }
+  const channel = await RecoveryModel.updateDnsChannel(id, {
+    providerId, label: validateChannelLabel(input.label),
+    accountHint: channelAccountHint(providerId, credentials),
+    status: ['0', 0, false, 'false'].includes(input.status) ? 0 : 1
+  }, profileId);
+  await RecoveryModel.addAudit('dns-channel.update', { id, providerId, label: channel.label }, true, '', profileId);
+  return serializeDnsChannel(channel);
+}
+
+async function testDnsChannel(id, profileId = 1) {
+  const channel = await RecoveryModel.getDnsChannel(id, profileId);
+  if (!channel) throw new Error('DNS API 通道不存在');
+  try {
+    const result = await DnsPublisherService.verifyChannel(channel.provider_id, credentialsForChannel(channel));
+    const updated = await RecoveryModel.saveDnsChannelTestResult(id, { ok: true });
+    await RecoveryModel.addAudit('dns-channel.test', { id, providerId: channel.provider_id, zoneCount: result.zoneCount }, true, '', profileId);
+    return { channel: serializeDnsChannel(updated), zoneCount: result.zoneCount, zones: result.zones };
+  } catch (error) {
+    await RecoveryModel.saveDnsChannelTestResult(id, { ok: false, error: error.message });
+    await RecoveryModel.addAudit('dns-channel.test', { id, providerId: channel.provider_id }, false, error.message, profileId);
+    throw error;
+  }
+}
+
+async function listDnsChannelZones(id, profileId = 1) {
+  const channel = await RecoveryModel.getDnsChannel(id, profileId);
+  if (!channel) throw new Error('DNS API 通道不存在');
+  return DnsPublisherService.listZones(channel.provider_id, credentialsForChannel(channel));
+}
+
+async function deleteDnsChannel(id, profileId = 1) {
+  const channel = await RecoveryModel.getDnsChannel(id, profileId);
+  if (!channel) throw new Error('DNS API 通道不存在');
+  const references = await RecoveryModel.countDnsChannelReferences(id);
+  if (Number(references?.count || 0) > 0) throw new Error('该 API 通道仍被 Bootstrap DNS 使用，请先迁移或改为手动发布');
+  await RecoveryModel.deleteDnsChannel(id, profileId);
+  if (!String(channel.credential_key).startsWith('legacy-cloudflare:')) await RecoveryCredentialStore.deleteDnsChannel(channel.credential_key);
+  await RecoveryModel.addAudit('dns-channel.delete', { id, providerId: channel.provider_id, label: channel.label }, true, '', profileId);
 }
 
 async function publishRecord(record, release, profileId = 1, releaseShards = null) {
@@ -563,7 +748,7 @@ async function publishRecord(record, release, profileId = 1, releaseShards = nul
   const chunked = role === 'LEGACY' ? chunkEnvelope(envelope) : sharded[role];
   if (!chunked) throw new Error('Bootstrap TXT 分片角色不正确');
   assertPortableTxt(chunked.parts, byteLimit);
-  if (String(record.publish_mode || '').toLowerCase() === 'manual' || record.provider_id !== 'cloudflare') {
+  if (String(record.publish_mode || '').toLowerCase() === 'manual') {
     const diagnosis = await diagnoseDoh(record.record_name, profileId, record.id);
     const verified = role === 'LEGACY'
       ? diagnosis.some(result => result.envelopes.some(item => item.generation === release.generation && item.signatureValid))
@@ -575,15 +760,17 @@ async function publishRecord(record, release, profileId = 1, releaseShards = nul
     await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'manual_required', error: '请在对应权威 DNS 控制台写入以下 TXT，再执行 DoH 回读验证' });
     return { recordId: record.id, recordName: record.record_name, providerId: record.provider_id, role, verified: false, manualRequired: true, byteLimit, values: chunked.parts, diagnosis };
   }
-  const zoneId = await resolveZoneId(record.zone_name);
-  const existing = await cloudflareRequest('GET', `/zones/${zoneId}/dns_records?type=TXT&name=${encodeURIComponent(record.record_name)}&per_page=100`);
-  const created = [];
+  const channel = await RecoveryModel.getDnsChannel(record.dns_channel_id, profileId);
+  if (!channel || Number(channel.status) !== 1) throw new Error(`${record.label} 尚未绑定已启用的 DNS API 通道`);
+  if (channel.provider_id !== record.provider_id) throw new Error(`${record.label} 绑定的 API 通道与 DNS 服务商不匹配`);
+  const operation = await DnsPublisherService.createPublishOperation(record.provider_id, credentialsForChannel(channel), {
+    zoneName: record.zone_name,
+    providerZoneId: record.provider_zone_id,
+    recordName: record.record_name,
+    values: chunked.parts,
+    generation: release.generation
+  });
   try {
-    for (const content of chunked.parts) {
-      created.push(await cloudflareRequest('POST', `/zones/${zoneId}/dns_records`, {
-        type: 'TXT', name: record.record_name, content, ttl: 60, comment: `navigation recovery generation ${release.generation}`
-      }));
-    }
     let diagnosis = [];
     let verified = false;
     for (let attempt = 0; attempt < 3 && !verified; attempt += 1) {
@@ -594,18 +781,11 @@ async function publishRecord(record, release, profileId = 1, releaseShards = nul
         : result.shares?.some(item => item.set === chunked.set && item.role === role));
     }
     if (!verified) throw new Error('新 TXT 已写入，但多 DoH 回读尚未发现有效的新版本');
-    for (const old of existing) {
-      if (String(old.content || '').includes(`set=${chunked.set};`)) continue;
-      if (/^r[12];set=/.test(String(old.content || '').replace(/^"|"$/g, ''))) {
-        await cloudflareRequest('DELETE', `/zones/${zoneId}/dns_records/${encodeURIComponent(old.id)}`);
-      }
-    }
+    await operation.commit();
     await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'verified', generation: release.generation, verified: true });
-    return { recordId: record.id, recordName: record.record_name, providerId: record.provider_id, role, verified: true, chunks: chunked.parts.length, byteLimit, diagnosis };
+    return { recordId: record.id, recordName: record.record_name, providerId: record.provider_id, channelId: channel.id, role, verified: true, chunks: chunked.parts.length, byteLimit, diagnosis };
   } catch (error) {
-    for (const item of created) {
-      if (item?.id) await cloudflareRequest('DELETE', `/zones/${zoneId}/dns_records/${encodeURIComponent(item.id)}`).catch(() => undefined);
-    }
+    await operation.rollback().catch(() => undefined);
     await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'failed', error: error.message });
     throw error;
   }
@@ -623,6 +803,7 @@ async function publishRelease(id, profileId = null) {
   ].filter(item => item.keyId && item.publicKey);
   const envelope = envelopeForRelease(release);
   if (!verifyEnvelope(envelope, publicKeys)) throw new Error('恢复版本签名校验失败，拒绝发布');
+  await ensureLegacyCloudflareChannel(profileId);
   const records = await RecoveryModel.listBootstrapRecords({ enabledOnly: true, profileId });
   const signing = RecoveryCredentialStore.signingKeys(profileId);
   const releaseSecret = signing.current?.keyId === release.key_id ? signing.current.privateKey : '';
@@ -743,10 +924,17 @@ async function getPublicManifest(frontendOrigin = '') {
 }
 
 async function overview(profileId = 1) {
-  const [profiles, settings, domains, bootstraps, routes, releases, keys, audit, frontendOrigins, resolvers, dnsProviders] = await Promise.all([
+  await ensureLegacyCloudflareChannel(profileId);
+  const [profiles, settings, domains, bootstraps, routes, releases, keys, audit, frontendWorkers, resolvers, dnsProviders, dnsChannels] = await Promise.all([
     RecoveryModel.listProfiles(), RecoveryModel.getSettings(profileId), RecoveryModel.listDomains({ profileId }), RecoveryModel.listBootstrapRecords({ profileId }),
-    RecoveryModel.listLookupRoutes(profileId), RecoveryModel.listReleases(50, profileId), keyStatus(profileId), RecoveryModel.listAudit(100, profileId), FrontendOriginModel.listEnabledOrigins(), RecoveryModel.listResolvers(), RecoveryModel.listDnsProviders()
+    RecoveryModel.listLookupRoutes(profileId), RecoveryModel.listReleases(50, profileId), keyStatus(profileId), RecoveryModel.listAudit(100, profileId), CloudflareFrontendModel.listWorkers(), RecoveryModel.listResolvers(), RecoveryModel.listDnsProviders(), RecoveryModel.listDnsChannels(profileId)
   ]);
+  const previewWorker = frontendWorkers.find(worker =>
+    Number(worker.recovery_profile_id) === Number(profileId)
+      && worker.state === 'ready'
+      && Boolean(worker.hostname)
+      && !worker.retired_at
+  );
   const credential = RecoveryCredentialStore.cloudflareConfig();
   const central = IntegrationCredentialStore.cloudflareApiEdgeConfig();
   return {
@@ -766,9 +954,13 @@ async function overview(profileId = 1) {
       tokenConfigured: credential.reuseCentral ? Boolean(central.apiToken) : Boolean(credential.apiToken)
     },
     resolvers,
-    dnsProviders,
+    dnsProviders: dnsProviders.map(provider => ({
+      ...provider,
+      automatic_publish: DnsPublisherService.providerCapabilities().find(item => item.id === provider.id)?.automaticPublish === true
+    })),
+    dnsChannels: dnsChannels.map(serializeDnsChannel),
     lookupRoutes: routes,
-    publicPreviewOrigin: frontendOrigins[0]?.origin || '',
+    publicPreviewOrigin: previewWorker ? `https://${previewWorker.hostname}` : '',
     audit
   };
 }
@@ -819,6 +1011,7 @@ module.exports = {
   normalizeOrigin,
   validateDomainInput,
   validateBootstrapInput,
+  validateBootstrapConfiguration,
   validateLookupRouteInput,
   updateSettings,
   ensureCurrentKey,
@@ -835,6 +1028,11 @@ module.exports = {
   overview,
   diagnoseDoh,
   saveCloudflareCredentials,
+  createDnsChannel,
+  updateDnsChannel,
+  testDnsChannel,
+  listDnsChannelZones,
+  deleteDnsChannel,
   verifyEnvelope,
   chunkEnvelope,
   assembleTxt,

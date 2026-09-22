@@ -61,7 +61,7 @@ const probeAll = action(async (req, res) => ok(res, await RecoveryService.probeA
 
 const createBootstrap = action(async (req, res) => {
   const profileId = profileIdOf(req);
-  const record = await RecoveryModel.createBootstrapRecord(RecoveryService.validateBootstrapInput(req.body || {}), profileId);
+  const record = await RecoveryModel.createBootstrapRecord(await RecoveryService.validateBootstrapConfiguration(req.body || {}, profileId), profileId);
   await RecoveryModel.addAudit('bootstrap.create', { id: record.id, recordName: record.record_name }, true, '', profileId);
   return ok(res, record, 'Bootstrap DNS 已新增');
 });
@@ -70,7 +70,7 @@ const updateBootstrap = action(async (req, res) => {
   const id = idOf(req.params.id);
   const profileId = profileIdOf(req);
   if (!await RecoveryModel.getBootstrapRecord(id, profileId)) return fail(res, 'Bootstrap DNS 不存在', 404);
-  const record = await RecoveryModel.updateBootstrapRecord(id, RecoveryService.validateBootstrapInput(req.body || {}), profileId);
+  const record = await RecoveryModel.updateBootstrapRecord(id, await RecoveryService.validateBootstrapConfiguration(req.body || {}, profileId), profileId);
   await RecoveryModel.addAudit('bootstrap.update', { id, recordName: record.record_name }, true, '', profileId);
   return ok(res, record, 'Bootstrap DNS 已更新');
 });
@@ -86,6 +86,14 @@ const deleteBootstrap = action(async (req, res) => {
 });
 
 const saveCloudflare = action(async (req, res) => ok(res, await RecoveryService.saveCloudflareCredentials(req.body || {}, profileIdOf(req)), '恢复系统 DNS 凭据已保存'));
+const createDnsChannel = action(async (req, res) => ok(res, await RecoveryService.createDnsChannel(req.body || {}, profileIdOf(req)), 'DNS API 通道已新增'));
+const updateDnsChannel = action(async (req, res) => ok(res, await RecoveryService.updateDnsChannel(idOf(req.params.id), req.body || {}, profileIdOf(req)), 'DNS API 通道已更新'));
+const testDnsChannel = action(async (req, res) => ok(res, await RecoveryService.testDnsChannel(idOf(req.params.id), profileIdOf(req)), 'DNS API 通道验证成功'));
+const listDnsChannelZones = action(async (req, res) => ok(res, await RecoveryService.listDnsChannelZones(idOf(req.params.id), profileIdOf(req))));
+const deleteDnsChannel = action(async (req, res) => {
+  await RecoveryService.deleteDnsChannel(idOf(req.params.id), profileIdOf(req));
+  return ok(res, null, 'DNS API 通道已删除');
+});
 const ensureKey = action(async (req, res) => { const profileId=profileIdOf(req); await RecoveryService.ensureCurrentKey(profileId); return ok(res, await RecoveryService.keyStatus(profileId), '当前签名密钥已就绪'); });
 const generateNextKey = action(async (req, res) => ok(res, await RecoveryService.generateNextKey(profileIdOf(req)), '下一代签名密钥已生成'));
 const promoteNextKey = action(async (req, res) => ok(res, await RecoveryService.promoteNextKey(profileIdOf(req)), '下一代密钥已提升为当前密钥'));
@@ -129,6 +137,11 @@ module.exports = {
   updateBootstrap,
   deleteBootstrap,
   saveCloudflare,
+  createDnsChannel,
+  updateDnsChannel,
+  testDnsChannel,
+  listDnsChannelZones,
+  deleteDnsChannel,
   ensureKey,
   generateNextKey,
   promoteNextKey,

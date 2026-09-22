@@ -123,6 +123,14 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
       VALUES ('test','测试账号','0123456789abcdef0123456789abcdef','test-public')`);
     await database.run(`INSERT INTO cloudflare_frontend_workers(account_profile_id,worker_name,hostname,zone_name,state,recovery_profile_id)
       VALUES ('test','test-public-001','global.example.test','example.test','ready',?)`, [second.id]);
+    const FrontendOriginModel = require('../src/models/FrontendOriginModel');
+    await FrontendOriginModel.initializeFrontendOriginTable();
+    await FrontendOriginModel.replaceOrigins([
+      { origin: 'https://houtai.example.test', enabled: true },
+      { origin: 'https://global.example.test', enabled: true }
+    ]);
+    const overview = await RecoveryService.overview(second.id);
+    assert.equal(overview.publicPreviewOrigin, 'https://global.example.test');
     const boundManifest = await RecoveryService.getPublicManifest('https://global.example.test');
     assert.equal(boundManifest.enabled, true);
     assert.equal(boundManifest.envelope.project, second.project_id);
