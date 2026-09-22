@@ -28,6 +28,10 @@ const AUTHORITATIVE_DNS_CATALOG = Object.freeze([
   ['desec', 'deSEC', 'automatic', 255, 240, '支持多个 API Token 通道自动发布；单字符串 255 字节'],
   ['cloudns', 'ClouDNS', 'automatic', 255, 240, '支持主账号与子账号 API 通道自动发布；单字符串 255 字节'],
   ['route53', 'AWS Route 53', 'automatic', 255, 240, '支持多个 AWS 凭据通道自动发布；单字符串 255 字节'],
+  ['dnspod', '腾讯云 DNSPod', 'automatic', 255, 240, '支持多个腾讯云 API 密钥通道；按 DNS 单字符串 255 字节、系统 240 字节发布'],
+  ['aliyun', '阿里云云解析 DNS', 'automatic', 512, 240, '控制台支持最多 512 个字符；系统仍使用跨平台 240 字节安全上限'],
+  ['baidu', '百度智能云 DNS', 'automatic', 255, 240, '官方 TXT 记录值上限 255 字符；系统使用 240 字节安全上限'],
+  ['volcengine', '火山引擎 DNS', 'automatic', 255, 240, '公共 DNS 使用跨平台 255 字节边界；系统使用 240 字节安全上限'],
   ['he', 'Hurricane Electric Free DNS', 'manual', 255, 240, '免费 DNS 以手动发布为主；使用跨平台 240 字节安全上限']
 ]);
 

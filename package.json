@@ -9,6 +9,8 @@
     "build:public-frontend": "node scripts/build-public-frontend.js"
   },
   "dependencies": {
+    "@alicloud/alidns20150109": "^4.6.1",
+    "@alicloud/openapi-client": "^0.4.15",
     "@aws-sdk/client-route-53": "^3.1137.0",
     "@fingerprintjs/botd": "^2.0.0",
     "archiver": "^8.0.0",
@@ -26,6 +28,7 @@
     "node-cron": "^4.6.0",
     "sqlite3": "^5.1.7",
     "svg-captcha": "^1.4.0",
+    "tencentcloud-sdk-nodejs-dnspod": "^4.1.266",
     "tldts": "^6.1.86",
     "ua-parser-js": "^1.0.39"
   }

@@ -16,10 +16,14 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
 
   const RecoveryModel = require('../src/models/RecoveryModel');
   const RecoveryService = require('../src/services/RecoveryService');
+  const CloudflareFrontendModel = require('../src/models/CloudflareFrontendModel');
+  const FrontendOriginModel = require('../src/models/FrontendOriginModel');
   const database = require('../src/config/database');
 
   try {
     await RecoveryModel.initializeRecoveryTables();
+    await CloudflareFrontendModel.initializeCloudflareFrontendTables();
+    await FrontendOriginModel.initializeFrontendOriginTable();
     await RecoveryService.updateSettings({
       enabled: 1,
       recovery_email: 'recovery@example.com',
@@ -32,6 +36,61 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
       probe_timeout_ms: 3000,
       probe_concurrency: 3
     });
+    const cloudflareChannel = await RecoveryService.createDnsChannel({
+      label: 'Cloudflare 账号 A', providerId: 'cloudflare',
+      accountId: '0123456789abcdef0123456789abcdef', apiToken: 'cf-token-abcdefghijklmnopqrstuvwxyz', status: 1
+    });
+    const cloudflareChannelB = await RecoveryService.createDnsChannel({
+      label: 'Cloudflare 账号 B', providerId: 'cloudflare',
+      accountId: 'fedcba9876543210fedcba9876543210', apiToken: 'cf-token-b-abcdefghijklmnopqrstuvwxyz', status: 1
+    });
+    const deSecChannel = await RecoveryService.createDnsChannel({
+      label: 'deSEC 账号', providerId: 'desec', apiToken: 'desec-token-abcdefghijklmnopqrstuvwxyz', status: 1
+    });
+    const cloudnsChannel = await RecoveryService.createDnsChannel({
+      label: 'ClouDNS 账号', providerId: 'cloudns', authType: 'sub-auth-id', authId: '12345', authPassword: 'cloudns-secret', status: 1
+    });
+    const route53Channel = await RecoveryService.createDnsChannel({
+      label: 'Route 53 账号', providerId: 'route53', accessKeyId: 'AKIA0123456789ABCDEF',
+      secretAccessKey: 'route53-secret-access-key-abcdefghijklmnopqrstuvwxyz', status: 1
+    });
+    const dnspodChannel = await RecoveryService.createDnsChannel({
+      label: 'DNSPod 账号', providerId: 'dnspod', secretId: 'AKID0123456789ABCDEFGHIJKLMNOP', secretKey: 'dnspod-secret-key-abcdefghijklmnopqrstuvwxyz', status: 1
+    });
+    const aliyunChannel = await RecoveryService.createDnsChannel({
+      label: '阿里云账号', providerId: 'aliyun', accessKeyId: 'LTAI5t0123456789abcd', accessKeySecret: 'aliyun-secret-key-abcdefghijklmnopqrstuvwxyz', status: 1
+    });
+    const baiduChannel = await RecoveryService.createDnsChannel({
+      label: '百度云账号', providerId: 'baidu', accessKeyId: 'bce-access-key-0123456789', secretAccessKey: 'baidu-secret-key-abcdefghijklmnopqrstuvwxyz', status: 1
+    });
+    const volcengineChannel = await RecoveryService.createDnsChannel({
+      label: '火山引擎账号', providerId: 'volcengine', accessKeyId: 'AKLT0123456789ABCDEF', secretAccessKey: 'volcengine-secret-key-abcdefghijklmnopqrstuvwxyz', region: 'cn-beijing', status: 1
+    });
+    assert.notEqual(cloudflareChannel.id, cloudflareChannelB.id);
+    assert.equal(cloudnsChannel.auth_type, 'sub-auth-id');
+    assert.deepEqual([cloudflareChannel, cloudflareChannelB, deSecChannel, cloudnsChannel, route53Channel, dnspodChannel, aliyunChannel, baiduChannel, volcengineChannel].map(item => item.configured), [true, true, true, true, true, true, true, true, true]);
+    const channelOverview = await RecoveryService.overview();
+    assert.equal(channelOverview.dnsChannels.length, 9);
+    assert.equal(volcengineChannel.region, 'cn-beijing');
+    for (const providerId of ['dnspod', 'aliyun', 'baidu', 'volcengine']) {
+      const provider = channelOverview.dnsProviders.find(item => item.id === providerId);
+      assert.equal(provider.automatic_publish, true);
+      assert.equal(provider.portable_record_bytes, 240);
+    }
+    assert.doesNotMatch(JSON.stringify(channelOverview.dnsChannels), /cf-token|desec-token|cloudns-secret|route53-secret|dnspod-secret|aliyun-secret|baidu-secret|volcengine-secret/);
+    const automaticInput = await RecoveryService.validateBootstrapConfiguration(RecoveryService.validateBootstrapInput({
+      label: '临时自动发布', recordName: '_recovery.example.com', zoneName: 'example.com',
+      providerId: 'cloudflare', publishMode: 'automatic', dnsChannelId: cloudflareChannel.id, status: 1
+    }));
+    const automaticRecord = await RecoveryModel.createBootstrapRecord(automaticInput);
+    await assert.rejects(() => RecoveryService.deleteDnsChannel(cloudflareChannel.id), /仍被 Bootstrap DNS 使用/);
+    await RecoveryModel.deleteBootstrapRecord(automaticRecord.id);
+    await RecoveryService.deleteDnsChannel(cloudflareChannel.id);
+    assert.equal((await RecoveryModel.listDnsChannels()).length, 8);
+    await assert.rejects(() => RecoveryService.validateBootstrapConfiguration(RecoveryService.validateBootstrapInput({
+      label: '服务商不匹配', recordName: '_recovery.example.com', zoneName: 'example.com',
+      providerId: 'desec', publishMode: 'automatic', dnsChannelId: cloudflareChannelB.id, status: 1
+    })), /服务商不匹配/);
     await RecoveryModel.createDomain(RecoveryService.validateDomainInput({ title: '线路一', url: 'https://one.example.com', priority: 100, status: 1 }));
     await RecoveryModel.createDomain(RecoveryService.validateDomainInput({ title: '线路二', url: 'https://two.example.net', priority: 90, status: 1 }));
 
@@ -117,14 +176,10 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     await RecoveryModel.deleteBootstrapRecord(txtB.id, second.id);
     await RecoveryService.publishRelease(secondDraft.id, second.id);
 
-    const CloudflareFrontendModel = require('../src/models/CloudflareFrontendModel');
-    await CloudflareFrontendModel.initializeCloudflareFrontendTables();
     await database.run(`INSERT INTO cloudflare_frontend_accounts(id,label,account_id,worker_prefix)
       VALUES ('test','测试账号','0123456789abcdef0123456789abcdef','test-public')`);
     await database.run(`INSERT INTO cloudflare_frontend_workers(account_profile_id,worker_name,hostname,zone_name,state,recovery_profile_id)
       VALUES ('test','test-public-001','global.example.test','example.test','ready',?)`, [second.id]);
-    const FrontendOriginModel = require('../src/models/FrontendOriginModel');
-    await FrontendOriginModel.initializeFrontendOriginTable();
     await FrontendOriginModel.replaceOrigins([
       { origin: 'https://houtai.example.test', enabled: true },
       { origin: 'https://global.example.test', enabled: true }

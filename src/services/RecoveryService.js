@@ -80,7 +80,7 @@ function validateBootstrapInput(input = {}) {
   const recordName = normalizeDnsName(input.recordName, 'TXT 记录名');
   if (!(recordName === zoneName || recordName.endsWith(`.${zoneName}`))) throw new Error('TXT 记录必须位于所填写的 DNS Zone 内');
   const providerId = String(input.providerId || 'cloudflare').trim().toLowerCase();
-  if (!['cloudflare', 'desec', 'cloudns', 'route53', 'he'].includes(providerId)) throw new Error('请选择受支持的权威 DNS 托管商');
+  if (!['cloudflare', 'desec', 'cloudns', 'route53', 'dnspod', 'aliyun', 'baidu', 'volcengine', 'he'].includes(providerId)) throw new Error('请选择受支持的权威 DNS 托管商');
   const shareRole = String(input.shareRole || 'LEGACY').trim().toUpperCase();
   if (!['A', 'B', 'LEGACY'].includes(shareRole)) throw new Error('TXT 分片角色只能是 A、B 或旧版兼容');
   const publishMode = String(input.publishMode || (providerId === 'cloudflare' ? 'automatic' : 'manual')).trim().toLowerCase();
@@ -556,6 +556,10 @@ function credentialConfigured(providerId, credentials = {}) {
   if (providerId === 'cloudns') return ['auth-id', 'sub-auth-id', 'sub-auth-user'].includes(credentials.authType)
     && Boolean(String(credentials.authId || '').trim()) && String(credentials.authPassword || '').length >= 4;
   if (providerId === 'route53') return String(credentials.accessKeyId || '').length >= 16 && String(credentials.secretAccessKey || '').length >= 32;
+  if (providerId === 'dnspod') return String(credentials.secretId || '').length >= 16 && String(credentials.secretKey || '').length >= 16;
+  if (providerId === 'aliyun') return String(credentials.accessKeyId || '').length >= 12 && String(credentials.accessKeySecret || '').length >= 16;
+  if (providerId === 'baidu') return String(credentials.accessKeyId || '').length >= 12 && String(credentials.secretAccessKey || '').length >= 16;
+  if (providerId === 'volcengine') return String(credentials.accessKeyId || '').length >= 12 && String(credentials.secretAccessKey || '').length >= 16;
   return false;
 }
 
@@ -607,6 +611,29 @@ function normalizeChannelCredentials(providerId, input = {}, previous = {}) {
     if (!credentialConfigured(providerId, credentials)) throw new Error('AWS Access Key ID 或 Secret Access Key 格式不正确');
     return credentials;
   }
+  if (providerId === 'dnspod') {
+    const credentials = { secretId: keep('secretId'), secretKey: keep('secretKey') };
+    if (!credentialConfigured(providerId, credentials)) throw new Error('腾讯云 SecretId 或 SecretKey 格式不正确');
+    return credentials;
+  }
+  if (providerId === 'aliyun') {
+    const credentials = { accessKeyId: keep('accessKeyId'), accessKeySecret: keep('accessKeySecret') };
+    if (!credentialConfigured(providerId, credentials)) throw new Error('阿里云 AccessKey ID 或 AccessKey Secret 格式不正确');
+    return credentials;
+  }
+  if (providerId === 'baidu') {
+    const credentials = { accessKeyId: keep('accessKeyId'), secretAccessKey: keep('secretAccessKey') };
+    if (!credentialConfigured(providerId, credentials)) throw new Error('百度智能云 Access Key ID 或 Secret Access Key 格式不正确');
+    return credentials;
+  }
+  if (providerId === 'volcengine') {
+    const credentials = {
+      accessKeyId: keep('accessKeyId'), secretAccessKey: keep('secretAccessKey'),
+      sessionToken: keep('sessionToken'), region: keep('region') || 'cn-beijing'
+    };
+    if (!credentialConfigured(providerId, credentials)) throw new Error('火山引擎 Access Key ID 或 Secret Access Key 格式不正确');
+    return credentials;
+  }
   throw new Error('该 DNS 服务商当前不支持 API 自动发布');
 }
 
@@ -620,6 +647,8 @@ function channelAccountHint(providerId, credentials) {
   if (providerId === 'desec') return mask(credentials.apiToken);
   if (providerId === 'cloudns') return `${credentials.authType}:${mask(credentials.authId)}`;
   if (providerId === 'route53') return mask(credentials.accessKeyId);
+  if (providerId === 'dnspod') return mask(credentials.secretId);
+  if (providerId === 'aliyun' || providerId === 'baidu' || providerId === 'volcengine') return mask(credentials.accessKeyId);
   return '';
 }
 
@@ -632,6 +661,7 @@ function serializeDnsChannel(channel) {
     configured: credentialConfigured(channel.provider_id, credentials),
     reuse_central: channel.provider_id === 'cloudflare' && stored.reuseCentral === true,
     auth_type: channel.provider_id === 'cloudns' ? String(stored.authType || 'auth-id') : undefined,
+    region: channel.provider_id === 'volcengine' ? String(stored.region || 'cn-beijing') : undefined,
     legacy,
     credential_key: undefined
   };
