@@ -14,7 +14,10 @@ const kindLabels = Object.freeze({
   suspicious_10m: '疑似机器人集中出现',
   challenge_fail: '静默验证失败率过高',
   token_replay: '读取凭证疑似重放',
-  cross_site: '同类风险跨站扩散'
+  cross_site: '同类风险跨站扩散',
+  inventory_stale: '导航站运行清单已过期',
+  protocol_mismatch: '导航站维护协议不兼容',
+  site_update: '导航站实际组件有新版待评估'
 });
 
 function truncateUnicode(value, maxCharacters) {
@@ -65,6 +68,10 @@ function describeAlert(item) {
   if (details.failed != null) lines.push(`验证失败：${details.failed}/${details.total}（${Math.round((details.ratio || 0) * 100)}%）`);
   if (details.signal) lines.push(`风险信号：${details.signal}`);
   if (details.sites != null) lines.push(`影响站点：${details.sites}`);
+  if (details.reportedAt !== undefined) lines.push(`最后上报：${details.reportedAt || '从未上报'}`);
+  if (details.protocolVersion) lines.push(`当前协议：${details.protocolVersion}；期望：${details.expectedProtocol}`);
+  if (details.updates != null) lines.push(`待评估组件：${details.updates} 个`);
+  if (details.versions) lines.push(`版本差异：${details.versions}`);
   lines.push(`管理后台：${PUBLIC_API_URL}/admin`);
   return lines.join('\n');
 }

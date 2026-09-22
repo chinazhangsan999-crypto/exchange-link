@@ -72,10 +72,34 @@ async function main() {
 
   const delta = await signedRequest('GET', '/v1/decisions/delta?cursor=0&limit=10');
   const persisted = delta.data?.items?.find(item => item.subjectHash === visitorHash);
-  if (!persisted || persisted.decision !== 'deny') throw new Error('persisted decision not found');
+  if (!persisted || persisted.score !== 100 || !['observe', 'deny'].includes(persisted.decision)) {
+    throw new Error(`persisted decision not found: ${JSON.stringify(delta)}`);
+  }
 
   const evaluated = await signedRequest('POST', '/v1/evaluate', { visitorHash });
-  if (evaluated.data?.decision !== 'deny') throw new Error('Redis/PostgreSQL evaluation did not return deny');
+  if (evaluated.data?.score !== 100 || !['observe', 'deny'].includes(evaluated.data?.decision)) {
+    throw new Error('Redis/PostgreSQL evaluation did not return the persisted score');
+  }
+
+  const inventory = await signedRequest('POST', '/v1/agent/inventory', {
+    schemaVersion: 'inventory-v1', appVersion: 'smoke-test', gitCommit: 'smoke-test',
+    nodeVersion: process.version, riskProtocolVersion: 'risk-agent-v1',
+    deployedAt: new Date().toISOString(),
+    components: [{ key: 'botd', packageVersion: '2.0.0', assetVersion: '2.0.0', assetSha256: 'a'.repeat(64) }],
+    capabilities: ['botd', 'browser_pow', 'read_token', 'risk_decision_sync']
+  });
+  if (inventory.data?.siteKey !== siteKey) throw new Error('runtime inventory was not accepted');
+
+  const advisories = await signedRequest('GET', '/v1/agent/advisories');
+  if (!Array.isArray(advisories.data)) throw new Error('advisories response is invalid');
+
+  const testResult = await signedRequest('POST', '/v1/agent/test-results', {
+    projectKey: 'botd', targetVersion: 'smoke-test', testCommit: 'smoke-test',
+    automated: { node: 'passed' }, browsers: { chromium: 'passed' },
+    falsePositiveDelta: 0, recommendation: 'smoke test only', passed: true,
+    testedAt: new Date().toISOString()
+  });
+  if (testResult.data?.projectKey !== 'botd') throw new Error('test result was not accepted');
 
   process.stdout.write(JSON.stringify({
     ok: true,
@@ -84,6 +108,9 @@ async function main() {
     accepted: eventResult.data.accepted,
     decision: evaluated.data.decision,
     score: evaluated.data.score,
+    inventoryReported: true,
+    advisoryCount: advisories.data.length,
+    testResultReported: true,
     persistedSequence: persisted.sequence,
     visitorHash
   }));

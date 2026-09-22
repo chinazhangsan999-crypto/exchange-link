@@ -1,7 +1,8 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
-  const state = { csrf: '', sites: [], suspectPage: 1, suspectTotal: 0, currentSuspect: null, activeTab: 'connections' };
+  const initialTab = window.location.hash === '#suspects' ? 'suspects' : 'connections';
+  const state = { csrf: '', sites: [], suspectPage: 1, suspectTotal: 0, suspectItems: [], selectedSuspects: new Set(), currentSuspect: null, activeTab: initialTab, riskRange: '24h' };
   const signalLabels = Object.freeze({
     cloudflare_confirmed_bot: 'Cloudflare 已确认机器人', verified_search_bot: '已验证搜索引擎蜘蛛',
     known_ai_crawler: '已知 AI 爬虫', token_replay: '读取凭证重放', sequential_detail_scan: '连续枚举详情页',
@@ -53,11 +54,36 @@
     if (!response.ok) throw new Error(result?.message || `请求失败 (${response.status})`);
     return result;
   }
+  async function requestBlob(path, body) {
+    const response = await fetch(path, {
+      method: 'POST', credentials: 'same-origin', cache: 'no-store',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': state.csrf }, body: JSON.stringify(body)
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => null);
+      throw new Error(result?.message || `请求失败 (${response.status})`);
+    }
+    return response.blob();
+  }
   function toast(message) { clearTimeout(toastTimer); $('status-message').textContent = message; $('status-message').hidden = false; toastTimer = setTimeout(() => { $('status-message').hidden = true; }, 4500); }
   function node(tag, text = '', className = '') { const element = document.createElement(tag); element.textContent = text; if (className) element.className = className; return element; }
   function formatDate(value) { if (!value) return '尚无记录'; const date = new Date(value); return Number.isNaN(date.getTime()) ? '未知' : new Intl.DateTimeFormat('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(date); }
   function emptyRow(body, text, columns) { body.replaceChildren(); const tr = node('tr'); const td = node('td', text, 'empty-cell'); td.colSpan = columns; tr.append(td); body.append(tr); }
   function chip(text, on = true) { return node('span', text, `status-chip ${on ? 'on' : 'off'}`); }
+  function installDriveCallbackCopyControl() {
+    const input = $('drive-oauth-callback');
+    if (!input || input.parentElement?.querySelector('#copy-drive-oauth-callback')) return;
+    const row = node('div', '', 'readonly-copy-row');
+    const button = node('button', '复制回调地址', 'button secondary');
+    button.id = 'copy-drive-oauth-callback';
+    button.type = 'button';
+    button.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(input.value);
+      toast('Google OAuth 回调地址已复制');
+    });
+    input.before(row);
+    row.append(input, button);
+  }
   function actionButton(text, action, extra = '', id = '') { const button = node('button', text, `button small ${extra || 'secondary'}`); button.type = 'button'; button.dataset.action = action; if (id) button.dataset.id = id; return button; }
   function signalLabel(signal) { return signalLabels[signal] || signal; }
   function signalExplanation(signal) { return signalExplanations[signal] || '系统记录到了该风险信号，但暂未配置专用解释；请结合原始证据、命中次数和时间分布人工判断。'; }
@@ -120,6 +146,11 @@
       select.replaceChildren(first, ...state.sites.map(site => { const option = node('option', site.name || site.siteKey); option.value = site.siteKey; return option; }));
       select.value = current;
     }
+    const driveSites = $('drive-sites');
+    if (driveSites) {
+      const selected = new Set([...driveSites.selectedOptions].map(option => option.value));
+      driveSites.replaceChildren(...state.sites.map(site => { const option = node('option', site.name || site.siteKey); option.value = site.siteKey; option.selected = selected.has(site.siteKey); return option; }));
+    }
   }
 
   function renderSites() {
@@ -153,10 +184,24 @@
     }
   }
 
+  function renderOverview(overview) {
+    $('metric-sites').textContent = overview.sites;
+    $('metric-enabled').textContent = overview.enabledSites;
+    $('metric-events').textContent = overview.events;
+    $('metric-decisions').textContent = overview.decisions;
+    $('metric-events-label').textContent = `${overview.rangeLabel}风险事件`;
+    $('metric-decisions-label').textContent = `${overview.rangeLabel}风险决定`;
+  }
+
+  async function loadOverview() {
+    const overview = await request(`/admin/api/overview?range=${encodeURIComponent(state.riskRange)}`);
+    renderOverview(overview.data);
+  }
+
   async function loadOverviewAndSites() {
-    const [overview, sites] = await Promise.all([request('/admin/api/overview'), request('/admin/api/sites')]);
+    const [overview, sites] = await Promise.all([request(`/admin/api/overview?range=${encodeURIComponent(state.riskRange)}`), request('/admin/api/sites')]);
     state.sites = sites.data || [];
-    $('metric-sites').textContent = overview.data.sites; $('metric-enabled').textContent = overview.data.enabledSites; $('metric-events').textContent = overview.data.events24h; $('metric-decisions').textContent = overview.data.decisions24h;
+    renderOverview(overview.data);
     renderSites(); fillSiteSelects();
   }
 
@@ -171,13 +216,19 @@
   function showSecret(data) { $('secret-client').value = data.clientId; $('secret-endpoint').value = `${data.endpointUrl}/v1`; $('secret-value').value = data.secret; $('secret-dialog').showModal(); }
 
   async function loadSuspects() {
-    const query = new URLSearchParams({ page: String(state.suspectPage), limit: '50', minScore: $('suspect-score-filter').value }); if ($('suspect-site-filter').value) query.set('siteKey', $('suspect-site-filter').value);
+    const query = new URLSearchParams({ page: String(state.suspectPage), limit: '50', minScore: $('suspect-score-filter').value, range: state.riskRange }); if ($('suspect-site-filter').value) query.set('siteKey', $('suspect-site-filter').value);
     const [summary, suspects] = await Promise.all([request(`/admin/api/risk/summary?${query}`), request(`/admin/api/risk/suspects?${query}`)]);
-    $('risk-visitors').textContent = summary.data.visitors24h; $('risk-suspects').textContent = summary.data.suspects24h; $('risk-challenged').textContent = summary.data.challenged24h; $('risk-blocked').textContent = summary.data.blocked24h;
+    const rangeLabel = summary.data.rangeLabel || '近 24 小时';
+    $('risk-visitors').textContent = summary.data.visitors; $('risk-suspects').textContent = summary.data.suspects; $('risk-challenged').textContent = summary.data.challenged; $('risk-blocked').textContent = summary.data.blocked;
+    $('risk-visitors-label').textContent = `${rangeLabel}访客`;
+    $('risk-suspects-label').textContent = `${rangeLabel}疑似访客`;
+    $('risk-challenged-label').textContent = `${rangeLabel}挑战处置`;
+    $('risk-blocked-label').textContent = `${rangeLabel}拒绝处置`;
     $('signal-summary').replaceChildren(...(summary.data.signals || []).map(item => node('span', `${item.signal} · ${item.visitors} 人 / ${item.count} 次`, 'signal-chip')));
-    const body = $('suspects-body'); body.replaceChildren(); const data = suspects.data; state.suspectTotal = data.total;
-    if (!data.items.length) emptyRow(body, '当前筛选条件下没有疑似访客。', 8);
-    for (const item of data.items) { const tr = node('tr'); tr.dataset.siteKey = item.siteKey; tr.dataset.visitorHash = item.visitorHash; const who = node('td'); who.append(node('strong', item.siteName), node('span', `${item.visitorHash.slice(0, 12)}…`, 'site-key')); const decision = node('td'); decision.append(chip(item.manualAction ? `人工：${item.manualAction}` : item.decision, !['deny', 'strong_challenge'].includes(item.manualAction || item.decision))); const signalItems = (item.signals || []).length ? item.signals : (item.reasons || []).filter(reason => !String(reason).startsWith('manual_')).map(signal => ({ signal, count: 1, scoreImpact: 0, firstSeen: item.firstSeen, lastSeen: item.lastSeen, latestEvidence: {} })); const reasons = node('td', '', 'reason-cell'); for (const signal of signalItems.slice(0, 3)) { const reason = node('div', '', 'reason-summary'); reason.append(node('strong', signalLabel(signal.signal)), node('span', signalExplanation(signal.signal)), node('small', `命中 ${signal.count} 次 · 最近 ${formatDate(signal.lastSeen)}`)); const evidence = evidenceSummary(signal.latestEvidence); if (evidence) reason.append(node('small', `最近证据：${evidence}`, 'reason-evidence-inline')); reasons.append(reason); } if (!signalItems.length) reasons.append(node('span', (item.reasons || []).map(reasonLabel).join('；') || '暂无可解释信号')); const signals = node('td'); signals.append(renderSignalChips(signalItems)); const action = node('td', '', 'action-column'); action.append(actionButton('查看证据 / 处置', 'view-suspect')); tr.append(who, node('td', String(item.score), 'numeric'), decision, reasons, signals, node('td', String(item.eventCount), 'numeric'), node('td', formatDate(item.lastSeen)), action); body.append(tr); }
+    const body = $('suspects-body'); body.replaceChildren(); const data = suspects.data; state.suspectTotal = data.total; state.suspectItems = data.items || [];
+    if (!data.items.length) emptyRow(body, `${rangeLabel}内没有符合当前筛选条件的疑似访客。`, 9);
+    for (const item of data.items) { const tr = node('tr'); tr.dataset.siteKey = item.siteKey; tr.dataset.visitorHash = item.visitorHash; const key = `${item.siteKey}:${item.visitorHash}`; const selectCell = node('td', '', 'select-column'); const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.dataset.selectSuspect = key; checkbox.setAttribute('aria-label', `选择 ${item.siteName} 访客`); checkbox.checked = state.selectedSuspects.has(key); selectCell.append(checkbox); const who = node('td'); who.append(node('strong', item.siteName), node('span', `${item.visitorHash.slice(0, 12)}…`, 'site-key')); const decision = node('td'); decision.append(chip(item.manualAction ? `人工：${item.manualAction}` : item.decision, !['deny', 'strong_challenge'].includes(item.manualAction || item.decision))); const signalItems = (item.signals || []).length ? item.signals : (item.reasons || []).filter(reason => !String(reason).startsWith('manual_')).map(signal => ({ signal, count: 1, scoreImpact: 0, firstSeen: item.firstSeen, lastSeen: item.lastSeen, latestEvidence: {} })); const reasons = node('td', '', 'reason-cell'); for (const signal of signalItems.slice(0, 3)) { const reason = node('div', '', 'reason-summary'); reason.append(node('strong', signalLabel(signal.signal)), node('span', signalExplanation(signal.signal)), node('small', `命中 ${signal.count} 次 · 最近 ${formatDate(signal.lastSeen)}`)); const evidence = evidenceSummary(signal.latestEvidence); if (evidence) reason.append(node('small', `最近证据：${evidence}`, 'reason-evidence-inline')); reasons.append(reason); } if (!signalItems.length) reasons.append(node('span', (item.reasons || []).map(reasonLabel).join('；') || '暂无可解释信号')); const signals = node('td'); signals.append(renderSignalChips(signalItems)); const action = node('td', '', 'action-column'); const actions = node('div', '', 'inline-actions'); actions.append(actionButton('复制分析包', 'copy-analysis-package'), actionButton('查看证据 / 处置', 'view-suspect')); action.append(actions); tr.append(selectCell, who, node('td', String(item.score), 'numeric'), decision, reasons, signals, node('td', String(item.eventCount), 'numeric'), node('td', formatDate(item.lastSeen)), action); body.append(tr); }
+    const visibleKeys = data.items.map(item => `${item.siteKey}:${item.visitorHash}`); $('select-all-suspects').checked = visibleKeys.length > 0 && visibleKeys.every(key => state.selectedSuspects.has(key)); $('select-all-suspects').indeterminate = visibleKeys.some(key => state.selectedSuspects.has(key)) && !$('select-all-suspects').checked; $('export-analysis-selected').disabled = state.selectedSuspects.size === 0;
     const pages = Math.max(1, Math.ceil(data.total / data.limit)); $('suspect-page').textContent = `第 ${data.page} / ${pages} 页 · 共 ${data.total} 人`; $('suspect-prev').disabled = data.page <= 1; $('suspect-next').disabled = data.page >= pages;
   }
 
@@ -222,8 +273,9 @@
     }
   }
   async function loadAlerts() {
-    const [settingsResult, activityResult] = await Promise.all([
-      request('/admin/api/alerts/settings'), request('/admin/api/alerts/activity?limit=100')
+    const [settingsResult, activityResult, backupResult] = await Promise.all([
+      request('/admin/api/alerts/settings'), request('/admin/api/alerts/activity?limit=100'),
+      request('/admin/api/rule-backups/status')
     ]);
     const data = settingsResult.data;
     $('alert-enabled').checked = data.enabled; $('alert-hourly').checked = data.hourlyDigestEnabled; $('alert-daily').checked = data.dailyDigestEnabled;
@@ -234,6 +286,38 @@
     $('alert-denied').value = data.deniedCount5m; $('alert-suspicious').value = data.suspiciousCount10m; $('alert-failure-count').value = data.challengeFailureCount10m; $('alert-failure-ratio').value = data.challengeFailureRatio; $('alert-replay').value = data.replayCount5m; $('alert-cross-site').value = data.crossSiteCount10m;
     $('alert-master-status').textContent = data.enabled ? '告警已开启' : '告警已关闭'; $('alert-master-status').className = `status-chip ${data.enabled ? 'on' : 'off'}`;
     renderAlertActivity(activityResult.data);
+    renderRuleBackup(backupResult.data || {});
+  }
+  function renderRuleBackup(data) {
+    const settings = data.settings || {};
+    $('rule-backup-enabled').checked = Boolean(settings.enabled);
+    $('rule-backup-on-change').checked = settings.automaticOnChange !== false;
+    $('rule-backup-token').value = '';
+    $('rule-backup-token').placeholder = settings.telegramConfigured ? '已加密保存，留空保持不变' : '尚未配置';
+    $('rule-backup-chat').value = settings.telegramChatId || '';
+    $('rule-backup-hour').value = settings.backupHourBjt ?? 3;
+    $('rule-backup-part-size').value = settings.partSizeMiB ?? 18;
+    const status = $('rule-backup-status');
+    status.textContent = data.running ? '备份执行中' : (settings.enabled && settings.telegramConfigured ? '自动备份已开启' : (settings.telegramConfigured ? '自动备份已关闭' : '尚未配置'));
+    status.className = `status-chip ${settings.enabled && settings.telegramConfigured ? 'on' : 'off'}`;
+    const body = $('rule-backup-body'); body.replaceChildren();
+    const triggerLabels = { manual: '手动', scheduled: '定时', rule_change: '规则变更', retry: '重试' };
+    const statusLabels = { success: '成功', failed: '失败', uploading: '上传中', pending: '等待中' };
+    const runs = data.runs || [];
+    if (!runs.length) return emptyRow(body, '尚无人工规则备份记录。', 6);
+    for (const run of runs) {
+      const tr = node('tr');
+      const uploaded = (run.uploadedParts || []).length;
+      tr.append(
+        node('td', formatDate(run.createdAt)),
+        node('td', triggerLabels[run.triggerType] || run.triggerType),
+        node('td', `${run.ruleCount}（启用 ${run.enabledCount}）`),
+        node('td', `${uploaded}/${run.partsTotal}`),
+        node('td', run.lastError ? `${statusLabels[run.status] || run.status}：${run.lastError}` : (statusLabels[run.status] || run.status)),
+        node('td', run.contentSha256 ? `${run.contentSha256.slice(0, 16)}…` : '—')
+      );
+      body.append(tr);
+    }
   }
   function maintenanceStatus(item) {
     if (item.lastError) return { label: '检查失败', className: 'error' };
@@ -265,14 +349,89 @@
       actions.append(group); tr.append(project, node('td', modeLabels[item.integrationMode] || item.integrationMode), versions, latest, times, statusCell, actions); body.append(tr);
     }
   }
-  async function loadMaintenance() { const result = await request('/admin/api/maintenance/projects'); renderMaintenance(result.data || []); }
-  async function loadActiveTab() { if (state.activeTab === 'suspects') await loadSuspects(); else if (state.activeTab === 'rules') await loadRules(); else if (state.activeTab === 'alerts') await loadAlerts(); else if (state.activeTab === 'maintenance') await loadMaintenance(); else if (state.activeTab === 'audits') await loadAudits(); }
+  function renderMaintenanceSites(items) {
+    const body = $('maintenance-sites-body'); body.replaceChildren();
+    if (!items.length) return emptyRow(body, '尚无导航站运行清单。导航站启动后会在约 5 秒内首次上报。', 6);
+    for (const item of items) {
+      const tr = node('tr');
+      const site = node('td'); site.append(node('strong', item.siteName || item.siteKey, 'site-name'), node('span', item.siteKey, 'site-key'));
+      const app = node('td', '', 'version-stack'); app.append(node('span', item.appVersion || '尚未上报'), node('small', item.gitCommit ? `提交：${item.gitCommit.slice(0, 12)}` : '提交未知'));
+      const runtime = node('td', '', 'version-stack'); runtime.append(node('span', item.nodeVersion || '—'), node('small', item.protocolCompatible ? item.protocolVersion : `${item.protocolVersion || '协议未知'} · 不兼容`));
+      const components = node('td', '', 'version-stack');
+      for (const component of (item.components || [])) {
+        const versions = [component.packageVersion && `npm ${component.packageVersion}`, component.assetVersion && `资源 ${component.assetVersion}`].filter(Boolean).join(' · ');
+        components.append(node('span', `${component.key}：${versions || '版本未知'}`));
+        if (component.assetSha256) components.append(node('small', `SHA-256 ${component.assetSha256.slice(0, 16)}…`));
+      }
+      if (!(item.components || []).length) components.append(node('span', '尚无组件证明'));
+      const reported = node('td', '', 'version-stack'); reported.append(node('span', formatDate(item.reportedAt)), node('small', item.stale ? '清单已过期' : '清单有效'));
+      const advice = node('td', '', 'version-stack');
+      advice.append(node('span', `${(item.advisories || []).length} 条更新建议`), node('small', `${(item.tests || []).length} 条最近测试结果`));
+      for (const current of (item.advisories || []).slice(0, 2)) advice.append(node('small', `${current.project_name || current.project_key}：${current.installed_version || '未知'} → ${current.latest_version || '未知'}（${current.status}）`));
+      tr.append(site, app, runtime, components, reported, advice); body.append(tr);
+    }
+  }
+  async function loadMaintenance() {
+    const [projects, sites] = await Promise.all([
+      request('/admin/api/maintenance/projects'), request('/admin/api/maintenance/sites')
+    ]);
+    renderMaintenance(projects.data || []); renderMaintenanceSites(sites.data || []);
+  }
+  function analysisSince() {
+    const hours = state.riskRange === '24h' ? 24 : state.riskRange === '7d' ? 7 * 24 : state.riskRange === '30d' ? 30 * 24 : 90 * 24;
+    return new Date(Date.now() - hours * 60 * 60_000).toISOString();
+  }
+  function subjectFromKey(key) { const separator = key.indexOf(':'); return { siteKey: key.slice(0, separator), visitorHash: key.slice(separator + 1) }; }
+  function analysisExportBody(subjects = []) {
+    return { siteKey: $('suspect-site-filter').value, minScore: Number($('suspect-score-filter').value), since: analysisSince(), subjects, selectedOnly: true };
+  }
+  async function downloadAnalysis(subjects, fileName) {
+    const blob = await requestBlob('/admin/api/analysis/export', analysisExportBody(subjects));
+    const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = fileName; link.click(); URL.revokeObjectURL(url);
+  }
+  async function copyAnalysisPackage(subject) {
+    const blob = await requestBlob('/admin/api/analysis/export', analysisExportBody([subject]));
+    await navigator.clipboard.writeText(await blob.text()); toast('脱敏分析包已复制');
+  }
+  async function loadDriveSettings() {
+    const result = await request('/admin/api/analysis/google-drive'); const data = result.data || {};
+    $('drive-enabled').checked = Boolean(data.enabled); $('drive-prefix').value = data.filePrefix || 'risk-center';
+    $('drive-range').value = data.backupRange || '7d'; $('drive-min-score').value = data.minScore ?? 25; $('drive-hour').value = data.backupHourBjt ?? 3;
+    $('drive-oauth-client-id').value = data.oauthClientId || '';
+    $('drive-oauth-client-secret').value = '';
+    $('drive-oauth-client-secret').placeholder = data.oauthClientConfigured ? '已加密保存，留空保持不变' : '填写 Google OAuth Client Secret';
+    $('drive-oauth-callback').value = data.oauthCallbackUrl || `${window.location.origin}/admin/api/analysis/google-drive/oauth/callback`;
+    const selected = new Set(data.siteKeys || []); [...$('drive-sites').options].forEach(option => { option.selected = selected.has(option.value); });
+    const status = $('drive-account-status');
+    status.replaceChildren(
+      node('strong', data.personalConnected ? `已连接：${data.connectedEmail || '个人 Google 账号'}` : '尚未连接个人 Google Drive'),
+      node('span', data.personalConnected ? `备份位置：我的云端硬盘 / ${data.personalFolderName || '风险中心备份'}` : (data.oauthClientConfigured ? 'OAuth 配置已保存，请连接个人网盘。' : '请先保存 OAuth Client ID 与 Client Secret。'))
+    );
+    status.classList.toggle('connected', Boolean(data.personalConnected));
+    $('connect-drive').textContent = data.personalConnected ? '重新授权' : '连接个人网盘';
+    $('connect-drive').disabled = false;
+    $('disconnect-drive').hidden = !data.personalConnected;
+    $('open-drive-folder').hidden = !data.personalFolderUrl;
+    if (data.personalFolderUrl) $('open-drive-folder').href = data.personalFolderUrl;
+    $('test-drive').disabled = !data.personalConnected;
+    $('backup-drive-now').disabled = !data.personalConnected;
+    $('drive-last-status').textContent = data.lastError ? `最近错误：${data.lastError}` : (data.lastBackupAt ? `最近成功备份：${formatDate(data.lastBackupAt)} · 文件 ID ${data.lastFileId || '—'}` : '尚无备份记录。');
+  }
+  async function loadActiveTab() { if (state.activeTab === 'suspects') { await loadSuspects(); if ($('analysis-backup-details').open) await loadDriveSettings(); } else if (state.activeTab === 'rules') await loadRules(); else if (state.activeTab === 'alerts') await loadAlerts(); else if (state.activeTab === 'maintenance') await loadMaintenance(); else if (state.activeTab === 'audits') await loadAudits(); }
   async function loadDashboard() { await loadOverviewAndSites(); await loadActiveTab(); }
+  function activateTab(name, load = true) {
+    const tab = document.querySelector(`[data-tab="${name}"]`);
+    if (!tab) return;
+    state.activeTab = name;
+    document.querySelectorAll('.tab').forEach(item => item.classList.toggle('active', item === tab));
+    document.querySelectorAll('.tab-panel').forEach(panel => { panel.hidden = panel.id !== `panel-${name}`; });
+    if (load) loadActiveTab().catch(error => toast(error.message));
+  }
 
-  $('login-form').addEventListener('submit', async event => { event.preventDefault(); const formElement = event.currentTarget; $('login-error').hidden = true; $('login-button').disabled = true; try { const form = new FormData(formElement); const result = await request('/admin/api/login', { method: 'POST', body: JSON.stringify({ username: String(form.get('username') || '').trim(), password: String(form.get('password') || '') }) }); state.csrf = result.data.csrfToken; formElement.reset(); setAuthenticated(true); await loadDashboard(); } catch (error) { $('login-error').textContent = error.message; $('login-error').hidden = false; } finally { $('login-button').disabled = false; } });
+  $('login-form').addEventListener('submit', async event => { event.preventDefault(); const formElement = event.currentTarget; $('login-error').hidden = true; $('login-button').disabled = true; try { const form = new FormData(formElement); const result = await request('/admin/api/login', { method: 'POST', body: JSON.stringify({ username: String(form.get('username') || '').trim(), password: String(form.get('password') || '') }) }); state.csrf = result.data.csrfToken; formElement.reset(); setAuthenticated(true); activateTab(state.activeTab, false); await loadDashboard(); } catch (error) { $('login-error').textContent = error.message; $('login-error').hidden = false; } finally { $('login-button').disabled = false; } });
   $('logout-button').addEventListener('click', async () => { try { await request('/admin/api/logout', { method: 'POST' }); } catch {} state.csrf = ''; setAuthenticated(false); });
   $('refresh-button').addEventListener('click', () => loadDashboard().then(() => toast('数据已刷新')).catch(error => toast(error.message)));
-  document.querySelector('.tabs').addEventListener('click', event => { const tab = event.target.closest('[data-tab]'); if (!tab) return; state.activeTab = tab.dataset.tab; document.querySelectorAll('.tab').forEach(item => item.classList.toggle('active', item === tab)); document.querySelectorAll('.tab-panel').forEach(panel => { panel.hidden = panel.id !== `panel-${state.activeTab}`; }); loadActiveTab().catch(error => toast(error.message)); });
+  document.querySelector('.tabs').addEventListener('click', event => { const tab = event.target.closest('[data-tab]'); if (!tab) return; activateTab(tab.dataset.tab); });
   document.addEventListener('click', async event => {
     const closeButton = event.target.closest('[data-close-dialog]');
     if (closeButton) $(closeButton.dataset.closeDialog).close();
@@ -285,8 +444,15 @@
 
   $('sites-body').addEventListener('click', async event => { const button = event.target.closest('[data-action]'); if (!button) return; const site = state.sites.find(item => item.siteKey === button.closest('tr')?.dataset.siteKey); if (!site) return; try { if (button.dataset.action === 'edit-site') return openIntegration(site); if (button.dataset.action === 'add-client') return openIntegration(site, true); if (button.dataset.action === 'toggle-site') { if (site.enabled && !confirm(`确定关闭 ${site.name} 的总对接吗？`)) return; await request(`/admin/api/sites/${encodeURIComponent(site.siteKey)}/status`, { method: 'PUT', body: JSON.stringify({ enabled: !site.enabled }) }); } else if (button.dataset.action === 'toggle-client') { const client = site.clients.find(item => item.clientId === button.dataset.id); await request(`/admin/api/clients/${encodeURIComponent(client.clientId)}/status`, { method: 'PUT', body: JSON.stringify({ enabled: !client.enabled }) }); } else if (button.dataset.action === 'rotate-client') { if (!confirm('轮换后旧密钥会立即失效，确定继续吗？')) return; const result = await request(`/admin/api/clients/${encodeURIComponent(button.dataset.id)}/rotate`, { method: 'POST' }); showSecret(result.data); } toast('配置已更新'); await loadOverviewAndSites(); } catch (error) { toast(error.message); } });
 
-  $('suspect-site-filter').addEventListener('change', () => { state.suspectPage = 1; loadSuspects().catch(error => toast(error.message)); }); $('suspect-score-filter').addEventListener('change', () => { state.suspectPage = 1; loadSuspects().catch(error => toast(error.message)); }); $('suspect-prev').addEventListener('click', () => { state.suspectPage--; loadSuspects().catch(error => toast(error.message)); }); $('suspect-next').addEventListener('click', () => { state.suspectPage++; loadSuspects().catch(error => toast(error.message)); });
-  $('suspects-body').addEventListener('click', event => { const button = event.target.closest('[data-action="view-suspect"]'); const row = button?.closest('tr'); if (row) openSuspect(row.dataset.siteKey, row.dataset.visitorHash).catch(error => toast(error.message)); });
+  $('suspect-range-filter').addEventListener('change', event => { state.riskRange = event.currentTarget.value; state.suspectPage = 1; Promise.all([loadOverview(), loadSuspects()]).catch(error => toast(error.message)); }); $('suspect-site-filter').addEventListener('change', () => { state.suspectPage = 1; loadSuspects().catch(error => toast(error.message)); }); $('suspect-score-filter').addEventListener('change', () => { state.suspectPage = 1; loadSuspects().catch(error => toast(error.message)); }); $('suspect-prev').addEventListener('click', () => { state.suspectPage--; loadSuspects().catch(error => toast(error.message)); }); $('suspect-next').addEventListener('click', () => { state.suspectPage++; loadSuspects().catch(error => toast(error.message)); });
+  $('suspects-body').addEventListener('change', event => { const checkbox = event.target.closest('[data-select-suspect]'); if (!checkbox) return; if (checkbox.checked) state.selectedSuspects.add(checkbox.dataset.selectSuspect); else state.selectedSuspects.delete(checkbox.dataset.selectSuspect); $('export-analysis-selected').disabled = state.selectedSuspects.size === 0; const pageBoxes = [...$('suspects-body').querySelectorAll('[data-select-suspect]')]; $('select-all-suspects').checked = pageBoxes.length > 0 && pageBoxes.every(item => item.checked); $('select-all-suspects').indeterminate = pageBoxes.some(item => item.checked) && !$('select-all-suspects').checked; });
+  $('suspects-body').addEventListener('click', event => { const button = event.target.closest('[data-action]'); const row = button?.closest('tr'); if (!row) return; if (button.dataset.action === 'view-suspect') openSuspect(row.dataset.siteKey, row.dataset.visitorHash).catch(error => toast(error.message)); if (button.dataset.action === 'copy-analysis-package') copyAnalysisPackage({ siteKey: row.dataset.siteKey, visitorHash: row.dataset.visitorHash }).catch(error => toast(error.message)); });
+  $('select-all-suspects').addEventListener('change', event => { for (const checkbox of $('suspects-body').querySelectorAll('[data-select-suspect]')) { checkbox.checked = event.currentTarget.checked; if (checkbox.checked) state.selectedSuspects.add(checkbox.dataset.selectSuspect); else state.selectedSuspects.delete(checkbox.dataset.selectSuspect); } $('export-analysis-selected').disabled = state.selectedSuspects.size === 0; });
+  $('generate-analysis-token').addEventListener('click', async () => { try { const siteKeys = $('suspect-site-filter').value ? [$('suspect-site-filter').value] : state.sites.map(site => site.siteKey); const result = await request('/admin/api/analysis/token', { method: 'POST', body: JSON.stringify({ siteKeys }) }); $('analysis-list-url').value = result.data.listUrl; $('analysis-token').value = result.data.token; $('analysis-token-meta').value = `有效至 ${formatDate(result.data.expiresAt)} · 最多 ${result.data.maxUses} 次`; $('analysis-token-box').hidden = false; toast(result.message); } catch (error) { toast(error.message); } });
+  $('copy-analysis-endpoint').addEventListener('click', async () => { await navigator.clipboard.writeText(`${window.location.origin}/v1/analysis/suspects`); toast('只读分析接口已复制'); });
+  $('copy-analysis-access').addEventListener('click', async () => { const value = `请分析以下疑似访客，只提供判断和处置建议，不执行任何修改。\n\n接口：${$('analysis-list-url').value}\n临时令牌：${$('analysis-token').value}\n令牌有效期：15 分钟\nAuthorization: Bearer ${$('analysis-token').value}`; await navigator.clipboard.writeText(value); toast('完整只读接入信息已复制'); });
+  $('export-analysis-page').addEventListener('click', () => downloadAnalysis(state.suspectItems.map(item => ({ siteKey: item.siteKey, visitorHash: item.visitorHash })), 'risk-analysis-page.json').then(() => toast('本页脱敏分析包已导出')).catch(error => toast(error.message)));
+  $('export-analysis-selected').addEventListener('click', () => downloadAnalysis([...state.selectedSuspects].map(subjectFromKey), 'risk-analysis-selected.json').then(() => toast('选中访客脱敏分析包已导出')).catch(error => toast(error.message)));
   $('suspect-permanent').addEventListener('change', event => { $('suspect-duration').disabled = event.currentTarget.checked; });
   $('suspect-apply-all-sites').addEventListener('change', event => { $('suspect-rule-signal').disabled = !event.currentTarget.checked; });
   $('suspect-action-form').addEventListener('submit', async event => { event.preventDefault(); if (!state.currentSuspect) return; const applyToAllSites = $('suspect-apply-all-sites').checked; const ruleSignal = $('suspect-rule-signal').value; if (applyToAllSites && !confirm(`将把风险信号“${ruleSignal}”的同类处置应用到所有接入站点，确定继续吗？`)) return; try { const { siteKey, visitorHash } = state.currentSuspect; const result = await request(`/admin/api/risk/suspects/${encodeURIComponent(siteKey)}/${visitorHash}/action`, { method: 'POST', body: JSON.stringify({ action: $('suspect-action').value, durationMinutes: Number($('suspect-duration').value), permanent: $('suspect-permanent').checked, reason: $('suspect-reason').value.trim(), applyToAllSites, ruleSignal: applyToAllSites ? ruleSignal : '' }) }); $('suspect-dialog').close(); toast(result.message || ($('suspect-permanent').checked ? '永久人工处置已生效' : '人工处置已生效')); await loadSuspects(); } catch (error) { toast(error.message); } });
@@ -321,6 +487,66 @@
   }
   $('test-telegram').addEventListener('click', () => testAlert('telegram'));
   $('test-bark').addEventListener('click', () => testAlert('bark'));
+  $('rule-backup-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    try {
+      const result = await request('/admin/api/rule-backups/settings', { method: 'PUT', body: JSON.stringify({
+        enabled: $('rule-backup-enabled').checked,
+        automaticOnChange: $('rule-backup-on-change').checked,
+        telegramToken: $('rule-backup-token').value.trim(),
+        telegramChatId: $('rule-backup-chat').value.trim(),
+        backupHourBjt: numberValue('rule-backup-hour'),
+        partSizeMiB: numberValue('rule-backup-part-size')
+      }) });
+      toast(result.message); await loadAlerts();
+    } catch (error) { toast(error.message); }
+  });
+  async function ruleBackupAction(button, path, loadingText) {
+    const original = button.textContent; button.disabled = true; button.textContent = loadingText;
+    try { const result = await request(path, { method: 'POST' }); toast(result.message); await loadAlerts(); }
+    catch (error) { toast(error.message); }
+    finally { button.disabled = false; button.textContent = original; }
+  }
+  $('test-rule-backup').addEventListener('click', event => ruleBackupAction(event.currentTarget, '/admin/api/rule-backups/test', '测试中…'));
+  $('run-rule-backup').addEventListener('click', event => ruleBackupAction(event.currentTarget, '/admin/api/rule-backups/run', '备份中…'));
+  $('retry-rule-backup').addEventListener('click', event => ruleBackupAction(event.currentTarget, '/admin/api/rule-backups/retry', '重试中…'));
+
+  async function saveDriveSettings(showToast = true) {
+    const result = await request('/admin/api/analysis/google-drive', { method: 'PUT', body: JSON.stringify({
+      enabled: $('drive-enabled').checked,
+      filePrefix: $('drive-prefix').value.trim(),
+      backupRange: $('drive-range').value,
+      minScore: Number($('drive-min-score').value),
+      backupHourBjt: Number($('drive-hour').value),
+      siteKeys: [...$('drive-sites').selectedOptions].map(option => option.value),
+      oauthClientId: $('drive-oauth-client-id').value.trim(),
+      oauthClientSecret: $('drive-oauth-client-secret').value.trim()
+    }) });
+    if (showToast) toast(result.message);
+    await loadDriveSettings();
+    return result;
+  }
+  installDriveCallbackCopyControl();
+  $('drive-form').addEventListener('submit', event => { event.preventDefault(); saveDriveSettings().catch(error => toast(error.message)); });
+  async function driveAction(button, path, loadingText) { const original = button.textContent; button.disabled = true; button.textContent = loadingText; try { const result = await request(path, { method: 'POST' }); toast(result.message); await loadDriveSettings(); } catch (error) { toast(error.message); } finally { button.disabled = false; button.textContent = original; } }
+  $('test-drive').addEventListener('click', event => driveAction(event.currentTarget, '/admin/api/analysis/google-drive/test', '测试中…'));
+  $('backup-drive-now').addEventListener('click', event => driveAction(event.currentTarget, '/admin/api/analysis/google-drive/backup', '备份中…'));
+  $('analysis-backup-details').addEventListener('toggle', event => {
+    event.currentTarget.querySelector('.details-state').textContent = event.currentTarget.open ? '收起设置' : '展开设置';
+    if (event.currentTarget.open) loadDriveSettings().catch(error => toast(error.message));
+  });
+  $('connect-drive').addEventListener('click', async event => {
+    const button = event.currentTarget; const original = button.textContent; button.disabled = true; button.textContent = '准备授权…';
+    try {
+      await saveDriveSettings(false);
+      const result = await request('/admin/api/analysis/google-drive/connect', { method: 'POST' });
+      window.location.assign(result.data.authorizationUrl);
+    } catch (error) { toast(error.message); button.disabled = false; button.textContent = original; }
+  });
+  $('disconnect-drive').addEventListener('click', async event => {
+    if (!confirm('确定断开个人 Google Drive 吗？自动备份会同时关闭，网盘中的历史文件不会被删除。')) return;
+    await driveAction(event.currentTarget, '/admin/api/analysis/google-drive/disconnect', '正在断开…');
+  });
 
   $('check-upstreams').addEventListener('click', async event => {
     const button = event.currentTarget; const original = button.textContent; button.disabled = true; button.textContent = '正在检查…';
@@ -353,5 +579,13 @@
 
   $('maintenance-snapshot-url').value = `${window.location.origin}/v1/maintenance/snapshot`;
   $('maintenance-upstreams-url').value = `${window.location.origin}/v1/maintenance/upstreams`;
-  request('/admin/api/session').then(result => { state.csrf = result.data.csrfToken; setAuthenticated(true); return loadDashboard(); }).catch(() => setAuthenticated(false));
+  request('/admin/api/session').then(async result => {
+    state.csrf = result.data.csrfToken; setAuthenticated(true); activateTab(state.activeTab, false); await loadDashboard();
+    const driveResult = new URLSearchParams(window.location.search).get('drive');
+    if (driveResult) {
+      $('analysis-backup-details').open = true;
+      toast(driveResult === 'connected' ? '个人 Google Drive 已连接' : 'Google Drive 授权失败，请查看最近错误');
+      history.replaceState(null, '', `${window.location.pathname}#suspects`);
+    }
+  }).catch(() => setAuthenticated(false));
 })();

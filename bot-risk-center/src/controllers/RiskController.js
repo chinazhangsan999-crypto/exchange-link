@@ -47,4 +47,44 @@ async function policy(req, res) {
   });
 }
 
-module.exports = { events, decisions, evaluate, policy };
+function cleanString(value, max = 160) { return String(value || '').trim().slice(0, max); }
+
+async function inventory(req, res) {
+  const input = req.body || {};
+  if (input.schemaVersion !== 'inventory-v1' || !Array.isArray(input.components)
+    || !Array.isArray(input.capabilities) || input.components.length > 100 || input.capabilities.length > 100) {
+    return res.status(400).json({ code: 400, message: 'invalid inventory' });
+  }
+  const data = await StorageService.saveRuntimeInventory({
+    siteKey: siteKey(req), clientId: req.riskClient.clientId,
+    schemaVersion: input.schemaVersion,
+    appVersion: cleanString(input.appVersion, 80), gitCommit: cleanString(input.gitCommit, 80),
+    nodeVersion: cleanString(input.nodeVersion, 80), protocolVersion: cleanString(input.riskProtocolVersion, 80),
+    components: input.components, capabilities: input.capabilities,
+    deployedAt: input.deployedAt || null
+  });
+  return res.json({ code: 200, data });
+}
+
+async function advisories(req, res) {
+  return res.json({ code: 200, data: await StorageService.listAgentAdvisories(siteKey(req)) });
+}
+
+async function testResults(req, res) {
+  const input = req.body || {};
+  if (!/^[a-z0-9_-]{2,64}$/i.test(String(input.projectKey || ''))
+    || !cleanString(input.targetVersion, 120) || typeof input.passed !== 'boolean') {
+    return res.status(400).json({ code: 400, message: 'invalid test result' });
+  }
+  const data = await StorageService.saveMaintenanceTestResult({
+    siteKey: siteKey(req), clientId: req.riskClient.clientId,
+    projectKey: cleanString(input.projectKey, 64), targetVersion: cleanString(input.targetVersion, 120),
+    testCommit: cleanString(input.testCommit, 80), automated: input.automated,
+    browsers: input.browsers, falsePositiveDelta: input.falsePositiveDelta,
+    recommendation: cleanString(input.recommendation, 500), passed: input.passed,
+    testedAt: input.testedAt || new Date().toISOString()
+  });
+  return res.json({ code: 200, data });
+}
+
+module.exports = { events, decisions, evaluate, policy, inventory, advisories, testResults };

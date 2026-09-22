@@ -36,4 +36,13 @@ async function requireClient(req, res, next) {
   return next();
 }
 
-module.exports = { requireClient };
+function requireClientScope(scope) {
+  return (req, res, next) => {
+    if (!req.riskClient?.scopes?.includes(scope)) {
+      return res.status(403).json({ code: 403, message: 'Client scope denied' });
+    }
+    return next();
+  };
+}
+
+module.exports = { requireClient, requireClientScope };

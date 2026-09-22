@@ -14,7 +14,8 @@ app.use((req, res) => res.status(404).json({ code: 404, message: 'Not Found' }))
 app.use((error, req, res, next) => {
   console.error(error?.stack || error);
   if (res.headersSent) return next(error);
-  return res.status(500).json({ code: 500, message: 'Internal Server Error' });
+  const status = Number(error?.statusCode) >= 400 && Number(error?.statusCode) < 600 ? Number(error.statusCode) : 500;
+  return res.status(status).json({ code: status, message: status === 500 ? 'Internal Server Error' : error.message });
 });
 
 module.exports = app;

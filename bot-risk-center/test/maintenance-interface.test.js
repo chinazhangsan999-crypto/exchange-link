@@ -37,3 +37,14 @@ test('组件管理迁移、后台按钮和更新告警配置完整', () => {
   assert.match(alert, /TELEGRAM_TEXT_LIMIT = 3800/);
   assert.match(alert, /BARK_BODY_BYTES = 2400/);
 });
+
+test('组件更新表格保留原生单元格布局并使用稳定列宽', () => {
+  const root = path.join(__dirname, '..');
+  const html = fs.readFileSync(path.join(root, 'public', 'admin.html'), 'utf8');
+  const css = fs.readFileSync(path.join(root, 'public', 'admin.css'), 'utf8');
+  assert.match(html, /<table class="maintenance-table upstream-table">/);
+  assert.match(html, /<table class="maintenance-table matrix-table">/);
+  assert.match(css, /\.maintenance-table \{[^}]*table-layout: fixed;/);
+  assert.match(css, /td\.version-stack > \* \{ display: block; \}/);
+  assert.doesNotMatch(css, /\.version-stack \{[^}]*display:\s*grid/);
+});

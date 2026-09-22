@@ -70,6 +70,7 @@ async function checkUpstreams({ force = false } = {}) {
       const release = await fetchLatestRelease(project.repository);
       await StorageService.updateMaintenanceProject(project.projectKey, release);
     }
+    await StorageService.refreshAllSiteAdvisories();
     const items = await StorageService.listMaintenanceProjects();
     const pendingAlerts = items.filter(item => item.followStatus === 'update_available'
       && item.latestVersion && item.latestVersion !== item.alertedVersion);

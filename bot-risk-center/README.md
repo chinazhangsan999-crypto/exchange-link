@@ -38,6 +38,16 @@
 - `GET /v1/maintenance/upstreams` 仅返回上游项目版本与跟进状态，不包含环境变量、凭据或访客明细。
 - 可选设置 `BOT_RISK_GITHUB_TOKEN` 提高 GitHub API 额度；该 Token 只保存在服务器环境变量中。
 
+### 导航站运行清单
+
+- 导航站继续复用原有 HMAC、时间戳和一次性 Nonce，不创建第二套维护密钥。
+- `POST /v1/agent/inventory` 接收应用版本、Git 提交、Node 版本、协议版本、组件版本和静态资源 SHA-256；禁止上传环境变量、访客数据及任何密钥。
+- `GET /v1/agent/advisories` 只返回当前 `site_key` 的更新建议，不能读取其他站点。
+- `POST /v1/agent/test-results` 保存目标版本、浏览器矩阵、误判变化和测试结论。
+- 导航站启动约 5 秒后首次上报，以后每 6 小时上报并拉取一次本站建议；该任务不在访客请求链路中。
+- 后台“组件更新”中的站点运行版本矩阵会标记超过 12 小时未上报的清单。
+- 客户端权限分为 `risk.events.write`、`risk.decisions.read`、`risk.policy.read`、`maintenance.inventory.write`、`maintenance.advisory.read`、`maintenance.test-result.write`，不包含管理员或远程执行权限。
+
 ## 决策边界
 
 - 已知 AI/搜索机器人可直接 `deny`。

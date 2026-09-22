@@ -43,3 +43,15 @@ test('告警后台与数据库迁移包含敏感凭据保护和聚合阈值', ()
   assert.match(storage, /COUNT\(DISTINCT d\.subject_hash\)/);
   assert.doesNotMatch(storage, /telegramToken:\s*row\./);
 });
+
+test('站点版本过期、协议不兼容和更新差异复用现有告警通道', () => {
+  const root = path.join(__dirname, '..');
+  const storage = fs.readFileSync(path.join(root, 'src', 'services', 'StorageService.js'), 'utf8');
+  const alert = fs.readFileSync(path.join(root, 'src', 'services', 'AlertService.js'), 'utf8');
+  assert.match(storage, /inventory_stale/);
+  assert.match(storage, /protocol_mismatch/);
+  assert.match(storage, /site_update/);
+  assert.match(alert, /导航站运行清单已过期/);
+  assert.match(alert, /导航站维护协议不兼容/);
+  assert.match(alert, /导航站实际组件有新版待评估/);
+});

@@ -5,6 +5,8 @@ const { PORT, LISTEN_HOST } = require('./config/env');
 const StorageService = require('./services/StorageService');
 const AlertService = require('./services/AlertService');
 const MaintenanceService = require('./services/MaintenanceService');
+const DriveBackupService = require('./services/DriveBackupService');
+const RuleBackupService = require('./services/RuleBackupService');
 
 let server;
 
@@ -12,6 +14,8 @@ StorageService.initialize()
   .then(() => {
     AlertService.start();
     MaintenanceService.start();
+    DriveBackupService.start();
+    RuleBackupService.start();
     server = app.listen(PORT, LISTEN_HOST, () => {
       console.log(`机器人风险中心已启动：http://${LISTEN_HOST}:${PORT}`);
     });
@@ -27,6 +31,8 @@ async function shutdown(signal) {
     if (server) await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     AlertService.stop();
     MaintenanceService.stop();
+    DriveBackupService.stop();
+    RuleBackupService.stop();
     await StorageService.close();
     process.exit(0);
   } catch (error) {

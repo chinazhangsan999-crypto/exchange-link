@@ -5,6 +5,9 @@ const AdminAuthService = require('../services/AdminAuthService');
 const StorageService = require('../services/StorageService');
 const AlertService = require('../services/AlertService');
 const MaintenanceService = require('../services/MaintenanceService');
+const AnalysisService = require('../services/AnalysisService');
+const DriveBackupService = require('../services/DriveBackupService');
+const RuleBackupService = require('../services/RuleBackupService');
 const { PUBLIC_API_URL } = require('../config/env');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
@@ -45,7 +48,7 @@ function logout(req, res) {
 }
 
 async function overview(req, res) {
-  return res.json({ code: 200, data: await StorageService.getAdminOverview() });
+  return res.json({ code: 200, data: await StorageService.getAdminOverview(String(req.query.range || '24h')) });
 }
 
 async function sites(req, res) {
@@ -64,7 +67,7 @@ async function setSiteStatus(req, res) {
 
 function validSiteKey(value) { return /^[A-Za-z0-9_-]{3,64}$/.test(String(value || '')); }
 function validVisitorHash(value) { return /^[a-f0-9]{32,128}$/i.test(String(value || '')); }
-function actor(req) { return req.admin?.username || 'risk-admin'; }
+function actor(req) { return req.riskAdmin?.username || 'risk-admin'; }
 
 async function saveIntegration(req, res) {
   const input = req.body || {};
@@ -109,13 +112,13 @@ async function rotateClientSecret(req, res) {
 }
 
 async function riskSummary(req, res) {
-  return res.json({ code: 200, data: await StorageService.getRiskSummary(String(req.query.siteKey || '')) });
+  return res.json({ code: 200, data: await StorageService.getRiskSummary(String(req.query.siteKey || ''), String(req.query.range || '24h')) });
 }
 
 async function suspects(req, res) {
   return res.json({ code: 200, data: await StorageService.listSuspects({
     siteKey: String(req.query.siteKey || ''), page: req.query.page,
-    limit: req.query.limit, minScore: req.query.minScore
+    limit: req.query.limit, minScore: req.query.minScore, range: req.query.range
   }) });
 }
 
@@ -147,6 +150,7 @@ async function setSuspectAction(req, res) {
     siteKey, visitorHash, action, req.body?.durationMinutes, reason, actor(req), permanent,
     applyToAllSites ? { signal: ruleSignal } : null
   );
+  if (applyToAllSites) RuleBackupService.scheduleChangedBackup();
   return res.json({
     code: 200,
     data,
@@ -183,6 +187,7 @@ async function createRule(req, res) {
     return res.status(400).json({ code: 400, message: '规则参数无效' });
   }
   const id = await StorageService.createSignalRule(input, actor(req));
+  RuleBackupService.scheduleChangedBackup();
   return res.json({ code: 200, data: { id }, message: '信号规则已创建' });
 }
 
@@ -190,13 +195,54 @@ async function setRuleStatus(req, res) {
   if (typeof req.body?.enabled !== 'boolean') return res.status(400).json({ code: 400, message: '参数无效' });
   const data = await StorageService.setSignalRuleEnabled(Number(req.params.id), req.body.enabled, actor(req));
   if (!data) return res.status(404).json({ code: 404, message: '规则不存在' });
+  RuleBackupService.scheduleChangedBackup();
   return res.json({ code: 200, data, message: data.enabled ? '规则已启用' : '规则已停用' });
 }
 
 async function deleteRule(req, res) {
   const removed = await StorageService.deleteSignalRule(Number(req.params.id), actor(req));
   if (!removed) return res.status(404).json({ code: 404, message: '规则不存在' });
+  RuleBackupService.scheduleChangedBackup();
   return res.json({ code: 200, message: '规则已删除' });
+}
+
+async function ruleBackupSettings(req, res) {
+  return res.json({ code: 200, data: await StorageService.getRuleBackupSettings() });
+}
+
+async function saveRuleBackupSettings(req, res) {
+  const input = req.body || {};
+  const current = await StorageService.getRuleBackupSettings();
+  if (typeof input.enabled !== 'boolean' || typeof input.automaticOnChange !== 'boolean') {
+    return res.status(400).json({ code: 400, message: '备份开关参数无效' });
+  }
+  if (input.enabled && !String(input.telegramChatId || '').trim()) {
+    return res.status(400).json({ code: 400, message: '启用备份时必须填写独立 Backup Bot 的 Chat ID' });
+  }
+  if (input.enabled && !String(input.telegramToken || '').trim() && !current?.telegramConfigured) {
+    return res.status(400).json({ code: 400, message: '启用备份时必须填写独立 Backup Bot Token' });
+  }
+  const data = await StorageService.saveRuleBackupSettings(input, actor(req));
+  return res.json({ code: 200, data, message: '人工规则备份设置已保存' });
+}
+
+async function ruleBackupStatus(req, res) {
+  return res.json({ code: 200, data: await RuleBackupService.status() });
+}
+
+async function testRuleBackup(req, res) {
+  const data = await RuleBackupService.testConnection();
+  return res.json({ code: 200, data, message: '独立 Backup Bot 测试成功' });
+}
+
+async function runRuleBackup(req, res) {
+  const data = await RuleBackupService.runBackup({ triggerType: 'manual', createdBy: actor(req), force: true });
+  return res.json({ code: 200, data, message: `人工规则备份完成，共 ${data.partsTotal} 个加密分片` });
+}
+
+async function retryRuleBackup(req, res) {
+  const data = await RuleBackupService.retryFailed();
+  return res.json({ code: 200, data, message: '失败的人工规则备份已重试完成' });
 }
 
 async function audits(req, res) {
@@ -248,6 +294,10 @@ async function maintenanceProjects(req, res) {
   return res.json({ code: 200, data: await StorageService.listMaintenanceProjects() });
 }
 
+async function maintenanceSites(req, res) {
+  return res.json({ code: 200, data: await StorageService.listSiteMaintenanceMatrix() });
+}
+
 async function checkMaintenanceProjects(req, res) {
   const data = await MaintenanceService.checkUpstreams({ force: true });
   return res.json({ code: 200, data, message: `已检查 ${data.checked || 0} 个上游项目，发现 ${data.updates || 0} 个待跟进版本` });
@@ -278,12 +328,100 @@ async function createMaintenanceToken(req, res) {
   });
 }
 
+async function createAnalysisToken(req, res) {
+  const requested = Array.isArray(req.body?.siteKeys) ? req.body.siteKeys : [];
+  const siteKeys = requested.length ? requested : await StorageService.listEnabledSiteKeys();
+  const data = await StorageService.createAnalysisToken({
+    siteKeys, scopes: ['suspects:list', 'suspects:detail'], ttlMinutes: 15, maxUses: 20
+  }, actor(req));
+  return res.json({
+    code: 200,
+    data: { ...data, listUrl: `${PUBLIC_API_URL}/v1/analysis/suspects`, detailBaseUrl: `${PUBLIC_API_URL}/v1/analysis/suspects` },
+    message: '15 分钟只读分析令牌已生成，仅显示一次'
+  });
+}
+
+async function exportAnalysis(req, res) {
+  const enabledSites = await StorageService.listEnabledSiteKeys();
+  const requested = Array.isArray(req.body?.siteKeys) ? req.body.siteKeys.map(String) : [];
+  const siteKeys = requested.length ? requested.filter(key => enabledSites.includes(key)) : enabledSites;
+  if (!siteKeys.length) return res.status(400).json({ code: 400, message: '没有可导出的站点' });
+  const packageData = await AnalysisService.exportPackage({
+    siteKey: String(req.body?.siteKey || ''), minScore: req.body?.minScore,
+    since: req.body?.since, subjects: Array.isArray(req.body?.subjects) ? req.body.subjects : [], selectedOnly: req.body?.selectedOnly === true
+  }, { siteKeys });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  res.set({
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Disposition': `attachment; filename="risk-analysis-${stamp}.json"`,
+    'Cache-Control': 'no-store'
+  });
+  return res.send(JSON.stringify(packageData, null, 2));
+}
+
+async function googleDriveSettings(req, res) {
+  return res.json({
+    code: 200,
+    data: {
+      ...await StorageService.getGoogleDriveSettings(),
+      oauthCallbackUrl: DriveBackupService.oauthRedirectUri()
+    }
+  });
+}
+
+async function saveGoogleDriveSettings(req, res) {
+  const data = await StorageService.saveGoogleDriveSettings(req.body || {}, actor(req));
+  return res.json({ code: 200, data, message: 'Google Drive 备份设置已保存' });
+}
+
+async function testGoogleDrive(req, res) {
+  const data = await DriveBackupService.testConnection();
+  return res.json({ code: 200, data, message: 'Google Drive 连接测试成功，测试文件已清理' });
+}
+
+async function backupGoogleDrive(req, res) {
+  const data = await DriveBackupService.runBackup({ triggerType: 'manual', createdBy: actor(req), force: true });
+  return res.json({ code: 200, data, message: `已备份 ${data.itemCount} 条脱敏分析记录` });
+}
+
+async function connectGoogleDrive(req, res) {
+  const data = await DriveBackupService.startPersonalOAuth(actor(req));
+  return res.json({ code: 200, data, message: 'Google 个人账号授权已准备好' });
+}
+
+async function googleDriveOAuthCallback(req, res) {
+  try {
+    if (req.query.error) {
+      await DriveBackupService.completePersonalOAuth({ state: req.query.state, code: '' });
+    } else {
+      await DriveBackupService.completePersonalOAuth({ state: req.query.state, code: req.query.code });
+    }
+    return res.redirect(303, '/admin?drive=connected#suspects');
+  } catch (error) {
+    console.error('Google Drive 个人账号授权失败：', error.message);
+    await StorageService.recordGoogleDriveOAuthError(error.message).catch(() => {});
+    return res.redirect(303, '/admin?drive=error#suspects');
+  }
+}
+
+async function disconnectGoogleDrive(req, res) {
+  const data = await DriveBackupService.disconnectPersonalOAuth(actor(req));
+  return res.json({
+    code: 200,
+    data,
+    message: data.revoked ? '已断开个人 Google Drive 并撤销授权' : '已断开个人 Google Drive'
+  });
+}
+
 module.exports = {
   page, stylesheet, script, login, session, logout, overview, sites, setSiteStatus,
   saveIntegration, setSiteControls, setClientStatus, rotateClientSecret,
   riskSummary, suspects, suspectDetail, setSuspectAction, clearSuspectAction,
   rules, previewRule, createRule, setRuleStatus, deleteRule, audits,
   alertSettings, saveAlertSettings, alertActivity, testAlert,
-  maintenanceProjects, checkMaintenanceProjects, setMaintenanceProjectStatus,
-  createMaintenanceToken
+  ruleBackupSettings, saveRuleBackupSettings, ruleBackupStatus, testRuleBackup, runRuleBackup, retryRuleBackup,
+  maintenanceProjects, maintenanceSites, checkMaintenanceProjects, setMaintenanceProjectStatus,
+  createMaintenanceToken, createAnalysisToken, exportAnalysis,
+  googleDriveSettings, saveGoogleDriveSettings, testGoogleDrive, backupGoogleDrive,
+  connectGoogleDrive, googleDriveOAuthCallback, disconnectGoogleDrive
 };
