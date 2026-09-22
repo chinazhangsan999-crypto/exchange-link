@@ -1,4 +1,4 @@
-/** 系统设置中的总后台、IP 情报与风险中心接入组件。敏感凭据只提交，不回显。 */
+/** 接入与运维中的总后台、IP 情报与风险中心组件。敏感凭据只提交，不回显。 */
 (() => {
   const notify = message => typeof window.toast === 'function' ? window.toast(message) : window.alert(message);
 
@@ -10,11 +10,11 @@
   }
 
   function installIntegrationForms() {
-    const settingsPanel = document.querySelector('#settings');
-    if (!settingsPanel || document.querySelector('#control-center-integration')) return;
+    const integrationSlot = document.querySelector('#operations-integrations-slot');
+    if (!integrationSlot || document.querySelector('#control-center-integration')) return;
     const holder = document.createElement('section');
     holder.id = 'control-center-integration';
-    holder.className = 'integration-settings';
+    holder.className = 'operations-integration-list';
     holder.innerHTML = `
       <div class="box integration-box">
         <div class="box-head"><div><h2>接入总后台</h2><p class="hint">从总后台复制站点接入地址和凭据。验证并接管成功后，本地账号密码登录将永久关闭，只能从总后台统一进入。</p></div><span id="control-center-state" class="tag">读取中</span></div>
@@ -43,12 +43,11 @@
           <label class="wide">风险中心地址<input name="baseUrl" type="url" required placeholder="https://fengxian.example.com"><small>填写纯 Origin，不要带 /admin 或其他路径。</small></label>
           <label>站点标识<input name="siteKey" required maxlength="64" pattern="[A-Za-z0-9_-]{3,64}" autocomplete="off" placeholder="webring-main"></label>
           <label>Client ID<input name="clientId" required maxlength="64" pattern="[A-Za-z0-9_-]{3,64}" autocomplete="off" placeholder="风险中心分配的 Client ID"></label>
-          <label class="wide">Client Secret<input name="secret" type="password" autocomplete="new-password" placeholder="已配置时留空表示继续使用原密钥"><small id="bot-risk-secret-state">密钥仅保存于服务器受限文件，不会回显。</small></label>
+          <label class="wide">Client Secret<input name="secret" type="password" autocomplete="new-password" placeholder="已配置时留空表示继续使用原密钥"><small id="bot-risk-secret-state">密钥仅保存于服务器受限文件，不会回显。</small><small id="bot-risk-maintenance-state">运行清单与更新建议尚未同步。</small></label>
           <div class="settings-actions"><button class="button ghost" type="button" data-action="test-bot-risk">测试连接</button><button class="button" type="submit">验证并保存</button></div>
         </form>
       </div>`;
-    const analyticsCard = settingsPanel.querySelector('#analytics-settings');
-    settingsPanel.insertBefore(holder, analyticsCard || null);
+    integrationSlot.append(holder);
     holder.querySelector('#control-center-form').addEventListener('submit', enrollControlCenter);
     holder.querySelector('[data-action="test-control"]').addEventListener('click', testControlCenter);
     holder.querySelector('#ip-intelligence-form').addEventListener('submit', saveIpIntelligence);
@@ -107,6 +106,10 @@
       }
       const secretState = document.querySelector('#bot-risk-secret-state');
       if (secretState) secretState.textContent = risk.secretConfigured ? '已保存密钥；留空表示不修改。' : '尚未保存密钥。';
+      const maintenanceState = document.querySelector('#bot-risk-maintenance-state');
+      if (maintenanceState) maintenanceState.textContent = risk.lastInventoryAt
+        ? `运行清单已上报；更新建议 ${Number(risk.advisoryCount) || 0} 条。`
+        : (risk.enabled ? '等待首次运行清单上报。' : '启用后将低频上报版本清单，不影响访客请求。');
     } catch (error) { notify(error.message); }
   }
 
@@ -172,9 +175,5 @@
   }
 
   installIntegrationForms();
-  const previousLoader = window.loadAdminSettings;
-  window.loadAdminSettings = async function loadAdminSettingsWithIntegrations() {
-    await previousLoader?.();
-    await loadIntegrationStatus();
-  };
+  window.loadOperationsIntegrations = loadIntegrationStatus;
 })();

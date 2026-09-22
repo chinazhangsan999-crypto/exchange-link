@@ -171,11 +171,14 @@
       project: manifest.envelope.project,
       signedEnvelope: manifest.envelope,
       highestGeneration: Number(manifest.envelope.generation),
+      dnsEnvelopes: Array.isArray(existing?.dnsEnvelopes) ? existing.dnsEnvelopes : (existing?.dnsEnvelope ? [existing.dnsEnvelope] : []),
+      highestDnsGeneration: Number(existing?.highestDnsGeneration || 0),
       trustedKeys: signedKeys.length ? signedKeys : bootstrapKeys,
       bootstrapNames: Array.isArray(manifest.envelope.bootstrapNames) ? manifest.envelope.bootstrapNames : (manifest.bootstrapNames || []),
       lookupRoutes: Array.isArray(manifest.envelope.lookupRoutes) ? manifest.envelope.lookupRoutes : (manifest.lookupRoutes || []),
       localFallback: manifest.localFallback || existing?.localFallback || {},
       lastVerifiedAt: new Date().toISOString(),
+      lastDnsVerifiedAt: existing?.lastDnsVerifiedAt || null,
       componentVersion: manifest.componentVersion || 'recovery-v1'
     };
     await writeState(state);

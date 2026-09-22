@@ -149,8 +149,30 @@ async function initializeRecoveryTables() {
   await ensureColumn('recovery_bootstrap_records', 'publish_mode', "TEXT NOT NULL DEFAULT 'automatic'");
   await ensureColumn('recovery_bootstrap_records', 'dns_channel_id', 'INTEGER DEFAULT NULL');
   await ensureColumn('recovery_bootstrap_records', 'provider_zone_id', "TEXT NOT NULL DEFAULT ''");
+  await ensureColumn('recovery_bootstrap_records', 'group_id', 'INTEGER DEFAULT NULL');
+  await ensureColumn('recovery_bootstrap_records', 'required_target', 'INTEGER NOT NULL DEFAULT 0');
+  await run(`CREATE TABLE IF NOT EXISTS recovery_bootstrap_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER NOT NULL DEFAULT 1,
+    label TEXT NOT NULL, compatibility_mode TEXT NOT NULL DEFAULT 'AB_R1',
+    status INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(profile_id) REFERENCES recovery_profiles(id) ON DELETE CASCADE
+  )`);
+  await run(`CREATE TABLE IF NOT EXISTS recovery_bootstrap_group_domains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, profile_id INTEGER NOT NULL DEFAULT 1,
+    group_id INTEGER NOT NULL, title TEXT NOT NULL, url TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 0, status INTEGER NOT NULL DEFAULT 1,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(group_id, url),
+    FOREIGN KEY(profile_id) REFERENCES recovery_profiles(id) ON DELETE CASCADE,
+    FOREIGN KEY(group_id) REFERENCES recovery_bootstrap_groups(id) ON DELETE CASCADE
+  )`);
   await run('CREATE INDEX IF NOT EXISTS idx_recovery_domains_profile ON recovery_domains(profile_id, status, priority DESC, id ASC)');
   await run('CREATE INDEX IF NOT EXISTS idx_recovery_bootstrap_profile ON recovery_bootstrap_records(profile_id, status, is_primary, sort_order, id)');
+  await run('CREATE INDEX IF NOT EXISTS idx_recovery_bootstrap_group ON recovery_bootstrap_records(profile_id, group_id, share_role, id)');
+  await run('CREATE INDEX IF NOT EXISTS idx_recovery_bootstrap_group_domains ON recovery_bootstrap_group_domains(profile_id, group_id, status, priority DESC, id)');
 
   await run(`CREATE TABLE IF NOT EXISTS recovery_dns_providers (
     id TEXT PRIMARY KEY, label TEXT NOT NULL, default_publish_mode TEXT NOT NULL,
@@ -214,6 +236,7 @@ async function initializeRecoveryTables() {
     FOREIGN KEY(source_release_id) REFERENCES recovery_releases(id) ON DELETE SET NULL
   )`);
   await ensureColumn('recovery_releases', 'profile_id', 'INTEGER NOT NULL DEFAULT 1');
+  await ensureColumn('recovery_releases', 'dns_payloads_json', "TEXT NOT NULL DEFAULT '[]'");
   await run('CREATE INDEX IF NOT EXISTS idx_recovery_releases_profile ON recovery_releases(profile_id, status, generation DESC)');
 
   await run(`CREATE TABLE IF NOT EXISTS recovery_audit_logs (
@@ -267,12 +290,29 @@ async function updateDomain(id, input, owner = null) { await run(`UPDATE recover
 function deleteDomain(id, owner = null) { return run(`DELETE FROM recovery_domains WHERE id=?${owner ? ' AND profile_id=?' : ''}`, [id,...(owner ? [profileId(owner)] : [])]); }
 async function saveProbeResult(id, result) { await run(`UPDATE recovery_domains SET last_probe_status=?,last_probe_ms=?,last_probe_error=?,last_probe_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=?`, [result.healthy?'healthy':'failed',result.elapsedMs??null,result.error||'',id]); return getDomain(id); }
 
-function listBootstrapRecords({ enabledOnly = false, profileId: owner = 1 } = {}) { return all(`SELECT b.*,p.label AS provider_label,p.max_character_string_bytes,p.portable_record_bytes,p.note AS provider_note,c.label AS channel_label,c.account_hint AS channel_account_hint,c.status AS channel_status FROM recovery_bootstrap_records b LEFT JOIN recovery_dns_providers p ON p.id=b.provider_id LEFT JOIN recovery_dns_channels c ON c.id=b.dns_channel_id WHERE b.profile_id=? ${enabledOnly ? 'AND b.status=1' : ''} ORDER BY CASE b.share_role WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END,b.sort_order,b.id`, [profileId(owner)]); }
+function listBootstrapGroups(owner = 1) { return all('SELECT * FROM recovery_bootstrap_groups WHERE profile_id=? ORDER BY id',[profileId(owner)]); }
+function getBootstrapGroup(id,owner=null){return owner?get('SELECT * FROM recovery_bootstrap_groups WHERE id=? AND profile_id=?',[id,profileId(owner)]):get('SELECT * FROM recovery_bootstrap_groups WHERE id=?',[id]);}
+function listBootstrapGroupDomains({groupId=null,enabledOnly=false,profileId:owner=1}={}){return all(`SELECT * FROM recovery_bootstrap_group_domains WHERE profile_id=? ${groupId?'AND group_id=?':''} ${enabledOnly?'AND status=1':''} ORDER BY group_id,priority DESC,id`,[profileId(owner),...(groupId?[Number(groupId)]:[])]);}
+function listBootstrapRecords({ enabledOnly = false, profileId: owner = 1 } = {}) { return all(`SELECT b.*,p.label AS provider_label,p.max_character_string_bytes,p.portable_record_bytes,p.note AS provider_note,c.label AS channel_label,c.account_hint AS channel_account_hint,c.status AS channel_status,g.label AS group_label,g.compatibility_mode AS group_compatibility_mode FROM recovery_bootstrap_records b LEFT JOIN recovery_dns_providers p ON p.id=b.provider_id LEFT JOIN recovery_dns_channels c ON c.id=b.dns_channel_id LEFT JOIN recovery_bootstrap_groups g ON g.id=b.group_id WHERE b.profile_id=? ${enabledOnly ? 'AND b.status=1' : ''} ORDER BY COALESCE(b.group_id,2147483647),CASE b.share_role WHEN 'A' THEN 0 WHEN 'B' THEN 1 ELSE 2 END,b.sort_order,b.id`, [profileId(owner)]); }
 function getBootstrapRecord(id, owner = null) { return owner ? get('SELECT * FROM recovery_bootstrap_records WHERE id=? AND profile_id=?',[id,profileId(owner)]) : get('SELECT * FROM recovery_bootstrap_records WHERE id=?',[id]); }
-async function createBootstrapRecord(input, owner = 1) { const result=await run(`INSERT INTO recovery_bootstrap_records(profile_id,label,record_name,zone_name,is_primary,status,sort_order,provider_id,share_role,publish_mode,dns_channel_id,provider_zone_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,[profileId(owner),input.label,input.recordName,input.zoneName,input.isPrimary,input.status,input.sortOrder,input.providerId,input.shareRole,input.publishMode,input.dnsChannelId||null,input.providerZoneId||'']); return getBootstrapRecord(result.id); }
-async function updateBootstrapRecord(id,input,owner=null){await run(`UPDATE recovery_bootstrap_records SET label=?,record_name=?,zone_name=?,is_primary=?,status=?,sort_order=?,provider_id=?,share_role=?,publish_mode=?,dns_channel_id=?,provider_zone_id=?,updated_at=CURRENT_TIMESTAMP WHERE id=?${owner?' AND profile_id=?':''}`,[input.label,input.recordName,input.zoneName,input.isPrimary,input.status,input.sortOrder,input.providerId,input.shareRole,input.publishMode,input.dnsChannelId||null,input.providerZoneId||'',id,...(owner?[profileId(owner)]:[])]);return getBootstrapRecord(id);}
+async function createBootstrapRecord(input, owner = 1) { const result=await run(`INSERT INTO recovery_bootstrap_records(profile_id,label,record_name,zone_name,is_primary,status,sort_order,provider_id,share_role,publish_mode,dns_channel_id,provider_zone_id,group_id,required_target) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,[profileId(owner),input.label,input.recordName,input.zoneName,input.isPrimary,input.status,input.sortOrder,input.providerId,input.shareRole,input.publishMode,input.dnsChannelId||null,input.providerZoneId||'',input.groupId||null,input.requiredTarget?1:0]); return getBootstrapRecord(result.id); }
+async function updateBootstrapRecord(id,input,owner=null){const current=await getBootstrapRecord(id,owner);await run(`UPDATE recovery_bootstrap_records SET label=?,record_name=?,zone_name=?,is_primary=?,status=?,sort_order=?,provider_id=?,share_role=?,publish_mode=?,dns_channel_id=?,provider_zone_id=?,group_id=?,required_target=?,updated_at=CURRENT_TIMESTAMP WHERE id=?${owner?' AND profile_id=?':''}`,[input.label,input.recordName,input.zoneName,input.isPrimary,input.status,input.sortOrder,input.providerId,input.shareRole,input.publishMode,input.dnsChannelId||null,input.providerZoneId||'',input.groupId===undefined?(current?.group_id||null):(input.groupId||null),input.requiredTarget===undefined?Number(current?.required_target||0):(input.requiredTarget?1:0),id,...(owner?[profileId(owner)]:[])]);return getBootstrapRecord(id);}
 function deleteBootstrapRecord(id,owner=null){return run(`DELETE FROM recovery_bootstrap_records WHERE id=?${owner?' AND profile_id=?':''}`,[id,...(owner?[profileId(owner)]:[])]);}
 async function saveBootstrapPublishResult(id,result){await run(`UPDATE recovery_bootstrap_records SET last_publish_status=?,last_publish_error=?,last_published_generation=CASE WHEN ?>0 THEN ? ELSE last_published_generation END,last_published_at=CASE WHEN ?>0 THEN CURRENT_TIMESTAMP ELSE last_published_at END,last_verified_at=CASE WHEN ?=1 THEN CURRENT_TIMESTAMP ELSE last_verified_at END,updated_at=CURRENT_TIMESTAMP WHERE id=?`,[result.status,result.error||'',result.generation||0,result.generation||0,result.generation||0,result.verified?1:0,id]);}
+
+async function createBootstrapGroup(input, records, domains, owner = 1) {
+  return withTransaction(async transaction => {
+    const groupResult = await transaction.run(`INSERT INTO recovery_bootstrap_groups(profile_id,label,compatibility_mode,status) VALUES(?,?,?,?)`,[profileId(owner),input.label,input.compatibilityMode,input.status]);
+    for (const domain of domains) {
+      await transaction.run(`INSERT INTO recovery_bootstrap_group_domains(profile_id,group_id,title,url,priority,status) VALUES(?,?,?,?,?,?)`,[profileId(owner),groupResult.id,domain.title,domain.url,domain.priority,domain.status]);
+    }
+    for (const record of records) {
+      await transaction.run(`INSERT INTO recovery_bootstrap_records(profile_id,label,record_name,zone_name,is_primary,status,sort_order,provider_id,share_role,publish_mode,dns_channel_id,provider_zone_id,group_id,required_target) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,[profileId(owner),record.label,record.recordName,record.zoneName,record.isPrimary,record.status,record.sortOrder,record.providerId,record.shareRole,record.publishMode,record.dnsChannelId||null,record.providerZoneId||'',groupResult.id,record.requiredTarget?1:0]);
+    }
+    return transaction.get('SELECT * FROM recovery_bootstrap_groups WHERE id=?',[groupResult.id]);
+  },{durability:'full',label:'create recovery bootstrap group'});
+}
+async function deleteBootstrapGroup(id,owner=1){return withTransaction(async transaction=>{await transaction.run('DELETE FROM recovery_lookup_routes WHERE bootstrap_id IN (SELECT id FROM recovery_bootstrap_records WHERE group_id=? AND profile_id=?)',[id,profileId(owner)]);await transaction.run('DELETE FROM recovery_bootstrap_records WHERE group_id=? AND profile_id=?',[id,profileId(owner)]);return transaction.run('DELETE FROM recovery_bootstrap_groups WHERE id=? AND profile_id=?',[id,profileId(owner)]);},{durability:'full',label:'delete recovery bootstrap group'});}
 
 function listResolvers(){return all('SELECT * FROM recovery_resolvers WHERE enabled=1 ORDER BY category,label');}
 function listDnsProviders(){return all('SELECT * FROM recovery_dns_providers WHERE enabled=1 ORDER BY label');}
@@ -292,7 +332,7 @@ async function createLookupRoute(input,owner=1){const result=await run(`INSERT I
 function deleteLookupRoute(id,owner=1){return run('DELETE FROM recovery_lookup_routes WHERE id=? AND profile_id=?',[id,profileId(owner)]);}
 
 async function nextGeneration(owner=1){const row=await get('SELECT MAX(generation) AS generation FROM recovery_releases');const settings=await getSettings(owner);return Math.max(Number(row?.generation||0),Number(settings?.current_generation||0))+1;}
-async function createRelease(input,owner=1){const result=await run(`INSERT INTO recovery_releases(profile_id,generation,payload_json,payload_hash,signature,key_id,status,issued_at,expires_at,source_release_id) VALUES(?,?,?,?,?,?,?,?,?,?)`,[profileId(owner),input.generation,input.payloadJson,input.payloadHash,input.signature,input.keyId,input.status||'draft',input.issuedAt,input.expiresAt,input.sourceReleaseId||null]);return getRelease(result.id);}
+async function createRelease(input,owner=1){const result=await run(`INSERT INTO recovery_releases(profile_id,generation,payload_json,payload_hash,signature,key_id,status,issued_at,expires_at,source_release_id,dns_payloads_json) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,[profileId(owner),input.generation,input.payloadJson,input.payloadHash,input.signature,input.keyId,input.status||'draft',input.issuedAt,input.expiresAt,input.sourceReleaseId||null,input.dnsPayloadsJson||'[]']);return getRelease(result.id);}
 function getRelease(id,owner=null){return owner?get('SELECT * FROM recovery_releases WHERE id=? AND profile_id=?',[id,profileId(owner)]):get('SELECT * FROM recovery_releases WHERE id=?',[id]);}
 function getReleaseByGeneration(generation,owner=1){return get('SELECT * FROM recovery_releases WHERE generation=? AND profile_id=?',[generation,profileId(owner)]);}
 function listReleases(limit=50,owner=1){return all('SELECT * FROM recovery_releases WHERE profile_id=? ORDER BY generation DESC LIMIT ?',[profileId(owner),Math.max(1,Math.min(200,Number(limit)||50))]);}
@@ -302,4 +342,4 @@ async function publishReleaseAtomically(id,generation,owner=1){return withTransa
 async function addAudit(action,detail={},success=true,errorMessage='',owner=1){await run(`INSERT INTO recovery_audit_logs(profile_id,action,detail_json,success,error_message) VALUES(?,?,?,?,?)`,[profileId(owner),action,JSON.stringify(detail),success?1:0,String(errorMessage||'')]);}
 function listAudit(limit=100,owner=1){return all('SELECT * FROM recovery_audit_logs WHERE profile_id=? ORDER BY id DESC LIMIT ?',[profileId(owner),Math.max(1,Math.min(500,Number(limit)||100))]);}
 
-module.exports={initializeRecoveryTables,listProfiles,getProfile,createProfile,getSettings,updateSettings,saveKeyState,listDomains,getDomain,createDomain,updateDomain,deleteDomain,saveProbeResult,listBootstrapRecords,getBootstrapRecord,createBootstrapRecord,updateBootstrapRecord,deleteBootstrapRecord,saveBootstrapPublishResult,listResolvers,getResolver,listDnsProviders,getDnsProvider,listDnsChannels,getDnsChannel,getDnsChannelByCredentialKey,createDnsChannel,updateDnsChannel,saveDnsChannelTestResult,countDnsChannelReferences,deleteDnsChannel,assignDnsChannelToLegacyCloudflare,listLookupRoutes,createLookupRoute,deleteLookupRoute,nextGeneration,createRelease,getRelease,getReleaseByGeneration,listReleases,getLatestPublishedRelease,markRelease,publishReleaseAtomically,addAudit,listAudit};
+module.exports={initializeRecoveryTables,listProfiles,getProfile,createProfile,getSettings,updateSettings,saveKeyState,listDomains,getDomain,createDomain,updateDomain,deleteDomain,saveProbeResult,listBootstrapGroups,getBootstrapGroup,listBootstrapGroupDomains,createBootstrapGroup,deleteBootstrapGroup,listBootstrapRecords,getBootstrapRecord,createBootstrapRecord,updateBootstrapRecord,deleteBootstrapRecord,saveBootstrapPublishResult,listResolvers,getResolver,listDnsProviders,getDnsProvider,listDnsChannels,getDnsChannel,getDnsChannelByCredentialKey,createDnsChannel,updateDnsChannel,saveDnsChannelTestResult,countDnsChannelReferences,deleteDnsChannel,assignDnsChannelToLegacyCloudflare,listLookupRoutes,createLookupRoute,deleteLookupRoute,nextGeneration,createRelease,getRelease,getReleaseByGeneration,listReleases,getLatestPublishedRelease,markRelease,publishReleaseAtomically,addAudit,listAudit};

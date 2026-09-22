@@ -78,6 +78,55 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
       assert.equal(provider.portable_record_bytes, 240);
     }
     assert.doesNotMatch(JSON.stringify(channelOverview.dnsChannels), /cf-token|desec-token|cloudns-secret|route53-secret|dnspod-secret|aliyun-secret|baidu-secret|volcengine-secret/);
+    assert.deepEqual(channelOverview.txtPolicy, {
+      portableBytes: 240,
+      maxEncodedBytes: 4096,
+      maxPartsPerRole: 50,
+      legacyDataBytes: 180
+    });
+    const publishGroup = await RecoveryService.createBootstrapGroup({
+      label: '主力双分片与 R1 兼容',
+      compatibilityMode: 'AB_R1',
+      domains: [
+        { title: 'DNS 线路一', url: 'https://dns-one.example.com', priority: 80, status: 1 },
+        { title: 'DNS 线路二', url: 'https://dns-two.example.net', priority: 70, status: 0 }
+      ],
+      targets: [
+        {
+          label: 'Cloudflare A', shareRole: 'A', publishMode: 'automatic',
+          dnsChannelId: cloudflareChannelB.id, zoneName: 'example.com',
+          providerZoneId: 'cf-zone-id', recordName: '_recovery-a.example.com',
+          requiredTarget: 1, status: 0
+        },
+        {
+          label: 'deSEC B', shareRole: 'B', publishMode: 'automatic',
+          dnsChannelId: deSecChannel.id, zoneName: 'example.net',
+          providerZoneId: 'example.net', recordName: '_recovery-b.example.net',
+          requiredTarget: 1, status: 0
+        },
+        {
+          label: 'HE R1', shareRole: 'LEGACY', publishMode: 'manual', providerId: 'he',
+          zoneName: 'example.org', recordName: '_recovery.example.org', status: 0
+        }
+      ]
+    });
+    const groupedOverview = await RecoveryService.overview();
+    assert.equal(groupedOverview.bootstrapGroups.some(item => item.id === publishGroup.id), true);
+    const groupedRecords = groupedOverview.bootstraps.filter(item => item.group_id === publishGroup.id);
+    assert.deepEqual(groupedRecords.map(item => item.share_role), ['A', 'B', 'LEGACY']);
+    assert.deepEqual(groupedRecords.map(item => item.publish_mode), ['automatic', 'automatic', 'manual']);
+    assert.deepEqual(groupedRecords.map(item => item.required_target), [1, 1, 0]);
+    assert.equal(groupedOverview.bootstrapGroupDomains.filter(item => item.group_id === publishGroup.id).length, 2);
+    assert.equal((await RecoveryModel.listDomains()).length, 0);
+    await assert.rejects(() => RecoveryService.createDraft(), /至少需要一条已启用的恢复线路/);
+    await assert.rejects(() => RecoveryService.createBootstrapGroup({
+      label: '错误的同权威组合', compatibilityMode: 'AB',
+      domains: [{ title: 'DNS 错误线路', url: 'https://dns-bad.example.com', priority: 0, status: 1 }],
+      targets: [
+        { shareRole: 'A', publishMode: 'automatic', dnsChannelId: cloudflareChannelB.id, zoneName: 'example.com', recordName: '_bad-a.example.com', status: 0 },
+        { shareRole: 'B', publishMode: 'automatic', dnsChannelId: cloudflareChannelB.id, zoneName: 'example.com', recordName: '_bad-b.example.com', status: 0 }
+      ]
+    }), /A 与 B 必须至少形成一组不同权威 DNS/);
     const automaticInput = await RecoveryService.validateBootstrapConfiguration(RecoveryService.validateBootstrapInput({
       label: '临时自动发布', recordName: '_recovery.example.com', zoneName: 'example.com',
       providerId: 'cloudflare', publishMode: 'automatic', dnsChannelId: cloudflareChannel.id, status: 1
@@ -100,11 +149,20 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     assert.equal(draft.envelope.schema, 3);
     assert.equal(draft.envelope.fallback, undefined);
     assert.equal(draft.envelope.trustedKeys.length, 1);
+    assert.equal(draft.dnsEnvelopes.length, 1);
+    assert.equal(draft.dnsEnvelopes[0].groupId, publishGroup.id);
+    assert.deepEqual(draft.dnsEnvelopes[0].envelope.domains.map(item => item.url), ['https://dns-one.example.com']);
+    assert.deepEqual(draft.envelope.domains.map(item => item.url), ['https://one.example.com', 'https://two.example.net']);
+    assert.equal(draft.dnsEnvelopes[0].envelope.domains.some(item => item.url === 'https://one.example.com'), false);
+    await RecoveryService.deleteBootstrapGroup(publishGroup.id);
+    assert.equal((await RecoveryModel.listBootstrapRecords()).some(item => item.group_id === publishGroup.id), false);
 
     const settings = await RecoveryModel.getSettings();
     assert.equal(RecoveryService.verifyEnvelope(draft.envelope, [{ keyId: settings.public_key_id, publicKey: settings.public_key }]), true);
 
     const chunks = RecoveryService.chunkEnvelope(draft.envelope);
+    assert.ok(chunks.parts.every(value => Buffer.byteLength(value, 'utf8') <= 240));
+    assert.throws(() => RecoveryService.assertPortableTxt(['x'.repeat(241)], 240), /超过托管商安全上限/);
     const rebuilt = RecoveryService.assembleTxt(chunks.parts);
     assert.equal(rebuilt.length, 1);
     assert.deepEqual(rebuilt[0].envelope, draft.envelope);
@@ -221,6 +279,16 @@ test('恢复客户端保持完全独立并仅在导航失败后由 Service Worke
   assert.doesNotMatch(recoveryClient, /location\.replace|meta http-equiv|自动跳转/);
   assert.match(adminClient, /不会读取首页弹窗、节点管理或现有防失联设置/);
   assert.match(adminClient, /DNS \/ Bootstrap 查询线路/);
+  assert.match(adminClient, /bootstrapGroups = \[\]/);
+  assert.match(adminClient, /系统统一采用每条.*字节安全上限/);
+  assert.match(adminClient, /直接恢复线路（浏览器本地保存）/);
+  assert.match(adminClient, /DNS TXT 候选域名/);
+  assert.match(adminClient, /data-recovery-action="add-group-domain"/);
+  assert.match(adminClient, /bootstrapGroupDomains = \[\]/);
+  assert.match(adminClient, /domains: collectGroupDomains\(\)/);
+  assert.doesNotMatch(adminClient, /add-domain-from-group|returnToGroupFromDomain|renderGroupDomainPreview/);
+  assert.match(recoveryClient, /highestDnsGeneration/);
+  assert.match(recoveryClient, /dnsEnvelopes/);
   assert.match(reviewClient, /recoveryProfileId/);
   assert.match(reviewClient, /每个独立前台必须绑定一套已启用且已发布的恢复方案/);
   assert.match(frontendProxy, /'\/api\/recovery\/'/);

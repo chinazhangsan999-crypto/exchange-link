@@ -53,17 +53,18 @@
               <label class="full">全部失败时说明<textarea name="recovery_message" maxlength="1000"></textarea></label>
               <label class="full">发现最新地址后的说明<textarea name="found_message" maxlength="500"></textarea></label>
               <label>清单有效天数<input name="manifest_valid_days" type="number" min="7" max="365" required></label>
-              <label>最多候选域名<input name="max_domains" type="number" min="1" max="10" required></label>
+              <label>直接恢复线路上限<input name="max_domains" type="number" min="1" max="10" required></label>
               <label>单次测活超时（毫秒）<input name="probe_timeout_ms" type="number" min="1000" max="10000" step="100" required></label>
               <label>测活并发数<input name="probe_concurrency" type="number" min="1" max="3" required></label>
               <div class="recovery-form-actions"><button class="button" type="submit">保存恢复设置</button></div>
             </form>
           </div>
-          <div class="box"><div class="box-head"><div><h2>恢复专用线路</h2><p class="hint">仅接受 HTTPS Origin；测活固定使用 /.well-known/route-health.gif。</p></div><button class="button" type="button" data-recovery-action="open-domain">新增线路</button></div>
-            <div class="table-wrap"><table class="recovery-table"><thead><tr><th>线路</th><th>地址</th><th>优先级</th><th>状态</th><th>动态图片检测</th><th>最近检测</th><th>操作</th></tr></thead><tbody id="recovery-domain-body"></tbody></table></div>
+          <div class="box"><div class="box-head"><div><h2>直接恢复线路（浏览器本地保存）</h2><p class="hint">随主签名清单下发并保存在访客浏览器中；不写入 DNS TXT，也不与 DNS 发布组合自动同步。仅接受 HTTPS Origin，测活固定使用 /.well-known/route-health.gif。</p></div><button class="button" type="button" data-recovery-action="open-domain">新增直接线路</button></div>
+            <div class="table-wrap"><table class="recovery-table"><thead><tr><th>名称</th><th>直接恢复地址</th><th>优先级</th><th>状态</th><th>动态图片检测</th><th>最近检测</th><th>操作</th></tr></thead><tbody id="recovery-domain-body"></tbody></table></div>
           </div>
-          <div class="box"><div class="box-head"><div><h2>Bootstrap DNS</h2><p class="hint">新版本使用 A/B 两份 XOR 分片；至少从不同权威 DNS 各取得一份才可恢复。每条 TXT 强制不超过 240 字节，兼容当前全部托管商并便于跨服务商迁移。</p></div><button class="button" type="button" data-recovery-action="open-bootstrap">新增 DNS</button></div>
-            <div class="table-wrap"><table class="recovery-table"><thead><tr><th>名称</th><th>权威 DNS</th><th>TXT 记录</th><th>分片</th><th>单条限制</th><th>发布状态</th><th>当前代</th><th>操作</th></tr></thead><tbody id="recovery-bootstrap-body"></tbody></table></div>
+          <div class="box"><div class="box-head"><div><h2>DNS 发布组合</h2><p class="hint">每个组合维护自己的 TXT 候选域名；这些域名只通过 DoH 查询获得，不读取上方直接恢复线路。A、B、R1 可分别发布到一个或多个自动或手动目标。</p></div><div class="recovery-actions"><button class="button ghost" type="button" data-recovery-action="open-bootstrap">高级单条配置</button><button class="button" type="button" data-recovery-action="open-bootstrap-group">新建发布组合</button></div></div>
+            <div id="recovery-bootstrap-groups" class="recovery-publish-groups"></div>
+            <details class="recovery-legacy-records"><summary>历史独立配置</summary><div class="table-wrap"><table class="recovery-table"><thead><tr><th>名称</th><th>权威 DNS</th><th>TXT 记录</th><th>分片</th><th>单条限制</th><th>发布状态</th><th>当前代</th><th>操作</th></tr></thead><tbody id="recovery-bootstrap-body"></tbody></table></div></details>
             <div id="recovery-doh-results" class="recovery-result-list" aria-live="polite"></div>
           </div>
           <div class="box"><div class="box-head"><div><h2>DNS / Bootstrap 查询线路</h2><p class="hint">每一行精确指定“哪个 DNS 服务商查询哪一条 TXT”。同一方案可让不同 DNS 查询不同的 Bootstrap TXT；按 P1 → P4 分组容灾，同组并发。</p></div></div>
@@ -86,8 +87,9 @@
           <div class="box"><div class="box-head"><div><h2>操作审计</h2><p class="hint">保留最近 100 条配置、检测、密钥和发布记录。</p></div></div><div id="recovery-audit" class="recovery-audit"></div></div>
         </div>
       </div>
-      <div id="recovery-domain-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-domain-title"><form id="recovery-domain-form" class="dialog"><h3 id="recovery-domain-title">恢复线路</h3><input name="id" type="hidden"><div class="form-grid"><label>线路名称<input name="title" maxlength="80" required></label><label>优先级<input name="priority" type="number" value="0" required></label><label class="full">HTTPS 地址<input name="url" type="url" placeholder="https://recovery.example" required></label><label class="full exemption-option"><input name="status" type="checkbox" value="1" checked><span>启用该线路</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存线路</button></div></form></div>
-      <div id="recovery-bootstrap-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-bootstrap-title"><form id="recovery-bootstrap-form" class="dialog"><h3 id="recovery-bootstrap-title">Bootstrap DNS</h3><input name="id" type="hidden"><input name="isPrimary" type="hidden" value="0"><input name="providerZoneId" type="hidden"><div class="form-grid"><label>显示名称<input name="label" maxlength="80" required></label><label>排序<input name="sortOrder" type="number" value="0" required></label><label>权威 DNS 托管商<select name="providerId" required></select></label><label>分片角色<select name="shareRole" required><option value="A">A 分片</option><option value="B">B 分片</option><option value="LEGACY">旧版 r1 兼容</option></select></label><label>发布方式<select name="publishMode" required><option value="automatic">API 自动发布</option><option value="manual">手动发布并 DoH 验证</option></select></label><label id="recovery-bootstrap-channel-field">API 通道<select name="dnsChannelId"></select></label><p id="recovery-bootstrap-publish-hint" class="hint full"></p><label class="full">TXT 记录名<input name="recordName" placeholder="_recovery-a.bootstrap.example" required></label><label class="full">权威 DNS Zone<span class="recovery-zone-picker"><input name="zoneName" list="recovery-zone-options" placeholder="bootstrap.example" required><button class="button ghost" type="button" data-recovery-action="load-channel-zones">读取账号 Zone</button></span><datalist id="recovery-zone-options"></datalist></label><p class="hint full">每条 TXT 使用 240 字节安全上限；自动发布只清理本系统旧代分片，不会删除同名的其他 TXT。</p><label class="exemption-option full"><input name="status" type="checkbox" value="1" checked><span>启用</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存 DNS</button></div></form></div>
+      <div id="recovery-domain-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-domain-title"><form id="recovery-domain-form" class="dialog"><h3 id="recovery-domain-title">新增直接恢复线路</h3><input name="id" type="hidden"><div class="form-grid"><label>线路名称<input name="title" maxlength="80" placeholder="例如：本地备用前台 1" required></label><label>优先级<input name="priority" type="number" value="0" required><small class="hint">数值越大越优先。</small></label><label class="full">完整 HTTPS Origin<input name="url" type="url" placeholder="https://recovery.example.com" required><small class="hint">不能包含路径、参数、认证信息或非标准端口。</small></label><label class="full exemption-option"><input name="status" type="checkbox" value="1" checked><span>启用并写入下一份直接恢复清单</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存直接线路</button></div></form></div>
+      <div id="recovery-bootstrap-group-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-bootstrap-group-title"><form id="recovery-bootstrap-group-form" class="dialog recovery-group-dialog"><h3 id="recovery-bootstrap-group-title">新建 DNS 发布组合</h3><div id="recovery-group-error" class="recovery-inline-error" role="alert" hidden></div><div class="form-grid"><label>组合名称<input name="label" maxlength="80" value="主恢复发布组合" required></label><label>兼容方案<select name="compatibilityMode" required><option value="AB_R1">A + B + R1（推荐）</option><option value="AB">仅 A + B</option><option value="R1">仅 R1 旧版</option><option value="CUSTOM">自定义</option></select></label></div><section class="recovery-group-summary"><div class="recovery-group-summary-head"><div><strong>DNS TXT 候选域名</strong><p class="hint">只写入当前组合的 DNS 签名清单，不会进入浏览器直接恢复列表。最多 10 条，至少启用 1 条。</p></div><button class="button ghost" type="button" data-recovery-action="add-group-domain">添加 TXT 候选域名</button></div><div id="recovery-group-domain-list" class="recovery-group-domain-list"></div></section><p id="recovery-group-byte-policy" class="recovery-byte-policy"></p><div id="recovery-group-roles" class="recovery-role-stack"></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">创建发布组合</button></div></form></div>
+      <div id="recovery-bootstrap-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-bootstrap-title"><form id="recovery-bootstrap-form" class="dialog"><h3 id="recovery-bootstrap-title">高级单条 DNS 配置</h3><input name="id" type="hidden"><input name="isPrimary" type="hidden" value="0"><input name="providerZoneId" type="hidden"><div class="form-grid"><label>显示名称<input name="label" maxlength="80" required></label><label>排序<input name="sortOrder" type="number" value="0" required></label><label>权威 DNS 托管商<select name="providerId" required></select></label><label>分片角色<select name="shareRole" required><option value="A">A 分片</option><option value="B">B 分片</option><option value="LEGACY">旧版 r1 兼容</option></select></label><label>发布方式<select name="publishMode" required><option value="automatic">API 自动发布</option><option value="manual">手动发布并 DoH 验证</option></select></label><label id="recovery-bootstrap-channel-field">API 通道<select name="dnsChannelId"></select></label><p id="recovery-bootstrap-publish-hint" class="hint full"></p><label class="full">TXT 记录名<input name="recordName" placeholder="_recovery-a.bootstrap.example" required></label><label class="full">权威 DNS Zone<span class="recovery-zone-picker"><input name="zoneName" list="recovery-zone-options" placeholder="bootstrap.example" required><button class="button ghost" type="button" data-recovery-action="load-channel-zones">读取账号 Zone</button></span><datalist id="recovery-zone-options"></datalist></label><p class="hint full">每条 TXT 使用系统与托管商两者中更小的字节上限；自动发布只清理本系统旧代分片，不会删除同名的其他 TXT。</p><label class="exemption-option full"><input name="status" type="checkbox" value="1" checked><span>启用</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存 DNS</button></div></form></div>
       <div id="recovery-channel-modal" class="modal recovery-modal" role="dialog" aria-modal="true" aria-labelledby="recovery-channel-title"><form id="recovery-channel-form" class="dialog"><h3 id="recovery-channel-title">DNS API 通道</h3><input name="id" type="hidden"><div class="form-grid"><label>通道名称<input name="label" maxlength="80" placeholder="例如：Cloudflare 主账号" required></label><label>DNS 服务商<select name="providerId" required></select></label><div id="recovery-channel-credentials" class="recovery-credential-fields full"></div><p class="hint full">敏感字段留空表示保持原值。保存后只显示脱敏账号标识，不回显密钥。</p><label class="exemption-option full"><input name="status" type="checkbox" value="1" checked><span>启用该 API 通道</span></label></div><div class="dialog-foot"><button class="button ghost" type="button" data-close-recovery-modal>取消</button><button class="button" type="submit">保存通道</button></div></form></div>
     `;
     document.querySelector('.shell')?.append(panel);
@@ -102,7 +104,7 @@
 
   function renderOverview() {
     if (!state) return;
-    const { settings, domains, bootstraps, releases, keys, audit, profiles = [], resolvers = [], dnsProviders = [], dnsChannels = [], lookupRoutes = [] } = state;
+    const { settings, domains, bootstrapGroups = [], bootstrapGroupDomains = [], bootstraps, releases, keys, audit, profiles = [], resolvers = [], dnsProviders = [], dnsChannels = [], lookupRoutes = [] } = state;
     currentProfileId = Number(state.selectedProfileId || settings.id || currentProfileId);
     const profileSelect = document.querySelector('#recovery-profile-select');
     profileSelect.innerHTML = profiles.map(item => `<option value="${Number(item.id)}">${escapeHtml(item.name)} · ${escapeHtml(item.code)}${item.ready ? ' · 可发布' : ''}</option>`).join('');
@@ -128,7 +130,21 @@
     Object.entries(settings).forEach(([key, value]) => { const field = settingsForm.elements[key]; if (!field) return; if (field.type === 'checkbox') field.checked = Number(value) === 1; else field.value = value ?? ''; });
     document.querySelector('#recovery-domain-body').innerHTML = domains.map(item => `<tr><td><strong>${escapeHtml(item.title)}</strong></td><td class="recovery-url">${escapeHtml(item.url)}</td><td>${Number(item.priority)}</td><td>${Number(item.status) === 1 ? '<span class="tag">启用</span>' : '<span class="tag neutral">停用</span>'}</td><td>${statusTag(item.last_probe_status)}${item.last_probe_ms ? ` <span class="hint">${item.last_probe_ms}ms</span>` : ''}${item.last_probe_error ? `<span class="domain">${escapeHtml(item.last_probe_error)}</span>` : ''}</td><td>${formatTime(item.last_probe_at)}</td><td><div class="actions"><button class="action" data-recovery-action="probe-domain" data-id="${item.id}">检测</button><button class="action" data-recovery-action="edit-domain" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-domain" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="7" class="recovery-empty">尚未添加恢复专用线路</td></tr>';
     document.querySelector('#recovery-channel-body').innerHTML = dnsChannels.map(item => `<tr><td><strong>${escapeHtml(item.label)}</strong>${item.legacy ? '<span class="domain">兼容现有配置</span>' : ''}</td><td>${escapeHtml(item.provider_label || item.provider_id)}</td><td>${escapeHtml(item.account_hint || '—')}</td><td>${item.configured ? '<span class="tag">凭据已配置</span>' : '<span class="tag off">凭据不完整</span>'}${Number(item.status) === 1 ? '' : '<span class="domain">通道已停用</span>'}</td><td>${statusTag(item.last_test_status)}${item.last_test_error ? `<span class="domain">${escapeHtml(item.last_test_error)}</span>` : ''}${item.last_test_at ? `<span class="domain">${formatTime(item.last_test_at)}</span>` : ''}</td><td><div class="actions"><button class="action" data-recovery-action="test-channel" data-id="${item.id}">验证</button><button class="action" data-recovery-action="edit-channel" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-channel" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="6" class="recovery-empty">尚未配置 DNS API 通道；新增通道后即可自动发布 TXT。</td></tr>';
-    document.querySelector('#recovery-bootstrap-body').innerHTML = bootstraps.map(item => `<tr><td><strong>${escapeHtml(item.label)}</strong></td><td><strong>${escapeHtml(item.provider_label || item.provider_id)}</strong><span class="domain">${item.publish_mode === 'automatic' ? `API 自动 · ${escapeHtml(item.channel_label || '未绑定通道')}` : '手动 + DoH 验证'}</span></td><td class="recovery-code">${escapeHtml(item.record_name)}<span class="domain">${escapeHtml(item.zone_name)}</span></td><td><span class="tag ${item.share_role === 'LEGACY' ? 'neutral' : ''}">${escapeHtml(item.share_role || 'LEGACY')}</span></td><td>${Number(item.portable_record_bytes || 240)} / ${Number(item.max_character_string_bytes || 255)} 字节</td><td>${statusTag(item.last_publish_status)}${item.last_publish_error ? `<span class="domain">${escapeHtml(item.last_publish_error)}</span>` : ''}</td><td>${Number(item.last_published_generation || 0) || '—'}</td><td><div class="actions"><button class="action" data-recovery-action="doh" data-id="${item.id}">DoH 回读</button><button class="action" data-recovery-action="edit-bootstrap" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-bootstrap" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="8" class="recovery-empty">尚未配置 Bootstrap DNS；已发布清单仍可在主站正常时同步到老用户浏览器。</td></tr>';
+    document.querySelector('#recovery-bootstrap-groups').innerHTML = (bootstrapGroups || []).map(group => {
+      const targets = bootstraps.filter(item => Number(item.group_id) === Number(group.id));
+      const txtDomains = bootstrapGroupDomains.filter(item => Number(item.group_id) === Number(group.id));
+      const enabledTxtDomains = txtDomains.filter(item => Number(item.status) === 1);
+      const roleSummary = ['A', 'B', 'LEGACY'].map(role => {
+        const roleTargets = targets.filter(item => item.share_role === role);
+        const verified = roleTargets.filter(item => item.last_publish_status === 'verified').length;
+        return `<span class="tag ${role === 'LEGACY' ? 'neutral' : ''}">${role === 'LEGACY' ? 'R1' : role} ${verified}/${roleTargets.length}</span>`;
+      }).join('');
+      const targetRows = targets.map(item => `<tr><td><span class="tag ${item.share_role === 'LEGACY' ? 'neutral' : ''}">${item.share_role === 'LEGACY' ? 'R1' : escapeHtml(item.share_role)}</span>${Number(item.required_target) === 1 ? '<span class="domain">必需</span>' : '<span class="domain">可选副本</span>'}</td><td><strong>${escapeHtml(item.provider_label || item.provider_id)}</strong><span class="domain">${item.publish_mode === 'automatic' ? `API · ${escapeHtml(item.channel_label || '未绑定')}` : '手动发布'}</span></td><td class="recovery-code">${escapeHtml(item.record_name)}<span class="domain">Zone：${escapeHtml(item.zone_name)}</span></td><td>${Math.min(Number(item.portable_record_bytes || 240), Number(state?.txtPolicy?.portableBytes || 240))} 字节</td><td>${statusTag(item.last_publish_status)}${item.last_publish_error ? `<span class="domain">${escapeHtml(item.last_publish_error)}</span>` : ''}</td><td><div class="actions"><button class="action" data-recovery-action="doh" data-id="${item.id}">DoH 回读</button><button class="action" data-recovery-action="edit-bootstrap" data-id="${item.id}">编辑</button></div></td></tr>`).join('');
+      const domainRows = txtDomains.map(item => `<li><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(item.url)} · 优先级 ${Number(item.priority)}</small></span>${Number(item.status) === 1 ? '<span class="tag">启用</span>' : '<span class="tag neutral">停用</span>'}</li>`).join('') || '<li class="recovery-empty">该历史组合尚未配置独立的 TXT 候选域名，请删除并重新创建后再生成草稿。</li>';
+      return `<article class="recovery-publish-group"><div class="recovery-publish-group-head"><div><strong>${escapeHtml(group.label)}</strong><span>${escapeHtml(group.compatibility_mode)} · ${targets.length} 个发布目标 · TXT 候选域名 ${enabledTxtDomains.length} 启用 / ${txtDomains.length} 总数</span></div><div class="recovery-role-badges">${roleSummary}</div></div><details><summary>查看 TXT 候选域名</summary><ul class="recovery-group-domain-summary">${domainRows}</ul></details><details><summary>查看发布目标</summary><div class="table-wrap"><table class="recovery-table recovery-target-table"><thead><tr><th>角色</th><th>发布通道</th><th>TXT记录</th><th>字节上限</th><th>状态</th><th>操作</th></tr></thead><tbody>${targetRows}</tbody></table></div></details><div class="recovery-group-actions"><button class="action danger" data-recovery-action="delete-bootstrap-group" data-id="${group.id}">删除组合</button></div></article>`;
+    }).join('') || '<div class="recovery-empty">尚未建立 DNS 发布组合。创建后可为 A、B、R1 分别配置一个或多个自动或手动目标。</div>';
+    const legacyBootstraps = bootstraps.filter(item => !item.group_id);
+    document.querySelector('#recovery-bootstrap-body').innerHTML = legacyBootstraps.map(item => `<tr><td><strong>${escapeHtml(item.label)}</strong></td><td><strong>${escapeHtml(item.provider_label || item.provider_id)}</strong><span class="domain">${item.publish_mode === 'automatic' ? `API 自动 · ${escapeHtml(item.channel_label || '未绑定通道')}` : '手动 + DoH 验证'}</span></td><td class="recovery-code">${escapeHtml(item.record_name)}<span class="domain">${escapeHtml(item.zone_name)}</span></td><td><span class="tag ${item.share_role === 'LEGACY' ? 'neutral' : ''}">${escapeHtml(item.share_role || 'LEGACY')}</span></td><td>${Math.min(Number(item.portable_record_bytes || 240), Number(state?.txtPolicy?.portableBytes || 240))} / ${Number(item.max_character_string_bytes || 255)} 字节</td><td>${statusTag(item.last_publish_status)}${item.last_publish_error ? `<span class="domain">${escapeHtml(item.last_publish_error)}</span>` : ''}</td><td>${Number(item.last_published_generation || 0) || '—'}</td><td><div class="actions"><button class="action" data-recovery-action="doh" data-id="${item.id}">DoH 回读</button><button class="action" data-recovery-action="edit-bootstrap" data-id="${item.id}">编辑</button><button class="action danger" data-recovery-action="delete-bootstrap" data-id="${item.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="8" class="recovery-empty">没有历史独立配置</td></tr>';
     const bootstrapForm = document.querySelector('#recovery-bootstrap-form');
     bootstrapForm.elements.providerId.innerHTML = dnsProviders.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)} · ${Number(item.portable_record_bytes)} 字节安全上限</option>`).join('');
     const channelForm = document.querySelector('#recovery-channel-form');
@@ -160,11 +176,166 @@
 
   function openModal(id) { document.querySelector(id)?.classList.add('open'); document.querySelector(`${id} input:not([type="hidden"])`)?.focus(); }
   function closeModals() { document.querySelectorAll('#recovery .recovery-modal.open').forEach(item => item.classList.remove('open')); }
+  function openDomainForm({ domain = null } = {}) {
+    const form = document.querySelector('#recovery-domain-form');
+    form.reset();
+    form.elements.id.value = domain?.id || '';
+    form.elements.title.value = domain?.title || '';
+    form.elements.url.value = domain?.url || '';
+    form.elements.priority.value = domain?.priority ?? 0;
+    form.elements.status.checked = domain ? Number(domain.status) === 1 : true;
+    document.querySelector('#recovery-domain-title').textContent = domain ? '编辑直接恢复线路' : '新增直接恢复线路';
+    openModal('#recovery-domain-modal');
+  }
   function domainById(id) { return state?.domains.find(item => Number(item.id) === Number(id)); }
   function bootstrapById(id) { return state?.bootstraps.find(item => Number(item.id) === Number(id)); }
   function channelById(id) { return state?.dnsChannels?.find(item => Number(item.id) === Number(id)); }
   function providerById(id) { return state?.dnsProviders?.find(item => item.id === id); }
   function releaseById(id) { return state?.releases.find(item => Number(item.id) === Number(id)); }
+  const roleMeta = Object.freeze({
+    A: { label: 'A 分片', prefix: '_recovery-a', help: '保存完整恢复清单的 A 份 XOR 分片。' },
+    B: { label: 'B 分片', prefix: '_recovery-b', help: '保存完整恢复清单的 B 份 XOR 分片，需与 A 跨权威 DNS。' },
+    LEGACY: { label: 'R1 旧版兼容', prefix: '_recovery', help: '保存包含全部候选域名的完整签名清单。' }
+  });
+  let targetSequence = 0;
+  let groupDomainSequence = 0;
+
+  function rolesForMode(mode) {
+    if (mode === 'AB') return ['A', 'B'];
+    if (mode === 'R1') return ['LEGACY'];
+    return ['A', 'B', 'LEGACY'];
+  }
+
+  function targetRecordName(role, zoneName, ordinal = 1) {
+    const zone = String(zoneName || '').trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+    if (!zone) return '';
+    const suffix = ordinal > 1 ? `-${ordinal}` : '';
+    return `${roleMeta[role].prefix}${suffix}.${zone}`;
+  }
+
+  function renderGroupRoleSections() {
+    const channels = (state?.dnsChannels || []).filter(item => Number(item.status) === 1 && item.configured);
+    const options = channels.map(item => `<option value="${Number(item.id)}">${escapeHtml(item.provider_label || item.provider_id)} · ${escapeHtml(item.label)}</option>`).join('');
+    document.querySelector('#recovery-group-roles').innerHTML = Object.entries(roleMeta).map(([role, meta]) => `
+      <section class="recovery-role-card" data-role-section="${role}">
+        <div class="recovery-role-head"><div><strong>${meta.label}</strong><p>${meta.help}</p></div><span class="tag neutral" data-role-count="${role}">0 个目标</span></div>
+        <div class="recovery-role-tools">
+          <label>API 通道（可多选）<select multiple data-role-channel-select="${role}" aria-label="${meta.label} API 通道">${options || '<option disabled>尚无可用 API 通道</option>'}</select></label>
+          <button class="button ghost" type="button" data-recovery-action="add-api-targets" data-role="${role}">添加所选 API 通道</button>
+          <button class="button ghost" type="button" data-recovery-action="add-manual-target" data-role="${role}">添加手动目标</button>
+        </div>
+        <div class="recovery-target-list" data-target-list="${role}"><div class="recovery-empty" data-empty-targets>尚未添加${meta.label}发布目标</div></div>
+      </section>`).join('');
+    syncGroupMode();
+  }
+
+  function updateRoleCount(role) {
+    const list = document.querySelector(`[data-target-list="${role}"]`);
+    const count = list?.querySelectorAll('.recovery-target-card').length || 0;
+    const badge = document.querySelector(`[data-role-count="${role}"]`);
+    if (badge) badge.textContent = `${count} 个目标`;
+    list?.querySelector('[data-empty-targets]')?.toggleAttribute('hidden', count > 0);
+  }
+
+  function appendTarget(role, mode, channelId = '') {
+    const list = document.querySelector(`[data-target-list="${role}"]`);
+    if (!list) return;
+    const channel = mode === 'automatic' ? channelById(channelId) : null;
+    if (channel && list.querySelector(`[data-channel-id="${Number(channel.id)}"]`)) return;
+    const ordinal = list.querySelectorAll('.recovery-target-card').length + 1;
+    const targetId = `recovery-target-${targetSequence += 1}`;
+    const providerOptions = (state?.dnsProviders || []).map(provider => `<option value="${escapeHtml(provider.id)}">${escapeHtml(provider.label)} · ${Number(provider.portable_record_bytes || 240)} 字节</option>`).join('');
+    const providerId = channel?.provider_id || state?.dnsProviders?.[0]?.id || 'cloudflare';
+    const provider = providerById(providerId);
+    const required = !list.querySelector('.recovery-target-card') && role !== 'LEGACY';
+    const card = document.createElement('article');
+    card.className = 'recovery-target-card';
+    card.id = targetId;
+    card.dataset.role = role;
+    card.dataset.mode = mode;
+    card.dataset.channelId = channel?.id || '';
+    card.dataset.ordinal = String(ordinal);
+    card.innerHTML = `
+      <div class="recovery-target-head"><div><strong>${mode === 'automatic' ? escapeHtml(channel?.label || 'API 通道') : '手动发布目标'}</strong><span>${mode === 'automatic' ? `${escapeHtml(channel?.provider_label || provider?.label || providerId)} · API 自动发布` : '无 API · 管理员写入后 DoH 验证'}</span></div><button class="action danger" type="button" data-recovery-action="remove-group-target" aria-label="删除该发布目标">删除</button></div>
+      <div class="recovery-target-fields">
+        ${mode === 'manual' ? `<label>DNS 服务商<select data-target-field="providerId" required>${providerOptions}</select></label>` : `<input data-target-field="providerId" type="hidden" value="${escapeHtml(providerId)}"><input data-target-field="dnsChannelId" type="hidden" value="${Number(channel?.id || 0)}">`}
+        <label>权威 DNS Zone${mode === 'automatic' ? `<span class="recovery-inline-control"><select data-target-field="zoneName" required><option value="">请先读取账号 Zone</option></select><button class="action" type="button" data-recovery-action="load-target-zones">读取 Zone</button></span>` : '<input data-target-field="zoneName" placeholder="example.com" required>'}</label>
+        <label class="full">完整 TXT 记录名<input data-target-field="recordName" placeholder="${roleMeta[role].prefix}.example.com" required><small>默认自动生成；可按需要修改，但必须位于所选 Zone 内。</small></label>
+        <label class="recovery-target-required"><input data-target-field="requiredTarget" type="checkbox" ${required ? 'checked' : ''}><span>必需目标；未验证时阻止正式发布</span></label>
+        <div class="recovery-byte-badge" data-target-bytes>每条 TXT 最多 ${Math.min(Number(provider?.portable_record_bytes || 240), Number(state?.txtPolicy?.portableBytes || 240))} 字节</div>
+      </div>`;
+    list.append(card);
+    const providerSelect = card.querySelector('[data-target-field="providerId"]');
+    if (mode === 'manual' && providerSelect) providerSelect.value = providerId;
+    updateRoleCount(role);
+  }
+
+  function syncTargetRecord(card) {
+    const zone = card.querySelector('[data-target-field="zoneName"]')?.value;
+    const record = card.querySelector('[data-target-field="recordName"]');
+    if (record && !record.dataset.edited) record.value = targetRecordName(card.dataset.role, zone, Number(card.dataset.ordinal || 1));
+    const provider = providerById(card.querySelector('[data-target-field="providerId"]')?.value);
+    const limit = Math.min(Number(provider?.portable_record_bytes || 240), Number(state?.txtPolicy?.portableBytes || 240));
+    const badge = card.querySelector('[data-target-bytes]');
+    if (badge) badge.textContent = `${provider?.label || '当前服务商'}：每条 TXT 最多 ${limit} 字节`;
+  }
+
+  function syncGroupMode() {
+    const mode = document.querySelector('#recovery-bootstrap-group-form')?.elements.compatibilityMode.value || 'AB_R1';
+    const activeRoles = rolesForMode(mode);
+    document.querySelectorAll('[data-role-section]').forEach(section => { section.hidden = !activeRoles.includes(section.dataset.roleSection); });
+  }
+
+  function appendGroupDomain(values = {}) {
+    const list = document.querySelector('#recovery-group-domain-list');
+    if (!list || list.querySelectorAll('.recovery-group-domain-card').length >= 10) throw new Error('每个发布组合最多填写 10 个 TXT 候选域名');
+    const card = document.createElement('article');
+    card.className = 'recovery-group-domain-card';
+    card.dataset.domainRow = String(groupDomainSequence += 1);
+    card.innerHTML = `<div class="recovery-group-domain-fields"><label>名称<input data-group-domain="title" maxlength="80" value="${escapeHtml(values.title || '')}" placeholder="例如：DNS 备用前台 1" required></label><label>完整 HTTPS Origin<input data-group-domain="url" type="url" value="${escapeHtml(values.url || '')}" placeholder="https://dns-recovery.example.com" required></label><label>优先级<input data-group-domain="priority" type="number" value="${Number(values.priority || 0)}" required></label><label class="recovery-target-required"><input data-group-domain="status" type="checkbox" ${values.status === 0 ? '' : 'checked'}><span>启用</span></label><button class="action danger" type="button" data-recovery-action="remove-group-domain">删除</button></div>`;
+    list.append(card);
+  }
+
+  function collectGroupDomains() {
+    return [...document.querySelectorAll('.recovery-group-domain-card')].map(card => ({
+      title: card.querySelector('[data-group-domain="title"]').value,
+      url: card.querySelector('[data-group-domain="url"]').value,
+      priority: Number(card.querySelector('[data-group-domain="priority"]').value || 0),
+      status: card.querySelector('[data-group-domain="status"]').checked ? 1 : 0
+    }));
+  }
+
+  function openBootstrapGroup() {
+    const form = document.querySelector('#recovery-bootstrap-group-form');
+    form.reset();
+    form.elements.label.value = '主恢复发布组合';
+    form.elements.compatibilityMode.value = 'AB_R1';
+    document.querySelector('#recovery-group-domain-list').replaceChildren();
+    appendGroupDomain();
+    const policy = state?.txtPolicy || {};
+    document.querySelector('#recovery-group-byte-policy').textContent = `系统统一采用每条 ${Number(policy.portableBytes || 240)} 字节安全上限；完整清单编码后最多 ${Number(policy.maxEncodedBytes || 4096)} 字节，每个角色最多 ${Number(policy.maxPartsPerRole || 50)} 条 TXT 值。`;
+    document.querySelector('#recovery-group-error').hidden = true;
+    renderGroupRoleSections();
+    openModal('#recovery-bootstrap-group-modal');
+  }
+
+  function collectGroupTargets() {
+    const mode = document.querySelector('#recovery-bootstrap-group-form').elements.compatibilityMode.value;
+    const activeRoles = rolesForMode(mode);
+    return [...document.querySelectorAll('.recovery-target-card')].filter(card => activeRoles.includes(card.dataset.role)).map((card, index) => ({
+      label: `${document.querySelector('#recovery-bootstrap-group-form').elements.label.value} · ${roleMeta[card.dataset.role].label} ${index + 1}`,
+      shareRole: card.dataset.role,
+      publishMode: card.dataset.mode,
+      dnsChannelId: Number(card.querySelector('[data-target-field="dnsChannelId"]')?.value || 0) || null,
+      providerId: card.querySelector('[data-target-field="providerId"]')?.value || '',
+      zoneName: card.querySelector('[data-target-field="zoneName"]')?.value || '',
+      recordName: card.querySelector('[data-target-field="recordName"]')?.value || '',
+      providerZoneId: card.querySelector('[data-target-field="zoneName"]')?.selectedOptions?.[0]?.dataset.zoneId || '',
+      requiredTarget: card.querySelector('[data-target-field="requiredTarget"]')?.checked ? 1 : 0,
+      status: 1,
+      sortOrder: index
+    }));
+  }
 
   function renderChannelCredentials(providerId, channel = null) {
     const container = document.querySelector('#recovery-channel-credentials');
@@ -219,8 +390,37 @@
         const created = await request('/api/admin/recovery/profiles', { method: 'POST', body: JSON.stringify({ name, code }) });
         currentProfileId = Number(created.id); notify('恢复方案已创建，请继续配置备用域名和查询线路'); return load();
       }
-      if (action === 'open-domain') { const form = document.querySelector('#recovery-domain-form'); form.reset(); form.elements.id.value = ''; form.elements.status.checked = true; return openModal('#recovery-domain-modal'); }
-      if (action === 'edit-domain') { const item = domainById(id); if (!item) return; const form = document.querySelector('#recovery-domain-form'); form.elements.id.value = item.id; form.elements.title.value = item.title; form.elements.url.value = item.url; form.elements.priority.value = item.priority; form.elements.status.checked = Number(item.status) === 1; return openModal('#recovery-domain-modal'); }
+      if (action === 'open-domain') return openDomainForm();
+      if (action === 'edit-domain') { const item = domainById(id); if (item) return openDomainForm({ domain: item }); return; }
+      if (action === 'open-bootstrap-group') return openBootstrapGroup();
+      if (action === 'add-group-domain') { appendGroupDomain(); return; }
+      if (action === 'remove-group-domain') { button.closest('.recovery-group-domain-card')?.remove(); return; }
+      if (action === 'add-api-targets') {
+        const role = button.dataset.role;
+        const select = document.querySelector(`[data-role-channel-select="${role}"]`);
+        const selected = [...(select?.selectedOptions || [])].map(option => Number(option.value)).filter(Boolean);
+        if (!selected.length) throw new Error('请先选择一个或多个 API 通道');
+        selected.forEach(channelId => appendTarget(role, 'automatic', channelId));
+        select.selectedIndex = -1;
+        return;
+      }
+      if (action === 'add-manual-target') { appendTarget(button.dataset.role, 'manual'); return; }
+      if (action === 'remove-group-target') { const card = button.closest('.recovery-target-card'); const role = card?.dataset.role; card?.remove(); if (role) updateRoleCount(role); return; }
+      if (action === 'copy-manual-value') { await navigator.clipboard.writeText(button.previousElementSibling?.textContent || ''); notify('TXT 值已复制'); return; }
+      if (action === 'copy-manual-block') { const values = [...button.closest('.recovery-result').querySelectorAll('.recovery-manual-value')].map(item => item.textContent); await navigator.clipboard.writeText(values.join('\n')); notify(`已复制 ${values.length} 条 TXT 值`); return; }
+      if (action === 'load-target-zones') {
+        const card = button.closest('.recovery-target-card');
+        const channelId = Number(card?.dataset.channelId || 0);
+        if (!channelId) throw new Error('该目标没有可用的 API 通道');
+        const zones = await busy(button, '读取中…', () => request(`/api/admin/recovery/dns-channels/${channelId}/zones`));
+        const select = card.querySelector('[data-target-field="zoneName"]');
+        select.innerHTML = `<option value="">请选择 Zone</option>${zones.map(zone => `<option value="${escapeHtml(zone.name)}" data-zone-id="${escapeHtml(zone.id || '')}">${escapeHtml(zone.name)}</option>`).join('')}`;
+        if (zones.length === 1) select.value = zones[0].name;
+        syncTargetRecord(card);
+        notify(`已读取 ${zones.length} 个 Zone`);
+        return;
+      }
+      if (action === 'delete-bootstrap-group' && confirm('确定删除整个 DNS 发布组合吗？组合内目标和查询线路会一起删除，权威 DNS 中已写入的 TXT 不会自动删除。')) { await request(`/api/admin/recovery/bootstrap-groups/${id}`, { method: 'DELETE' }); notify('DNS 发布组合已删除'); return load(); }
       if (action === 'open-channel') { const form = document.querySelector('#recovery-channel-form'); form.reset(); form.elements.id.value = ''; form.elements.providerId.disabled = false; form.elements.status.checked = true; renderChannelCredentials(form.elements.providerId.value); return openModal('#recovery-channel-modal'); }
       if (action === 'edit-channel') { const item = channelById(id); if (!item) return; const form = document.querySelector('#recovery-channel-form'); form.reset(); form.elements.id.value = item.id; form.elements.label.value = item.label; form.elements.providerId.value = item.provider_id; form.elements.providerId.disabled = item.legacy === true; form.elements.status.checked = Number(item.status) === 1; renderChannelCredentials(item.provider_id, item); return openModal('#recovery-channel-modal'); }
       if (action === 'test-channel') { const result = await busy(button, '验证中…', () => request(`/api/admin/recovery/dns-channels/${id}/test`, { method: 'POST', body: '{}' })); notify(`API 通道验证成功，可访问 ${result.zoneCount} 个 Zone`); return load(); }
@@ -248,9 +448,12 @@
   async function publish(button, id) {
     if (!confirm('发布会写入已配置的 Bootstrap DNS，并替换当前正式版本。确认继续吗？')) return;
     const result = await busy(button, '发布中…', () => request(`/api/admin/recovery/releases/${id}/publish`, { method: 'POST', body: '{}' }));
+    const output = [];
     if (result.manualRecords?.length) {
-      document.querySelector('#recovery-doh-results').innerHTML = result.manualRecords.map(record => `<div class="recovery-result"><strong>${escapeHtml(record.providerId)} · ${escapeHtml(record.recordName)} · ${escapeHtml(record.role)} 分片</strong><p>请逐条建立同名 TXT（每条不超过 ${Number(record.byteLimit)} 字节）：</p>${record.values.map(value => `<code class="recovery-manual-value">${escapeHtml(value)}</code>`).join('')}</div>`).join('');
+      output.push(...result.manualRecords.map(record => `<div class="recovery-result"><strong>${escapeHtml(record.providerId)} · ${escapeHtml(record.recordName)} · ${escapeHtml(record.role === 'LEGACY' ? 'R1' : record.role)} 分片</strong><p>请把下列 ${record.values.length} 条值分别建立在同一个 TXT 记录名下；每条不得超过 ${Number(record.byteLimit)} 字节。</p><div class="recovery-manual-actions"><button class="action" type="button" data-recovery-action="copy-manual-block">复制全部</button></div>${record.values.map((value, index) => `<div class="recovery-manual-row"><code class="recovery-manual-value">${escapeHtml(value)}</code><button class="action" type="button" data-recovery-action="copy-manual-value">复制第 ${index + 1} 条</button></div>`).join('')}</div>`));
     }
+    if (result.failedRecords?.length) output.push(`<div class="recovery-result recovery-result-error"><strong>未完成的 API 发布目标</strong>${result.failedRecords.map(record => `<p>${escapeHtml(record.providerId)} · ${escapeHtml(record.recordName)}：${escapeHtml(record.error || '发布失败')}</p>`).join('')}</div>`);
+    document.querySelector('#recovery-doh-results').innerHTML = output.join('');
     notify(result.warning || `恢复清单已发布到 ${result.dnsPublished} 个 DNS 记录`);
     return load();
   }
@@ -258,8 +461,23 @@
   function bindPanel(panel) {
     panel.addEventListener('click', handleAction);
     panel.querySelectorAll('[data-close-recovery-modal]').forEach(button => button.addEventListener('click', closeModals));
-    panel.querySelectorAll('.recovery-modal').forEach(modal => modal.addEventListener('click', event => { if (event.target === modal) closeModals(); }));
+    panel.querySelectorAll('.recovery-modal').forEach(modal => modal.addEventListener('click', event => {
+      if (event.target !== modal) return;
+      closeModals();
+    }));
     panel.querySelector('#recovery-profile-select').addEventListener('change', event => { currentProfileId = Number(event.currentTarget.value) || 1; void load(); });
+    panel.querySelector('#recovery-bootstrap-group-form').elements.compatibilityMode.addEventListener('change', syncGroupMode);
+    panel.addEventListener('change', event => {
+      const card = event.target.closest('.recovery-target-card');
+      if (!card) return;
+      if (event.target.matches('[data-target-field="zoneName"], [data-target-field="providerId"]')) syncTargetRecord(card);
+    });
+    panel.addEventListener('input', event => {
+      const card = event.target.closest('.recovery-target-card');
+      if (!card) return;
+      if (event.target.matches('[data-target-field="recordName"]')) event.target.dataset.edited = event.target.value ? '1' : '';
+      if (card.dataset.mode === 'manual' && event.target.matches('[data-target-field="zoneName"]')) syncTargetRecord(card);
+    });
     const bootstrapForm = panel.querySelector('#recovery-bootstrap-form');
     bootstrapForm.elements.providerId.addEventListener('change', () => syncBootstrapPublisher('', 'automatic'));
     bootstrapForm.elements.publishMode.addEventListener('change', () => syncBootstrapPublisher(bootstrapForm.elements.dnsChannelId.value, bootstrapForm.elements.publishMode.value));
@@ -275,6 +493,20 @@
       const payload = Object.fromEntries(new FormData(form)); payload.enabled = form.elements.enabled.checked ? 1 : 0;
       try { await busy(submit, '保存中…', () => request('/api/admin/recovery/settings', { method: 'PUT', body: JSON.stringify(payload) })); notify('恢复系统设置已保存'); await load(); } catch (error) { notify(error.message); }
     });
+    panel.querySelector('#recovery-bootstrap-group-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const form = event.currentTarget, submit = form.querySelector('button[type="submit"]'), errorBox = document.querySelector('#recovery-group-error');
+      const payload = { label: form.elements.label.value, compatibilityMode: form.elements.compatibilityMode.value, status: 1, domains: collectGroupDomains(), targets: collectGroupTargets() };
+      try {
+        errorBox.hidden = true;
+        await busy(submit, '创建中…', () => request('/api/admin/recovery/bootstrap-groups', { method: 'POST', body: JSON.stringify(payload) }));
+        closeModals(); notify(`DNS 发布组合已创建，包含 ${payload.domains.length} 个 TXT 候选域名和 ${payload.targets.length} 个目标`); await load();
+      } catch (error) {
+        errorBox.textContent = `${error.message}。请检查角色、通道、Zone、记录名和跨服务商配置。`;
+        errorBox.hidden = false;
+        errorBox.focus?.();
+      }
+    });
     channelForm.addEventListener('submit', async event => {
       event.preventDefault(); const form = event.currentTarget, id = form.elements.id.value, submit = form.querySelector('button[type="submit"]');
       const providerId = form.elements.providerId.value;
@@ -287,7 +519,10 @@
     panel.querySelector('#recovery-domain-form').addEventListener('submit', async event => {
       event.preventDefault(); const form = event.currentTarget, id = form.elements.id.value, submit = form.querySelector('button[type="submit"]');
       const payload = Object.fromEntries(new FormData(form)); payload.status = form.elements.status.checked ? 1 : 0;
-      try { await busy(submit, '保存中…', () => request(id ? `/api/admin/recovery/domains/${id}` : '/api/admin/recovery/domains', { method: id ? 'PUT' : 'POST', body: JSON.stringify(payload) })); closeModals(); notify('恢复线路已保存'); await load(); } catch (error) { notify(error.message); }
+      try {
+        await busy(submit, '保存中…', () => request(id ? `/api/admin/recovery/domains/${id}` : '/api/admin/recovery/domains', { method: id ? 'PUT' : 'POST', body: JSON.stringify(payload) }));
+        closeModals(); notify('直接恢复线路已保存'); await load();
+      } catch (error) { notify(error.message); }
     });
     panel.querySelector('#recovery-bootstrap-form').addEventListener('submit', async event => {
       event.preventDefault(); const form = event.currentTarget, id = form.elements.id.value, submit = form.querySelector('button[type="submit"]');

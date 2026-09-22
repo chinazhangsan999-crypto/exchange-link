@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const {
   BOT_RISK_TIMEOUT_MS,
   BOT_RISK_SYNC_INTERVAL_MS,
@@ -14,6 +16,8 @@ const BATCH_SIZE = 100;
 let queue = [];
 let flushTimer = null;
 let decisionTimer = null;
+let inventoryTimer = null;
+let inventoryStartupTimer = null;
 let flushing = false;
 let syncing = false;
 let stopped = true;
@@ -21,6 +25,12 @@ let integrationDisabled = false;
 let runtimeConfig = CredentialStore.botRiskConfig();
 let lastConnectedAt = null;
 let lastError = '';
+let lastInventoryAt = null;
+let lastInventoryError = '';
+let lastAdvisorySyncAt = null;
+let advisories = [];
+const PROCESS_STARTED_AT = new Date().toISOString();
+const PROJECT_ROOT = path.join(__dirname, '..', '..');
 
 function isPrivateHostname(hostname) {
   return hostname === 'localhost'
@@ -118,6 +128,97 @@ async function signedRequest(method, pathAndQuery, body, config = runtimeConfig)
   }
 }
 
+function packageVersion(name) {
+  try {
+    const lock = JSON.parse(fs.readFileSync(path.join(PROJECT_ROOT, 'package-lock.json'), 'utf8'));
+    return String(lock.packages?.[`node_modules/${name}`]?.version || lock.dependencies?.[name]?.version || '');
+  } catch { return ''; }
+}
+
+function fileSha256(relativePath) {
+  try { return crypto.createHash('sha256').update(fs.readFileSync(path.join(PROJECT_ROOT, relativePath))).digest('hex'); }
+  catch { return ''; }
+}
+
+function botdAssetVersion() {
+  try {
+    const head = fs.readFileSync(path.join(PROJECT_ROOT, 'public/vendor/botd.esm.js'), 'utf8').slice(0, 500);
+    return head.match(/Fingerprint BotD v([^\s]+)/i)?.[1] || '';
+  } catch { return ''; }
+}
+
+function gitCommit() {
+  const explicit = String(process.env.APP_GIT_COMMIT || process.env.GIT_COMMIT || '').trim();
+  if (explicit) return explicit.slice(0, 80);
+  try {
+    const dotGit = path.join(PROJECT_ROOT, '.git');
+    const stat = fs.statSync(dotGit);
+    const gitDir = stat.isDirectory() ? dotGit
+      : path.resolve(PROJECT_ROOT, fs.readFileSync(dotGit, 'utf8').replace(/^gitdir:\s*/i, '').trim());
+    const head = fs.readFileSync(path.join(gitDir, 'HEAD'), 'utf8').trim();
+    if (!head.startsWith('ref: ')) return head.slice(0, 80);
+    return fs.readFileSync(path.join(gitDir, head.slice(5)), 'utf8').trim().slice(0, 80);
+  } catch { return ''; }
+}
+
+function buildRuntimeInventory() {
+  const app = require('../../package.json');
+  const botdVersion = packageVersion('@fingerprintjs/botd');
+  return {
+    schemaVersion: 'inventory-v1',
+    appVersion: String(app.version || ''),
+    gitCommit: gitCommit(),
+    nodeVersion: process.version,
+    riskProtocolVersion: 'risk-agent-v1',
+    deployedAt: String(process.env.APP_DEPLOYED_AT || PROCESS_STARTED_AT),
+    components: [{
+      key: 'botd',
+      packageVersion: botdVersion,
+      assetVersion: botdAssetVersion(),
+      assetSha256: fileSha256('public/vendor/botd.esm.js')
+    }],
+    capabilities: ['botd', 'browser_pow', 'read_token', 'risk_decision_sync']
+  };
+}
+
+async function reportInventory() {
+  if (!enabled()) return { reported: false, reason: 'disabled' };
+  try {
+    const result = await signedRequest('POST', '/v1/agent/inventory', buildRuntimeInventory());
+    lastInventoryAt = result?.data?.reportedAt || new Date().toISOString();
+    lastInventoryError = '';
+    return { reported: true, data: result?.data };
+  } catch (error) {
+    lastInventoryError = error.name === 'AbortError' ? '运行清单上报超时' : String(error.message || error);
+    return { reported: false, error: lastInventoryError };
+  }
+}
+
+async function getAdvisories() {
+  if (!enabled()) return [];
+  const result = await signedRequest('GET', '/v1/agent/advisories');
+  return result?.data || [];
+}
+
+async function reportTestResult(input) {
+  if (!enabled()) return { reported: false, reason: 'disabled' };
+  const result = await signedRequest('POST', '/v1/agent/test-results', input);
+  return { reported: true, data: result?.data };
+}
+
+async function syncMaintenanceState() {
+  const inventory = await reportInventory();
+  if (!inventory.reported) return inventory;
+  try {
+    advisories = await getAdvisories();
+    lastAdvisorySyncAt = new Date().toISOString();
+    return { ...inventory, advisories: advisories.length };
+  } catch (error) {
+    lastInventoryError = error.name === 'AbortError' ? '更新建议同步超时' : String(error.message || error);
+    return { ...inventory, advisoryError: lastInventoryError };
+  }
+}
+
 function enqueue(visitorId, eventType, evidence = {}) {
   if (!enabled() || !visitorId) return false;
   const event = {
@@ -198,8 +299,12 @@ function start() {
   stopped = false;
   flushTimer = setInterval(() => { void flush(); }, 1000);
   decisionTimer = setInterval(() => { void syncDecisions(); }, BOT_RISK_SYNC_INTERVAL_MS);
+  inventoryTimer = setInterval(() => { void syncMaintenanceState(); }, 6 * 60 * 60 * 1000);
+  inventoryStartupTimer = setTimeout(() => { void syncMaintenanceState(); }, 5000);
   flushTimer.unref?.();
   decisionTimer.unref?.();
+  inventoryTimer.unref?.();
+  inventoryStartupTimer.unref?.();
   void syncDecisions();
 }
 
@@ -227,8 +332,12 @@ async function stop() {
   stopped = true;
   if (flushTimer) clearInterval(flushTimer);
   if (decisionTimer) clearInterval(decisionTimer);
+  if (inventoryTimer) clearInterval(inventoryTimer);
+  if (inventoryStartupTimer) clearTimeout(inventoryStartupTimer);
   flushTimer = null;
   decisionTimer = null;
+  inventoryTimer = null;
+  inventoryStartupTimer = null;
   return flush();
 }
 
@@ -245,6 +354,10 @@ function status() {
     queued: queue.length,
     cursor: LocalRiskDecisionCache.getCursor(),
     lastConnectedAt,
+    lastInventoryAt,
+    lastAdvisorySyncAt,
+    advisoryCount: advisories.length,
+    lastInventoryError: lastInventoryError ? '运行清单暂时未能上报' : '',
     lastError: lastError ? '风险中心暂时不可用' : ''
   };
 }
@@ -256,6 +369,11 @@ module.exports = {
   enqueue,
   flush,
   syncDecisions,
+  buildRuntimeInventory,
+  reportInventory,
+  getAdvisories,
+  reportTestResult,
+  syncMaintenanceState,
   getDecision,
   markChallengePassed,
   hasChallengeBypass,

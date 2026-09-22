@@ -32,6 +32,10 @@ const saveSettings = action(async (req, res) => ok(res, await RecoveryService.up
 const createDomain = action(async (req, res) => {
   const input = RecoveryService.validateDomainInput(req.body || {});
   const profileId = profileIdOf(req);
+  if (input.status === 1) {
+    const [settings, enabled] = await Promise.all([RecoveryModel.getSettings(profileId), RecoveryModel.listDomains({ enabledOnly: true, profileId })]);
+    if (enabled.length >= Number(settings.max_domains)) throw new Error(`已启用直接恢复线路达到后台限制（最多 ${settings.max_domains} 条）`);
+  }
   const domain = await RecoveryModel.createDomain(input, profileId);
   await RecoveryModel.addAudit('domain.create', { id: domain.id, url: domain.url }, true, '', profileId);
   return ok(res, domain, '恢复线路已新增');
@@ -40,8 +44,14 @@ const createDomain = action(async (req, res) => {
 const updateDomain = action(async (req, res) => {
   const id = idOf(req.params.id);
   const profileId = profileIdOf(req);
-  if (!await RecoveryModel.getDomain(id, profileId)) return fail(res, '恢复线路不存在', 404);
-  const domain = await RecoveryModel.updateDomain(id, RecoveryService.validateDomainInput(req.body || {}), profileId);
+  const current = await RecoveryModel.getDomain(id, profileId);
+  if (!current) return fail(res, '恢复线路不存在', 404);
+  const input = RecoveryService.validateDomainInput(req.body || {});
+  if (Number(current.status) !== 1 && input.status === 1) {
+    const [settings, enabled] = await Promise.all([RecoveryModel.getSettings(profileId), RecoveryModel.listDomains({ enabledOnly: true, profileId })]);
+    if (enabled.length >= Number(settings.max_domains)) throw new Error(`已启用直接恢复线路达到后台限制（最多 ${settings.max_domains} 条）`);
+  }
+  const domain = await RecoveryModel.updateDomain(id, input, profileId);
   await RecoveryModel.addAudit('domain.update', { id, url: domain.url }, true, '', profileId);
   return ok(res, domain, '恢复线路已更新');
 });
@@ -83,6 +93,16 @@ const deleteBootstrap = action(async (req, res) => {
   await RecoveryModel.deleteBootstrapRecord(id, profileId);
   await RecoveryModel.addAudit('bootstrap.delete', { id, recordName: record.record_name }, true, '', profileId);
   return ok(res, null, 'Bootstrap DNS 已删除');
+});
+
+const createBootstrapGroup = action(async (req, res) => {
+  const group = await RecoveryService.createBootstrapGroup(req.body || {}, profileIdOf(req));
+  return ok(res, group, 'DNS 发布组合已创建');
+});
+
+const deleteBootstrapGroup = action(async (req, res) => {
+  await RecoveryService.deleteBootstrapGroup(idOf(req.params.id), profileIdOf(req));
+  return ok(res, null, 'DNS 发布组合已删除');
 });
 
 const saveCloudflare = action(async (req, res) => ok(res, await RecoveryService.saveCloudflareCredentials(req.body || {}, profileIdOf(req)), '恢复系统 DNS 凭据已保存'));
@@ -136,6 +156,8 @@ module.exports = {
   createBootstrap,
   updateBootstrap,
   deleteBootstrap,
+  createBootstrapGroup,
+  deleteBootstrapGroup,
   saveCloudflare,
   createDnsChannel,
   updateDnsChannel,

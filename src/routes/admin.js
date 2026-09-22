@@ -3,6 +3,7 @@
 const express = require('express');
 const AdminController = require('../controllers/AdminController');
 const RecoveryController = require('../controllers/RecoveryController');
+const BackupController = require('../controllers/BackupController');
 const { requireAdmin, requireAdminCsrf } = require('../middlewares/auth');
 const { createRateLimiter } = require('../middlewares/rateLimit');
 const { siteLogoUpload } = require('../middlewares/siteLogoUpload');
@@ -33,6 +34,11 @@ router.get('/api/admin/analytics/config', AdminController.getAnalyticsConfig);
 router.post('/api/admin/analytics/config', AdminController.saveAnalyticsConfig);
 router.get(['/api/admin/config', '/api/admin/settings'], AdminController.getSettings);
 router.get('/api/admin/settings/risk-control', AdminController.getRiskControlSettings);
+router.get('/api/admin/backups/status', BackupController.getStatus);
+router.put('/api/admin/backups/settings', BackupController.saveSettings);
+router.post('/api/admin/backups/test', BackupController.testConnection);
+router.post('/api/admin/backups/run', BackupController.runNow);
+router.post('/api/admin/backups/retry', BackupController.retryPending);
 router.get('/api/admin/frontend-origins', AdminController.getFrontendOrigins);
 router.put('/api/admin/frontend-origins', AdminController.saveFrontendOrigins);
 router.get('/api/admin/integrations/cloudflare-api-edge', AdminController.getCloudflareApiEdgeIntegration);
@@ -59,6 +65,8 @@ router.delete('/api/admin/recovery/domains/:id', RecoveryController.deleteDomain
 router.post('/api/admin/recovery/domains/:id/probe', RecoveryController.probeDomain);
 router.post('/api/admin/recovery/domains/probe-all', RecoveryController.probeAll);
 router.post('/api/admin/recovery/bootstrap', RecoveryController.createBootstrap);
+router.post('/api/admin/recovery/bootstrap-groups', RecoveryController.createBootstrapGroup);
+router.delete('/api/admin/recovery/bootstrap-groups/:id', RecoveryController.deleteBootstrapGroup);
 router.put('/api/admin/recovery/bootstrap/:id', RecoveryController.updateBootstrap);
 router.delete('/api/admin/recovery/bootstrap/:id', RecoveryController.deleteBootstrap);
 router.get('/api/admin/recovery/bootstrap/:id/doh', RecoveryController.diagnoseDoh);

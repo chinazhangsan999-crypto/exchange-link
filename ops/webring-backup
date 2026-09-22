@@ -36,5 +36,10 @@ db.get('PRAGMA integrity_check', (error, row) => {
 NODE
 mv "$TEMP_FILE" "$FINAL_FILE"
 sha256sum "$FINAL_FILE" > "$FINAL_FILE.sha256"
-find "$BACKUP_DIR" -maxdepth 1 -type f \( -name 'webring-*.db' -o -name 'webring-*.db.sha256' \) -mtime +14 -delete
+node "$APP_DIR/scripts/send-telegram-backup.js" "$FINAL_FILE"
+find "$BACKUP_DIR" -maxdepth 1 -type f \( \
+  -name 'webring-*.db' -o -name 'webring-*.db.sha256' -o \
+  -name 'webring-*.db.gz.aes' -o -name 'webring-*.db.gz.aes.part*' -o \
+  -name 'webring-*.manifest.json' \
+\) -mtime +14 -delete
 trap - ERR

@@ -99,7 +99,9 @@ function validateBootstrapInput(input = {}) {
     shareRole,
     publishMode,
     dnsChannelId: Number.isInteger(dnsChannelId) && dnsChannelId > 0 ? dnsChannelId : null,
-    providerZoneId: String(input.providerZoneId || '').trim()
+    providerZoneId: String(input.providerZoneId || '').trim(),
+    groupId: Number.parseInt(input.groupId, 10) || null,
+    requiredTarget: ['1', 1, true, 'true', 'on'].includes(input.requiredTarget) ? 1 : 0
   };
 }
 
@@ -112,6 +114,85 @@ async function validateBootstrapConfiguration(input = {}, profileId = 1) {
   if (channel.provider_id !== normalized.providerId) throw new Error('DNS API 通道与权威 DNS 服务商不匹配');
   if (!credentialConfigured(channel.provider_id, credentialsForChannel(channel))) throw new Error('所选 DNS API 通道尚未配置完整凭据');
   return normalized;
+}
+
+async function validateBootstrapGroupInput(input = {}, profileId = 1) {
+  const label = String(input.label || '').trim();
+  if (!label || label.length > 80) throw new Error('发布组合名称需为 1 到 80 个字符');
+  const compatibilityMode = String(input.compatibilityMode || 'AB_R1').trim().toUpperCase();
+  if (!['AB_R1', 'AB', 'R1', 'CUSTOM'].includes(compatibilityMode)) throw new Error('发布组合兼容模式不正确');
+  const sourceDomains = Array.isArray(input.domains) ? input.domains : [];
+  if (!sourceDomains.length || sourceDomains.length > 10) throw new Error('每个 DNS 发布组合需包含 1 到 10 个 TXT 候选域名');
+  const domains = sourceDomains.map(validateDomainInput);
+  if (!domains.some(domain => domain.status === 1)) throw new Error('DNS 发布组合至少需要一个已启用的 TXT 候选域名');
+  const duplicateDomain = domains.find((domain, index) => domains.findIndex(candidate => candidate.url === domain.url) !== index);
+  if (duplicateDomain) throw new Error(`DNS 发布组合存在重复域名：${duplicateDomain.url}`);
+  const sourceTargets = Array.isArray(input.targets) ? input.targets : [];
+  if (!sourceTargets.length || sourceTargets.length > 30) throw new Error('每个发布组合需包含 1 到 30 个发布目标');
+  const targets = [];
+  for (let index = 0; index < sourceTargets.length; index += 1) {
+    const source = sourceTargets[index] || {};
+    const shareRole = String(source.shareRole || source.role || '').trim().toUpperCase();
+    const publishMode = String(source.publishMode || 'automatic').trim().toLowerCase();
+    let providerId = String(source.providerId || '').trim().toLowerCase();
+    const dnsChannelId = Number.parseInt(source.dnsChannelId, 10) || null;
+    if (publishMode === 'automatic') {
+      const channel = await RecoveryModel.getDnsChannel(dnsChannelId, profileId);
+      if (!channel || Number(channel.status) !== 1) throw new Error(`第 ${index + 1} 个目标所选 API 通道不存在或已停用`);
+      providerId = channel.provider_id;
+    }
+    const normalized = await validateBootstrapConfiguration({
+      ...source,
+      label: String(source.label || `${label} · ${shareRole || '目标'} ${index + 1}`).trim(),
+      providerId,
+      shareRole,
+      publishMode,
+      dnsChannelId,
+      status: source.status === undefined ? 1 : source.status,
+      sortOrder: source.sortOrder === undefined ? index : source.sortOrder,
+      requiredTarget: source.requiredTarget === undefined ? source.required : source.requiredTarget
+    }, profileId);
+    const provider = await RecoveryModel.getDnsProvider(normalized.providerId);
+    if (!provider) throw new Error(`第 ${index + 1} 个目标的 DNS 服务商不存在`);
+    const portableBytes = Math.min(PORTABLE_TXT_BYTES, Number(provider.portable_record_bytes) || PORTABLE_TXT_BYTES);
+    if (portableBytes < 64) throw new Error(`${provider.label} 的 TXT 安全字节上限过低，无法发布恢复分片`);
+    targets.push({ ...normalized, portableBytes });
+  }
+  const roles = role => targets.filter(target => target.shareRole === role);
+  const needsAB = ['AB_R1', 'AB'].includes(compatibilityMode);
+  const needsLegacy = ['AB_R1', 'R1'].includes(compatibilityMode);
+  if (needsAB && (!roles('A').length || !roles('B').length)) throw new Error('该兼容模式至少需要一个 A 目标和一个 B 目标');
+  if (needsLegacy && !roles('LEGACY').length) throw new Error('该兼容模式至少需要一个 R1 兼容目标');
+  if (needsAB && !roles('A').some(a => roles('B').some(b => a.providerId !== b.providerId))) {
+    throw new Error('A 与 B 必须至少形成一组不同权威 DNS 服务商的组合');
+  }
+  const duplicate = targets.find((target, index) => targets.findIndex(candidate =>
+    candidate.providerId === target.providerId && candidate.dnsChannelId === target.dnsChannelId
+      && candidate.recordName === target.recordName && candidate.shareRole === target.shareRole
+  ) !== index);
+  if (duplicate) throw new Error(`同一发布目标重复：${duplicate.recordName}`);
+  return {
+    group: { label, compatibilityMode, status: ['0', 0, false, 'false'].includes(input.status) ? 0 : 1 },
+    targets,
+    domains
+  };
+}
+
+async function createBootstrapGroup(input = {}, profileId = 1) {
+  const validated = await validateBootstrapGroupInput(input, profileId);
+  const group = await RecoveryModel.createBootstrapGroup(validated.group, validated.targets, validated.domains, profileId);
+  await RecoveryModel.addAudit('bootstrap.group.create', {
+    id: group.id, mode: group.compatibility_mode, targets: validated.targets.length, domains: validated.domains.length,
+    roles: validated.targets.reduce((counts, target) => ({ ...counts, [target.shareRole]: (counts[target.shareRole] || 0) + 1 }), {})
+  }, true, '', profileId);
+  return group;
+}
+
+async function deleteBootstrapGroup(id, profileId = 1) {
+  const group = await RecoveryModel.getBootstrapGroup(id, profileId);
+  if (!group) throw new Error('DNS 发布组合不存在');
+  await RecoveryModel.deleteBootstrapGroup(id, profileId);
+  await RecoveryModel.addAudit('bootstrap.group.delete', { id, label: group.label }, true, '', profileId);
 }
 
 function publicKeyPemToSpkiBase64(pem) {
@@ -281,9 +362,11 @@ function verifyEnvelope(envelope, publicKeys) {
 }
 
 async function createDraft({ sourceReleaseId = null, profileId = 1 } = {}) {
-  const [settings, domains] = await Promise.all([
+  const [settings, domains, groups, groupDomains] = await Promise.all([
     RecoveryModel.getSettings(profileId),
-    RecoveryModel.listDomains({ enabledOnly: true, profileId })
+    RecoveryModel.listDomains({ enabledOnly: true, profileId }),
+    RecoveryModel.listBootstrapGroups(profileId),
+    RecoveryModel.listBootstrapGroupDomains({ enabledOnly: true, profileId })
   ]);
   if (!domains.length) throw new Error('至少需要一条已启用的恢复线路');
   if (domains.length > settings.max_domains) throw new Error(`已启用线路超过后台限制（最多 ${settings.max_domains} 条）`);
@@ -292,34 +375,60 @@ async function createDraft({ sourceReleaseId = null, profileId = 1 } = {}) {
   const issuedAt = Math.floor(Date.now() / 1000);
   const expiresAt = issuedAt + Number(settings.manifest_valid_days) * 86400;
   const releaseId = `${generation}-${crypto.randomBytes(8).toString('hex')}`;
+  const trustedKeys = [
+    { keyId: settings.public_key_id || key.keyId, spki: publicKeyPemToSpkiBase64(settings.public_key || key.publicKey) },
+    { keyId: settings.next_public_key_id, spki: publicKeyPemToSpkiBase64(settings.next_public_key) }
+  ].filter(item => item.keyId && item.spki);
+  const signedEnvelope = core => {
+    const payload = { ...core, manifestHash: crypto.createHash('sha256').update(stableStringify(core)).digest('hex') };
+    return { ...payload, signature: signPayload(payload, key.privateKey) };
+  };
   const payloadCore = {
     schema: 3,
+    source: 'direct',
     project: settings.project_id,
     generation,
     releaseId,
     issuedAt,
     expiresAt,
     domains: domains.map(item => ({ title: item.title, url: item.url, priority: Number(item.priority) })),
-    trustedKeys: [
-      { keyId: settings.public_key_id || key.keyId, spki: publicKeyPemToSpkiBase64(settings.public_key || key.publicKey) },
-      { keyId: settings.next_public_key_id, spki: publicKeyPemToSpkiBase64(settings.next_public_key) }
-    ].filter(item => item.keyId && item.spki),
+    trustedKeys,
     keyId: key.keyId
   };
-  const payload = { ...payloadCore, manifestHash: crypto.createHash('sha256').update(stableStringify(payloadCore)).digest('hex') };
+  const directEnvelope = signedEnvelope(payloadCore);
+  const { signature, ...payload } = directEnvelope;
   const payloadJson = stableStringify(payload);
+  const dnsPayloads = groups.filter(group => Number(group.status) === 1).map(group => {
+    const selected = groupDomains.filter(domain => Number(domain.group_id) === Number(group.id));
+    if (!selected.length) return null;
+    const envelope = signedEnvelope({
+      schema: 3,
+      source: 'dns',
+      groupId: Number(group.id),
+      project: settings.project_id,
+      generation,
+      releaseId: `dns-${group.id}-${generation}-${crypto.randomBytes(6).toString('hex')}`,
+      issuedAt,
+      expiresAt,
+      domains: selected.map(item => ({ title: item.title, url: item.url, priority: Number(item.priority) })),
+      trustedKeys,
+      keyId: key.keyId
+    });
+    return { groupId: Number(group.id), envelope };
+  }).filter(Boolean);
   const release = await RecoveryModel.createRelease({
     generation,
     payloadJson,
     payloadHash: crypto.createHash('sha256').update(payloadJson).digest('hex'),
-    signature: signPayload(payload, key.privateKey),
+    signature,
     keyId: key.keyId,
     status: 'draft',
     issuedAt: new Date(issuedAt * 1000).toISOString(),
     expiresAt: new Date(expiresAt * 1000).toISOString(),
-    sourceReleaseId
+    sourceReleaseId,
+    dnsPayloadsJson: JSON.stringify(dnsPayloads)
   }, profileId);
-  await RecoveryModel.addAudit('release.draft', { id: release.id, generation }, true, '', profileId);
+  await RecoveryModel.addAudit('release.draft', { id: release.id, generation, directDomains: domains.length, dnsGroups: dnsPayloads.length }, true, '', profileId);
   return serializeRelease(release);
 }
 
@@ -327,9 +436,16 @@ function envelopeForRelease(release) {
   return { ...JSON.parse(release.payload_json), signature: release.signature };
 }
 
+function dnsEnvelopesForRelease(release) {
+  try {
+    const parsed = JSON.parse(release?.dns_payloads_json || '[]');
+    return Array.isArray(parsed) ? parsed.filter(item => Number(item?.groupId) > 0 && item?.envelope) : [];
+  } catch { return []; }
+}
+
 function serializeRelease(release) {
   if (!release) return null;
-  return { ...release, envelope: envelopeForRelease(release), payload_json: undefined, signature: undefined };
+  return { ...release, envelope: envelopeForRelease(release), dnsEnvelopes: dnsEnvelopesForRelease(release), payload_json: undefined, dns_payloads_json: undefined, signature: undefined };
 }
 
 function chunkEnvelope(envelope) {
@@ -770,8 +886,8 @@ async function deleteDnsChannel(id, profileId = 1) {
   await RecoveryModel.addAudit('dns-channel.delete', { id, providerId: channel.provider_id, label: channel.label }, true, '', profileId);
 }
 
-async function publishRecord(record, release, profileId = 1, releaseShards = null) {
-  const envelope = envelopeForRelease(release);
+async function publishRecord(record, release, profileId = 1, releaseShards = null, envelopeOverride = null) {
+  const envelope = envelopeOverride || envelopeForRelease(release);
   const byteLimit = Math.min(PORTABLE_TXT_BYTES, Number(record.portable_record_bytes) || PORTABLE_TXT_BYTES);
   const sharded = releaseShards || shardEnvelope(envelope, byteLimit);
   const role = String(record.share_role || 'LEGACY').toUpperCase();
@@ -785,10 +901,10 @@ async function publishRecord(record, release, profileId = 1, releaseShards = nul
       : diagnosis.some(result => result.shares?.some(item => item.set === chunked.set && item.role === role));
     if (verified) {
       await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'verified', generation: release.generation, verified: true });
-      return { recordId: record.id, recordName: record.record_name, providerId: record.provider_id, role, verified: true, chunks: chunked.parts.length, byteLimit, diagnosis };
+      return { recordId: record.id, groupId: record.group_id || null, recordName: record.record_name, providerId: record.provider_id, role, verified: true, chunks: chunked.parts.length, byteLimit, diagnosis };
     }
     await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'manual_required', error: '请在对应权威 DNS 控制台写入以下 TXT，再执行 DoH 回读验证' });
-    return { recordId: record.id, recordName: record.record_name, providerId: record.provider_id, role, verified: false, manualRequired: true, byteLimit, values: chunked.parts, diagnosis };
+    return { recordId: record.id, groupId: record.group_id || null, recordName: record.record_name, providerId: record.provider_id, role, verified: false, manualRequired: true, byteLimit, values: chunked.parts, diagnosis };
   }
   const channel = await RecoveryModel.getDnsChannel(record.dns_channel_id, profileId);
   if (!channel || Number(channel.status) !== 1) throw new Error(`${record.label} 尚未绑定已启用的 DNS API 通道`);
@@ -813,7 +929,7 @@ async function publishRecord(record, release, profileId = 1, releaseShards = nul
     if (!verified) throw new Error('新 TXT 已写入，但多 DoH 回读尚未发现有效的新版本');
     await operation.commit();
     await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'verified', generation: release.generation, verified: true });
-    return { recordId: record.id, recordName: record.record_name, providerId: record.provider_id, channelId: channel.id, role, verified: true, chunks: chunked.parts.length, byteLimit, diagnosis };
+    return { recordId: record.id, groupId: record.group_id || null, recordName: record.record_name, providerId: record.provider_id, channelId: channel.id, role, verified: true, chunks: chunked.parts.length, byteLimit, diagnosis };
   } catch (error) {
     await operation.rollback().catch(() => undefined);
     await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'failed', error: error.message });
@@ -835,40 +951,84 @@ async function publishRelease(id, profileId = null) {
   if (!verifyEnvelope(envelope, publicKeys)) throw new Error('恢复版本签名校验失败，拒绝发布');
   await ensureLegacyCloudflareChannel(profileId);
   const records = await RecoveryModel.listBootstrapRecords({ enabledOnly: true, profileId });
+  const dnsEnvelopeMap = new Map(dnsEnvelopesForRelease(release).map(item => [Number(item.groupId), item.envelope]));
   const signing = RecoveryCredentialStore.signingKeys(profileId);
   const releaseSecret = signing.current?.keyId === release.key_id ? signing.current.privateKey : '';
   if (records.some(item => ['A', 'B'].includes(String(item.share_role || '').toUpperCase())) && !releaseSecret) {
     throw new Error('无法读取该版本对应的签名私钥，不能生成稳定的 A/B 分片');
   }
-  const releaseShards = releaseSecret ? shardEnvelope(envelope, PORTABLE_TXT_BYTES, releaseSecret) : null;
+  const shardCache = new Map();
+  const shardsFor = (key, selectedEnvelope) => {
+    if (!releaseSecret) return null;
+    if (!shardCache.has(key)) shardCache.set(key, shardEnvelope(selectedEnvelope, PORTABLE_TXT_BYTES, releaseSecret));
+    return shardCache.get(key);
+  };
   const results = [];
-  try {
-    for (const record of records) results.push(await publishRecord(record, release, profileId, releaseShards));
-    const shardedRecords = records.filter(item => ['A', 'B'].includes(String(item.share_role || '').toUpperCase()));
-    if (shardedRecords.length) {
-      const verifiedA = results.filter(item => item.verified && item.role === 'A');
-      const verifiedB = results.filter(item => item.verified && item.role === 'B');
-      const crossProvider = verifiedA.some(a => verifiedB.some(b => a.providerId !== b.providerId));
-      if (!verifiedA.length || !verifiedB.length || !crossProvider) {
-        await RecoveryModel.markRelease(id, 'failed', { error: 'A/B 分片尚未形成跨权威 DNS 的可恢复组合' });
-        return {
-          published: false,
-          release: serializeRelease(await RecoveryModel.getRelease(id)),
-          dnsPublished: results.filter(item => item.verified).length,
-          records: results,
-          manualRecords: results.filter(item => item.manualRequired),
-          warning: '尚未满足发布门槛：至少需要一个已验证 A 分片和一个来自不同权威 DNS 托管商的已验证 B 分片。手动记录写入后请重新发布。'
-        };
-      }
+  for (const record of records) {
+    try {
+      const groupId = Number(record.group_id || 0);
+      const selectedEnvelope = groupId ? dnsEnvelopeMap.get(groupId) : envelope;
+      if (!selectedEnvelope) throw new Error('该 DNS 发布组合没有独立的 TXT 候选域名快照，请重新生成草稿');
+      if (!verifyEnvelope(selectedEnvelope, publicKeys)) throw new Error('该 DNS 发布组合的签名清单校验失败');
+      results.push({ ...(await publishRecord(record, release, profileId, shardsFor(groupId || 'legacy', selectedEnvelope), selectedEnvelope)), required: Number(record.required_target) === 1 });
+    } catch (error) {
+      results.push({
+        recordId: record.id, groupId: record.group_id || null, recordName: record.record_name, providerId: record.provider_id,
+        role: String(record.share_role || 'LEGACY').toUpperCase(), required: Number(record.required_target) === 1,
+        verified: false, failed: true, error: error.message
+      });
     }
-    await RecoveryModel.publishReleaseAtomically(release.id, release.generation, profileId);
-    await RecoveryModel.addAudit('release.publish', { id, generation: release.generation, dnsRecords: results.length }, true, '', profileId);
-    return { published: true, release: serializeRelease(await RecoveryModel.getRelease(id)), dnsPublished: results.filter(item => item.verified).length, records: results, warning: records.length ? '' : '尚未配置 Bootstrap DNS；当前版本只会通过主站同步给已访问用户。' };
-  } catch (error) {
-    await RecoveryModel.markRelease(id, 'failed', { error: error.message });
-    await RecoveryModel.addAudit('release.publish', { id, generation: release.generation }, false, error.message, profileId);
-    throw error;
   }
+  const requiredFailures = results.filter(item => item.required && !item.verified);
+  const blockers = [];
+  const groups = [...new Map(records.filter(item => item.group_id).map(item => [Number(item.group_id), item])).values()];
+  for (const group of groups) {
+    const groupRecords = records.filter(item => Number(item.group_id) === Number(group.group_id));
+    const groupResults = results.filter(item => Number(item.groupId) === Number(group.group_id));
+    const needsAB = ['AB_R1', 'AB'].includes(String(group.group_compatibility_mode || '').toUpperCase());
+    const needsR1 = String(group.group_compatibility_mode || '').toUpperCase() === 'R1';
+    const verifiedA = groupResults.filter(item => item.verified && item.role === 'A');
+    const verifiedB = groupResults.filter(item => item.verified && item.role === 'B');
+    if (needsAB && (!verifiedA.length || !verifiedB.length || !verifiedA.some(a => verifiedB.some(b => a.providerId !== b.providerId)))) blockers.push(`${group.group_label} 尚未形成跨权威 DNS 的 A/B 组合`);
+    if (needsR1 && !groupResults.some(item => item.verified && item.role === 'LEGACY')) blockers.push(`${group.group_label} 的 R1 记录尚未验证`);
+    if (!dnsEnvelopeMap.has(Number(group.group_id)) && groupRecords.length) blockers.push(`${group.group_label} 没有 TXT 候选域名快照`);
+  }
+  const legacyResults = results.filter(item => !item.groupId);
+  const legacyRecords = records.filter(item => !item.group_id);
+  if (legacyRecords.some(item => ['A', 'B'].includes(String(item.share_role).toUpperCase()))) {
+    const legacyA = legacyResults.filter(item => item.verified && item.role === 'A');
+    const legacyB = legacyResults.filter(item => item.verified && item.role === 'B');
+    if (!legacyA.length || !legacyB.length || !legacyA.some(a => legacyB.some(b => a.providerId !== b.providerId))) blockers.push('历史独立配置尚未形成跨权威 DNS 的 A/B 组合');
+  } else if (legacyRecords.length && !legacyResults.some(item => item.verified && item.role === 'LEGACY')) blockers.push('历史独立配置至少需要一个已验证的 R1 记录');
+  if (requiredFailures.length) blockers.push(`${requiredFailures.length} 个必需发布目标尚未验证`);
+  if (blockers.length) {
+    const warning = `尚未满足发布门槛：${blockers.join('；')}。手动记录写入或故障修复后请重新发布。`;
+    await RecoveryModel.markRelease(id, 'failed', { error: warning });
+    await RecoveryModel.addAudit('release.publish.pending', { id, generation: release.generation, blockers, results }, false, warning, profileId);
+    return {
+      published: false,
+      release: serializeRelease(await RecoveryModel.getRelease(id)),
+      dnsPublished: results.filter(item => item.verified).length,
+      records: results,
+      manualRecords: results.filter(item => item.manualRequired),
+      failedRecords: results.filter(item => item.failed),
+      warning
+    };
+  }
+  await RecoveryModel.publishReleaseAtomically(release.id, release.generation, profileId);
+  await RecoveryModel.addAudit('release.publish', { id, generation: release.generation, dnsRecords: results.length }, true, '', profileId);
+  const optionalFailures = results.filter(item => !item.required && !item.verified);
+  return {
+    published: true,
+    release: serializeRelease(await RecoveryModel.getRelease(id)),
+    dnsPublished: results.filter(item => item.verified).length,
+    records: results,
+    manualRecords: results.filter(item => item.manualRequired),
+    failedRecords: results.filter(item => item.failed),
+    warning: !records.length
+      ? '尚未配置 Bootstrap DNS；当前版本只会通过主站同步给已访问用户。'
+      : optionalFailures.length ? `正式版本已发布；另有 ${optionalFailures.length} 个可选副本尚未验证。` : ''
+  };
 }
 
 async function rollbackTo(sourceId, profileId = null) {
@@ -892,6 +1052,22 @@ async function rollbackTo(sourceId, profileId = null) {
     ? { ...payloadCore, manifestHash: crypto.createHash('sha256').update(stableStringify(payloadCore)).digest('hex') }
     : payloadCore;
   const payloadJson = stableStringify(payload);
+  const trustedKeys = payloadCore.trustedKeys;
+  const dnsPayloads = dnsEnvelopesForRelease(source).map(item => {
+    const core = {
+      ...item.envelope,
+      generation,
+      issuedAt,
+      expiresAt,
+      releaseId: `dns-${item.groupId}-${generation}-${crypto.randomBytes(6).toString('hex')}`,
+      keyId: key.keyId,
+      trustedKeys
+    };
+    delete core.signature;
+    delete core.manifestHash;
+    const dnsPayload = { ...core, manifestHash: crypto.createHash('sha256').update(stableStringify(core)).digest('hex') };
+    return { groupId: Number(item.groupId), envelope: { ...dnsPayload, signature: signPayload(dnsPayload, key.privateKey) } };
+  });
   const release = await RecoveryModel.createRelease({
     generation,
     payloadJson,
@@ -901,7 +1077,8 @@ async function rollbackTo(sourceId, profileId = null) {
     status: 'draft',
     issuedAt: new Date(issuedAt * 1000).toISOString(),
     expiresAt: new Date(expiresAt * 1000).toISOString(),
-    sourceReleaseId: source.id
+    sourceReleaseId: source.id,
+    dnsPayloadsJson: JSON.stringify(dnsPayloads)
   }, profileId);
   await RecoveryModel.addAudit('release.rollback.draft', { sourceId, id: release.id, generation }, true, '', profileId);
   return publishRelease(release.id, profileId);
@@ -955,9 +1132,9 @@ async function getPublicManifest(frontendOrigin = '') {
 
 async function overview(profileId = 1) {
   await ensureLegacyCloudflareChannel(profileId);
-  const [profiles, settings, domains, bootstraps, routes, releases, keys, audit, frontendWorkers, resolvers, dnsProviders, dnsChannels] = await Promise.all([
-    RecoveryModel.listProfiles(), RecoveryModel.getSettings(profileId), RecoveryModel.listDomains({ profileId }), RecoveryModel.listBootstrapRecords({ profileId }),
-    RecoveryModel.listLookupRoutes(profileId), RecoveryModel.listReleases(50, profileId), keyStatus(profileId), RecoveryModel.listAudit(100, profileId), CloudflareFrontendModel.listWorkers(), RecoveryModel.listResolvers(), RecoveryModel.listDnsProviders(), RecoveryModel.listDnsChannels(profileId)
+  const [profiles, settings, domains, bootstrapGroups, bootstrapGroupDomains, bootstraps, routes, releases, keys, audit, frontendWorkers, resolvers, dnsProviders, dnsChannels] = await Promise.all([
+    RecoveryModel.listProfiles(), RecoveryModel.getSettings(profileId), RecoveryModel.listDomains({ profileId }), RecoveryModel.listBootstrapGroups(profileId),
+    RecoveryModel.listBootstrapGroupDomains({ profileId }), RecoveryModel.listBootstrapRecords({ profileId }), RecoveryModel.listLookupRoutes(profileId), RecoveryModel.listReleases(50, profileId), keyStatus(profileId), RecoveryModel.listAudit(100, profileId), CloudflareFrontendModel.listWorkers(), RecoveryModel.listResolvers(), RecoveryModel.listDnsProviders(), RecoveryModel.listDnsChannels(profileId)
   ]);
   const previewWorker = frontendWorkers.find(worker =>
     Number(worker.recovery_profile_id) === Number(profileId)
@@ -972,6 +1149,8 @@ async function overview(profileId = 1) {
     selectedProfileId: Number(settings?.id || profileId),
     settings,
     domains,
+    bootstrapGroups,
+    bootstrapGroupDomains,
     bootstraps,
     releases: releases.map(serializeRelease),
     keys,
@@ -989,6 +1168,7 @@ async function overview(profileId = 1) {
       automatic_publish: DnsPublisherService.providerCapabilities().find(item => item.id === provider.id)?.automaticPublish === true
     })),
     dnsChannels: dnsChannels.map(serializeDnsChannel),
+    txtPolicy: { portableBytes: PORTABLE_TXT_BYTES, maxEncodedBytes: MAX_ENCODED_SIZE, maxPartsPerRole: 50, legacyDataBytes: TXT_DATA_SIZE },
     lookupRoutes: routes,
     publicPreviewOrigin: previewWorker ? `https://${previewWorker.hostname}` : '',
     audit
@@ -1042,6 +1222,7 @@ module.exports = {
   validateDomainInput,
   validateBootstrapInput,
   validateBootstrapConfiguration,
+  validateBootstrapGroupInput,
   validateLookupRouteInput,
   updateSettings,
   ensureCurrentKey,
@@ -1063,6 +1244,8 @@ module.exports = {
   testDnsChannel,
   listDnsChannelZones,
   deleteDnsChannel,
+  createBootstrapGroup,
+  deleteBootstrapGroup,
   verifyEnvelope,
   chunkEnvelope,
   assembleTxt,

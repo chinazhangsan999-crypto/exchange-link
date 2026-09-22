@@ -1,0 +1,12 @@
+[Unit]
+Description=Retry incomplete Telegram database backup uploads
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=niaiwo
+Group=niaiwo
+WorkingDirectory=/home/niaiwo/app
+EnvironmentFile=-/home/niaiwo/.config/webring/production.env
+ExecStart=/usr/bin/node /home/niaiwo/app/scripts/retry-telegram-backups.js

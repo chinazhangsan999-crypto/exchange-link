@@ -125,7 +125,7 @@
       const combined = await window.RecoveryCrypto.combineShards(collectedShares);
       combined.forEach(value => candidates.push({ ...value, resolver: '跨权威 DNS A/B 组合', name: 'Bootstrap TXT' }));
       for (const candidate of candidates) {
-        const shape = window.RecoveryCrypto.validateEnvelopeShape(candidate.envelope, state.project, state.highestGeneration || 0);
+        const shape = window.RecoveryCrypto.validateEnvelopeShape(candidate.envelope, state.project, state.highestDnsGeneration || 0);
         if (!shape.valid) { log(`${candidate.resolver} 返回的清单被拒绝：${shape.reason}`); continue; }
         if (!await window.RecoveryCrypto.verifyEnvelope(candidate.envelope, state.trustedKeys)) { log(`${candidate.resolver} 返回的清单签名无效`); continue; }
         accepted.push(candidate);
@@ -135,22 +135,24 @@
     accepted.sort((a, b) => Number(b.envelope.generation) - Number(a.envelope.generation));
     if (!accepted.length) return null;
     const selected = accepted[0];
-    const confirmations = accepted.filter(item => Number(item.envelope.generation) === Number(selected.envelope.generation)).length;
+    const newest = accepted.filter(item => Number(item.envelope.generation) === Number(selected.envelope.generation));
+    const uniqueEnvelopes = [...new Map(newest.map(item => [`${item.envelope.groupId || 'legacy'}:${item.envelope.manifestHash || item.envelope.releaseId}`, item.envelope])).values()];
+    const confirmations = newest.length;
     log(`已验签 generation ${selected.envelope.generation}，${confirmations} 个解析结果确认`);
     const nextState = {
       ...state,
       enabled: true,
       project: selected.envelope.project,
-      signedEnvelope: selected.envelope,
-      highestGeneration: Number(selected.envelope.generation),
+      dnsEnvelopes: uniqueEnvelopes,
+      highestDnsGeneration: Number(selected.envelope.generation),
       trustedKeys: state.trustedKeys,
       bootstrapNames: selected.envelope.bootstrapNames || state.bootstrapNames,
       lookupRoutes: selected.envelope.lookupRoutes || state.lookupRoutes,
-      lastVerifiedAt: new Date().toISOString()
+      lastDnsVerifiedAt: new Date().toISOString()
     };
     await window.RecoveryCrypto.writeState(nextState);
     savedState = nextState;
-    return selected.envelope;
+    return uniqueEnvelopes;
   }
 
   function fallbackValue(envelope, key) {
@@ -217,13 +219,22 @@
         const localWinner = await firstHealthy(local.domains);
         if (localWinner) return showFound(localWinner, local);
       }
-      const remote = await newestVerifiedFromDoh(savedState);
-      if (remote) {
+      const cachedDnsEnvelopes = Array.isArray(savedState.dnsEnvelopes) ? savedState.dnsEnvelopes : (savedState.dnsEnvelope ? [savedState.dnsEnvelope] : []);
+      for (const cachedDns of cachedDnsEnvelopes) {
+        const cachedShape = window.RecoveryCrypto.validateEnvelopeShape(cachedDns, savedState.project, savedState.highestDnsGeneration || 0);
+        const cachedSigned = cachedShape.valid && await window.RecoveryCrypto.verifyEnvelope(cachedDns, savedState.trustedKeys);
+        if (!cachedSigned) { log(`缓存的 DNS 清单不可用：${cachedShape.reason || '签名无效'}`); continue; }
+        status('直接恢复线路不可用，正在检查上次保存的 DNS 恢复线路…');
+        const cachedWinner = await firstHealthy(cachedDns.domains);
+        if (cachedWinner) return showFound(cachedWinner, cachedDns);
+      }
+      const remoteEnvelopes = await newestVerifiedFromDoh(savedState);
+      for (const remote of remoteEnvelopes || []) {
         status('已获取新的签名清单，正在检测候选线路…');
         const remoteWinner = await firstHealthy(remote.domains);
         if (remoteWinner) return showFound(remoteWinner, remote);
       }
-      showFallback(remote || local, '所有已验证线路暂时都无法连接。');
+      showFallback(remoteEnvelopes?.[0] || cachedDnsEnvelopes[0] || local, '所有已验证线路暂时都无法连接。');
     } catch (error) {
       log(`恢复流程异常：${error.message}`);
       showFallback(savedState?.signedEnvelope, '恢复检查没有完成，请稍后重新尝试。');
