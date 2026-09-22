@@ -29,7 +29,7 @@ async function initialize() {
   if (ready) return;
   if (DATABASE_URL) {
     pool = new Pool({ connectionString: DATABASE_URL, max: 10, idleTimeoutMillis: 30_000 });
-    for (const filename of ['001_initial.sql', '002_alerting.sql']) {
+    for (const filename of ['001_initial.sql', '002_alerting.sql', '003_maintenance.sql']) {
       const migration = fs.readFileSync(path.join(__dirname, '..', '..', 'migrations', filename), 'utf8');
       await pool.query(migration);
     }
@@ -940,6 +940,8 @@ async function getAlertSettings({ includeSecrets = false } = {}) {
     dailyDigestEnabled: Boolean(row.daily_digest_enabled),
     telegramIntervalMs: Math.max(1000, Number(row.telegram_interval_ms) || 1200),
     barkIntervalMs: Math.max(1000, Number(row.bark_interval_ms) || 2000),
+    upstreamUpdateAlertEnabled: Boolean(row.upstream_update_alert_enabled),
+    upstreamCheckIntervalHours: Math.max(1, Number(row.upstream_check_interval_hours) || 6),
     updatedAt: row.updated_at
   };
   if (includeSecrets) {
@@ -975,7 +977,8 @@ async function saveAlertSettings(input, actor = 'risk-admin') {
        challenge_failure_count_10m=$15, challenge_failure_ratio=$16,
        replay_count_5m=$17, cross_site_count_10m=$18, cooldown_minutes=$19,
        hourly_digest_enabled=$20, daily_digest_enabled=$21,
-       telegram_interval_ms=$22, bark_interval_ms=$23, updated_at=NOW()
+       telegram_interval_ms=$22, bark_interval_ms=$23,
+       upstream_update_alert_enabled=$24, upstream_check_interval_hours=$25, updated_at=NOW()
      WHERE id=1`,
     [input.enabled === true, input.telegramEnabled === true, String(input.telegramChatId || '').trim().slice(0, 100),
       telegram.telegram_token_ciphertext, telegram.telegram_token_iv, telegram.telegram_token_tag,
@@ -986,7 +989,8 @@ async function saveAlertSettings(input, actor = 'risk-admin') {
       value('challengeFailureCount10m', 10, 1, 10000), value('challengeFailureRatio', 0.4, 0.01, 1),
       value('replayCount5m', 3, 1, 10000), value('crossSiteCount10m', 3, 2, 1000),
       value('cooldownMinutes', 30, 5, 1440), input.hourlyDigestEnabled === true, input.dailyDigestEnabled === true,
-      value('telegramIntervalMs', 1200, 1000, 60000), value('barkIntervalMs', 2000, 1000, 60000)]
+      value('telegramIntervalMs', 1200, 1000, 60000), value('barkIntervalMs', 2000, 1000, 60000),
+      input.upstreamUpdateAlertEnabled === true, value('upstreamCheckIntervalHours', 6, 1, 168)]
   );
   await pool.query(
     `INSERT INTO admin_audits (actor, action, target, details)
@@ -1109,6 +1113,148 @@ async function listAlertActivity(limit = 100) {
   };
 }
 
+async function listMaintenanceProjects() {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT project_key,name,repository,integration_mode,installed_version,
+            latest_version,latest_release_at,release_url,last_checked_at,
+            follow_status,followed_version,followed_at,ignored_version,
+            alerted_version,last_error,updated_at
+       FROM maintenance_projects ORDER BY
+         CASE integration_mode WHEN 'direct' THEN 1 WHEN 'signal_source' THEN 2 ELSE 3 END,
+         name`
+  );
+  return result.rows.map(row => ({
+    projectKey: row.project_key, name: row.name, repository: row.repository,
+    integrationMode: row.integration_mode, installedVersion: row.installed_version,
+    latestVersion: row.latest_version, latestReleaseAt: row.latest_release_at,
+    releaseUrl: row.release_url, lastCheckedAt: row.last_checked_at,
+    followStatus: row.follow_status, followedVersion: row.followed_version,
+    followedAt: row.followed_at, ignoredVersion: row.ignored_version,
+    alertedVersion: row.alerted_version, lastError: row.last_error,
+    updatedAt: row.updated_at
+  }));
+}
+
+async function updateMaintenanceProject(projectKey, release) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `UPDATE maintenance_projects SET
+       latest_version=$2,latest_release_at=$3,release_url=$4,last_checked_at=NOW(),
+       last_error=$5,
+       follow_status=CASE
+         WHEN $5 <> '' THEN 'error'
+         WHEN regexp_replace(followed_version,'^[vV]','')=regexp_replace($2,'^[vV]','') AND $2 <> '' THEN 'followed'
+         WHEN regexp_replace(ignored_version,'^[vV]','')=regexp_replace($2,'^[vV]','') AND $2 <> '' THEN 'ignored'
+         WHEN regexp_replace(installed_version,'^[vV]','')=regexp_replace($2,'^[vV]','') AND $2 <> '' THEN 'current'
+         WHEN $2 <> '' THEN 'update_available'
+         ELSE 'unknown' END,
+       updated_at=NOW()
+     WHERE project_key=$1 RETURNING project_key`,
+    [projectKey, release.version || '', release.releasedAt || null, release.url || '', release.error || '']
+  );
+  return result.rows[0] || null;
+}
+
+async function setMaintenanceProjectStatus(projectKey, action, actor = 'risk-admin') {
+  if (!pool || !['followed', 'ignored', 'reset'].includes(action)) return null;
+  const result = await pool.query(
+    `UPDATE maintenance_projects SET
+       follow_status=CASE WHEN $2='reset' THEN
+         CASE WHEN latest_version <> '' AND regexp_replace(installed_version,'^[vV]','') <> regexp_replace(latest_version,'^[vV]','') THEN 'update_available' ELSE 'current' END
+         ELSE $2 END,
+       followed_version=CASE WHEN $2='followed' THEN latest_version WHEN $2='reset' THEN '' ELSE followed_version END,
+       followed_at=CASE WHEN $2='followed' THEN NOW() WHEN $2='reset' THEN NULL ELSE followed_at END,
+       ignored_version=CASE WHEN $2='ignored' THEN latest_version WHEN $2='reset' THEN '' ELSE ignored_version END,
+       updated_at=NOW()
+     WHERE project_key=$1
+     RETURNING project_key,name,latest_version,follow_status,followed_at`,
+    [projectKey, action]
+  );
+  if (!result.rows[0]) return null;
+  await pool.query(
+    `INSERT INTO admin_audits (actor,action,target,details)
+     VALUES ($1,'set_maintenance_project_status',$2,$3::jsonb)`,
+    [actor, projectKey, JSON.stringify({ action, version: result.rows[0].latest_version })]
+  );
+  const row = result.rows[0];
+  return { projectKey: row.project_key, name: row.name, latestVersion: row.latest_version, followStatus: row.follow_status, followedAt: row.followed_at };
+}
+
+async function markMaintenanceProjectsAlerted(items) {
+  if (!pool || !items.length) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const item of items) {
+      await client.query(
+        'UPDATE maintenance_projects SET alerted_version=$2,updated_at=NOW() WHERE project_key=$1',
+        [item.projectKey, item.latestVersion]
+      );
+    }
+    await client.query('COMMIT');
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+
+async function createMaintenanceToken(actor = 'risk-admin', ttlMinutes = 15, maxUses = 50) {
+  if (!pool) return null;
+  await pool.query('DELETE FROM maintenance_tokens WHERE expires_at < NOW() - INTERVAL \'1 day\' OR revoked_at IS NOT NULL');
+  const token = crypto.randomBytes(32).toString('base64url');
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+  const ttl = Math.max(5, Math.min(60, Number(ttlMinutes) || 15));
+  const uses = Math.max(2, Math.min(100, Number(maxUses) || 50));
+  const result = await pool.query(
+    `INSERT INTO maintenance_tokens (token_hash,expires_at,max_uses,created_by)
+     VALUES ($1,NOW()+($2::int * INTERVAL '1 minute'),$3,$4)
+     RETURNING id,expires_at,max_uses`,
+    [hash, ttl, uses, actor]
+  );
+  await pool.query(
+    `INSERT INTO admin_audits (actor,action,target,details)
+     VALUES ($1,'create_maintenance_read_token',$2,$3::jsonb)`,
+    [actor, String(result.rows[0].id), JSON.stringify({ ttlMinutes: ttl, maxUses: uses })]
+  );
+  return { token, expiresAt: result.rows[0].expires_at, maxUses: Number(result.rows[0].max_uses) };
+}
+
+async function consumeMaintenanceToken(token) {
+  if (!pool || !token || token.length < 32 || token.length > 200) return false;
+  const hash = crypto.createHash('sha256').update(token).digest('hex');
+  const result = await pool.query(
+    `UPDATE maintenance_tokens SET use_count=use_count+1,last_used_at=NOW()
+      WHERE token_hash=$1 AND revoked_at IS NULL AND expires_at>NOW() AND use_count<max_uses
+      RETURNING id`, [hash]
+  );
+  return Boolean(result.rows[0]);
+}
+
+async function getMaintenanceSnapshot() {
+  if (!pool) return null;
+  const [overview, projects, migrations] = await Promise.all([
+    getAdminOverview(),
+    listMaintenanceProjects(),
+    pool.query(`SELECT
+      to_regclass('public.alert_settings') IS NOT NULL AS alerting,
+      to_regclass('public.maintenance_projects') IS NOT NULL AS maintenance`)
+  ]);
+  return {
+    generatedAt: new Date().toISOString(),
+    service: { name: 'webring-bot-risk-center', version: require('../../package.json').version, nodeVersion: process.version, uptimeSeconds: Math.floor(process.uptime()) },
+    database: { engine: 'postgresql', healthy: true, migrations: { alerting: Boolean(migrations.rows[0]?.alerting), maintenance: Boolean(migrations.rows[0]?.maintenance) } },
+    redis: { healthy: Boolean(redis?.isReady) },
+    overview,
+    upstreams: projects.map(item => ({
+      projectKey: item.projectKey, name: item.name, repository: item.repository,
+      integrationMode: item.integrationMode, installedVersion: item.installedVersion,
+      latestVersion: item.latestVersion, latestReleaseAt: item.latestReleaseAt,
+      lastCheckedAt: item.lastCheckedAt, followStatus: item.followStatus,
+      followedVersion: item.followedVersion, followedAt: item.followedAt,
+      releaseUrl: item.releaseUrl, lastError: item.lastError
+    }))
+  };
+}
+
 async function claimNonce(clientId, nonce) {
   if (!redis) return true;
   const result = await redis.set(`risk:nonce:${clientId}:${nonce}`, '1', { NX: true, PX: 300_000 });
@@ -1191,6 +1337,13 @@ module.exports = {
   resolveRecoveredAlerts,
   recordAlertDelivery,
   listAlertActivity,
+  listMaintenanceProjects,
+  updateMaintenanceProject,
+  setMaintenanceProjectStatus,
+  markMaintenanceProjectsAlerted,
+  createMaintenanceToken,
+  consumeMaintenanceToken,
+  getMaintenanceSnapshot,
   setSiteEnabled,
   close,
   isReady

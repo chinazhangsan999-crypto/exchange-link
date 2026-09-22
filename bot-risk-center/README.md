@@ -28,6 +28,15 @@
 - 紧急信号按站点与风险类型聚合，普通疑似按唯一访客计数，避免同一程序重复请求造成通知轰炸。
 - Telegram 正文保守限制为 3800 字符且默认至少间隔 1200ms；Bark 标题/正文按 UTF-8 字节安全截断，默认至少间隔 2000ms。
 - Bot Token 与 Bark Device Key 使用 `BOT_RISK_CREDENTIAL_KEY` 加密入库，管理接口只返回“是否已配置”，不会回显明文。
+- 可选启用上游版本更新提醒；通知仍经过相同的 Telegram/Bark 字符截断、串行队列和发送间隔。
+
+### 组件更新与只读维护接口
+
+- 后台“组件更新”跟踪 CrowdSec、BotD 及参考项目的最新 Release/Tag、检查时间和人工跟进状态，不会自动安装生产版本。
+- 管理员可生成 15 分钟、最多 50 次读取的临时 Bearer Token；数据库只保存 Token 的 SHA-256 摘要。
+- `GET /v1/maintenance/snapshot` 返回服务、数据库、Redis、汇总指标与上游版本的脱敏快照。
+- `GET /v1/maintenance/upstreams` 仅返回上游项目版本与跟进状态，不包含环境变量、凭据或访客明细。
+- 可选设置 `BOT_RISK_GITHUB_TOKEN` 提高 GitHub API 额度；该 Token 只保存在服务器环境变量中。
 
 ## 决策边界
 

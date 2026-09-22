@@ -36,6 +36,7 @@ const CLIENTS = parseClients(process.env.BOT_RISK_CLIENTS_JSON || '');
 const EVENT_RETENTION_DAYS = boundedInteger(process.env.EVENT_RETENTION_DAYS, 7, 1, 90);
 const CROWDSEC_LAPI_URL = String(process.env.CROWDSEC_LAPI_URL || '').trim().replace(/\/$/, '');
 const CROWDSEC_LAPI_KEY = String(process.env.CROWDSEC_LAPI_KEY || '').trim();
+const GITHUB_API_TOKEN = String(process.env.BOT_RISK_GITHUB_TOKEN || '').trim();
 
 if (IS_PRODUCTION) {
   const missing = [];
@@ -69,5 +70,6 @@ module.exports = {
   CLIENTS,
   EVENT_RETENTION_DAYS,
   CROWDSEC_LAPI_URL,
-  CROWDSEC_LAPI_KEY
+  CROWDSEC_LAPI_KEY,
+  GITHUB_API_TOKEN
 };

@@ -227,6 +227,7 @@
     ]);
     const data = settingsResult.data;
     $('alert-enabled').checked = data.enabled; $('alert-hourly').checked = data.hourlyDigestEnabled; $('alert-daily').checked = data.dailyDigestEnabled;
+    $('alert-upstream-enabled').checked = data.upstreamUpdateAlertEnabled; $('alert-upstream-interval').value = data.upstreamCheckIntervalHours;
     $('alert-cooldown').value = data.cooldownMinutes; $('alert-telegram-enabled').checked = data.telegramEnabled; $('alert-telegram-chat').value = data.telegramChatId || '';
     $('alert-telegram-token').value = ''; $('alert-telegram-token').placeholder = data.telegramConfigured ? '已配置，留空保持不变' : '尚未配置'; $('alert-telegram-interval').value = data.telegramIntervalMs;
     $('alert-bark-enabled').checked = data.barkEnabled; $('alert-bark-server').value = data.barkServerUrl || 'https://api.day.app'; $('alert-bark-key').value = ''; $('alert-bark-key').placeholder = data.barkConfigured ? '已配置，留空保持不变' : '尚未配置'; $('alert-bark-group').value = data.barkGroup || '风险中心'; $('alert-bark-interval').value = data.barkIntervalMs;
@@ -234,7 +235,38 @@
     $('alert-master-status').textContent = data.enabled ? '告警已开启' : '告警已关闭'; $('alert-master-status').className = `status-chip ${data.enabled ? 'on' : 'off'}`;
     renderAlertActivity(activityResult.data);
   }
-  async function loadActiveTab() { if (state.activeTab === 'suspects') await loadSuspects(); else if (state.activeTab === 'rules') await loadRules(); else if (state.activeTab === 'alerts') await loadAlerts(); else if (state.activeTab === 'audits') await loadAudits(); }
+  function maintenanceStatus(item) {
+    if (item.lastError) return { label: '检查失败', className: 'error' };
+    return {
+      update_available: { label: '有新版待评估', className: 'available' },
+      followed: { label: '已跟进当前版本', className: 'followed' },
+      ignored: { label: '已忽略当前版本', className: '' },
+      current: { label: '当前已是最新版', className: 'followed' },
+      unknown: { label: '尚未检查', className: '' }
+    }[item.followStatus] || { label: item.followStatus || '未知', className: '' };
+  }
+  function renderMaintenance(items) {
+    const body = $('maintenance-body'); body.replaceChildren();
+    if (!items.length) return emptyRow(body, '尚未登记上游项目。', 7);
+    const modeLabels = { direct: '直接集成', signal_source: '信号来源', reference: '仅参考' };
+    for (const item of items) {
+      const tr = node('tr'); tr.dataset.projectKey = item.projectKey;
+      const project = node('td', '', 'maintenance-project');
+      project.append(node('strong', item.name), node('span', item.projectKey, 'site-key'));
+      const link = node('a', item.repository); link.href = `https://github.com/${item.repository}`; link.target = '_blank'; link.rel = 'noopener'; project.append(link);
+      const versions = node('td', '', 'version-stack'); versions.append(node('span', item.installedVersion || '未直接安装'), node('small', item.followedVersion ? `已跟进：${item.followedVersion}` : '尚无跟进记录'));
+      const latest = node('td', '', 'version-stack'); latest.append(node('span', item.latestVersion || '尚未获取'));
+      if (item.releaseUrl) { const release = node('a', '查看发布说明'); release.href = item.releaseUrl; release.target = '_blank'; release.rel = 'noopener'; latest.append(release); }
+      const times = node('td', '', 'version-stack'); times.append(node('span', `发布：${formatDate(item.latestReleaseAt)}`), node('small', `检查：${formatDate(item.lastCheckedAt)}`), node('small', `跟进：${formatDate(item.followedAt)}`));
+      const statusData = maintenanceStatus(item); const statusCell = node('td'); statusCell.append(node('span', statusData.label, `update-status ${statusData.className}`)); if (item.lastError) statusCell.append(node('small', item.lastError));
+      const actions = node('td', '', 'action-column'); const group = node('div', '', 'inline-actions');
+      if (item.latestVersion && item.followStatus === 'update_available') group.append(actionButton('标记已跟进', 'follow-project', 'success'), actionButton('忽略此版本', 'ignore-project'));
+      if (['followed', 'ignored'].includes(item.followStatus)) group.append(actionButton('重置状态', 'reset-project'));
+      actions.append(group); tr.append(project, node('td', modeLabels[item.integrationMode] || item.integrationMode), versions, latest, times, statusCell, actions); body.append(tr);
+    }
+  }
+  async function loadMaintenance() { const result = await request('/admin/api/maintenance/projects'); renderMaintenance(result.data || []); }
+  async function loadActiveTab() { if (state.activeTab === 'suspects') await loadSuspects(); else if (state.activeTab === 'rules') await loadRules(); else if (state.activeTab === 'alerts') await loadAlerts(); else if (state.activeTab === 'maintenance') await loadMaintenance(); else if (state.activeTab === 'audits') await loadAudits(); }
   async function loadDashboard() { await loadOverviewAndSites(); await loadActiveTab(); }
 
   $('login-form').addEventListener('submit', async event => { event.preventDefault(); const formElement = event.currentTarget; $('login-error').hidden = true; $('login-button').disabled = true; try { const form = new FormData(formElement); const result = await request('/admin/api/login', { method: 'POST', body: JSON.stringify({ username: String(form.get('username') || '').trim(), password: String(form.get('password') || '') }) }); state.csrf = result.data.csrfToken; formElement.reset(); setAuthenticated(true); await loadDashboard(); } catch (error) { $('login-error').textContent = error.message; $('login-error').hidden = false; } finally { $('login-button').disabled = false; } });
@@ -271,6 +303,7 @@
     try {
       const result = await request('/admin/api/alerts/settings', { method: 'PUT', body: JSON.stringify({
         enabled: $('alert-enabled').checked, hourlyDigestEnabled: $('alert-hourly').checked, dailyDigestEnabled: $('alert-daily').checked,
+        upstreamUpdateAlertEnabled: $('alert-upstream-enabled').checked, upstreamCheckIntervalHours: numberValue('alert-upstream-interval'),
         cooldownMinutes: numberValue('alert-cooldown'), telegramEnabled: $('alert-telegram-enabled').checked,
         telegramToken: $('alert-telegram-token').value.trim(), telegramChatId: $('alert-telegram-chat').value.trim(), telegramIntervalMs: numberValue('alert-telegram-interval'),
         barkEnabled: $('alert-bark-enabled').checked, barkServerUrl: $('alert-bark-server').value.trim(), barkDeviceKey: $('alert-bark-key').value.trim(), barkGroup: $('alert-bark-group').value.trim(), barkIntervalMs: numberValue('alert-bark-interval'),
@@ -289,5 +322,36 @@
   $('test-telegram').addEventListener('click', () => testAlert('telegram'));
   $('test-bark').addEventListener('click', () => testAlert('bark'));
 
+  $('check-upstreams').addEventListener('click', async event => {
+    const button = event.currentTarget; const original = button.textContent; button.disabled = true; button.textContent = '正在检查…';
+    try { const result = await request('/admin/api/maintenance/check', { method: 'POST' }); toast(result.message); renderMaintenance(result.data.items || []); }
+    catch (error) { toast(error.message); }
+    finally { button.disabled = false; button.textContent = original; }
+  });
+  $('generate-maintenance-token').addEventListener('click', async () => {
+    try {
+      const result = await request('/admin/api/maintenance/token', { method: 'POST' });
+      $('maintenance-snapshot-url').value = result.data.snapshotUrl; $('maintenance-upstreams-url').value = result.data.upstreamsUrl; $('maintenance-token').value = result.data.token;
+      $('maintenance-token-expiry').textContent = `有效至 ${formatDate(result.data.expiresAt)} · 最多 ${result.data.maxUses} 次`; $('copy-maintenance-access').disabled = false; toast(result.message);
+    } catch (error) { toast(error.message); }
+  });
+  $('copy-maintenance-endpoints').addEventListener('click', async () => {
+    const value = `只读诊断接口：${$('maintenance-snapshot-url').value}\n上游更新信息接口：${$('maintenance-upstreams-url').value}`;
+    await navigator.clipboard.writeText(value); toast('维护接口地址已复制');
+  });
+  $('copy-maintenance-access').addEventListener('click', async () => {
+    const value = `只读诊断接口：${$('maintenance-snapshot-url').value}\n上游更新信息接口：${$('maintenance-upstreams-url').value}\nAuthorization: Bearer ${$('maintenance-token').value}`;
+    await navigator.clipboard.writeText(value); toast('只读接入信息已复制');
+  });
+  $('maintenance-body').addEventListener('click', async event => {
+    const button = event.target.closest('[data-action]'); const row = button?.closest('tr'); if (!row) return;
+    const action = { 'follow-project': 'followed', 'ignore-project': 'ignored', 'reset-project': 'reset' }[button.dataset.action]; if (!action) return;
+    if (action === 'followed' && !confirm('这里只记录已经完成评估或代码跟进，不会自动安装上游版本。确认标记吗？')) return;
+    try { const result = await request(`/admin/api/maintenance/projects/${encodeURIComponent(row.dataset.projectKey)}/status`, { method: 'PUT', body: JSON.stringify({ action }) }); toast(result.message); await loadMaintenance(); }
+    catch (error) { toast(error.message); }
+  });
+
+  $('maintenance-snapshot-url').value = `${window.location.origin}/v1/maintenance/snapshot`;
+  $('maintenance-upstreams-url').value = `${window.location.origin}/v1/maintenance/upstreams`;
   request('/admin/api/session').then(result => { state.csrf = result.data.csrfToken; setAuthenticated(true); return loadDashboard(); }).catch(() => setAuthenticated(false));
 })();

@@ -119,8 +119,8 @@ function rebuildQueues(settings) {
 }
 
 async function deliver(item, settings, { testProvider = '' } = {}) {
-  const message = describeAlert(item);
-  const title = item.recovered ? '风险中心恢复通知' : `风险中心${item.severity === 'critical' ? '紧急' : '风险'}告警`;
+  const message = item.message || describeAlert(item);
+  const title = item.title || (item.recovered ? '风险中心恢复通知' : `风险中心${item.severity === 'critical' ? '紧急' : '风险'}告警`);
   const providers = testProvider ? [testProvider] : [
     ...(settings.telegramEnabled ? ['telegram'] : []),
     ...(settings.barkEnabled ? ['bark'] : [])
@@ -200,8 +200,26 @@ async function test(provider) {
   return results[0];
 }
 
+async function notifyUpstreamUpdates(projects) {
+  const settings = await StorageService.getAlertSettings({ includeSecrets: true });
+  if (!settings?.enabled || !settings.upstreamUpdateAlertEnabled || (!settings.telegramEnabled && !settings.barkEnabled)) return false;
+  rebuildQueues(settings);
+  const lines = ['检测到上游项目发布新版本：'];
+  for (const item of projects) {
+    lines.push(`${item.name}：${item.latestVersion || '版本未知'}（${item.integrationMode === 'direct' ? '直接集成' : item.integrationMode === 'signal_source' ? '信号来源' : '参考项目'}）`);
+  }
+  lines.push('系统不会自动升级生产环境，请进入后台评估后再决定是否跟进。', `管理后台：${PUBLIC_API_URL}/admin`);
+  const results = await deliver({
+    key: `upstream:${projects.map(item => `${item.projectKey}@${item.latestVersion}`).join(',')}`,
+    title: '风险中心上游更新提醒',
+    message: lines.join('\n'),
+    severity: 'high'
+  }, settings);
+  return results.some(item => item.success);
+}
+
 module.exports = {
-  start, stop, scan, test, deliver,
+  start, stop, scan, test, deliver, notifyUpstreamUpdates,
   truncateUnicode, truncateUtf8, createRateQueue, describeAlert,
   TELEGRAM_TEXT_LIMIT, BARK_TITLE_BYTES, BARK_BODY_BYTES
 };

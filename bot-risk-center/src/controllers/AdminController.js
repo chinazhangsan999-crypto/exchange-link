@@ -4,6 +4,8 @@ const path = require('path');
 const AdminAuthService = require('../services/AdminAuthService');
 const StorageService = require('../services/StorageService');
 const AlertService = require('../services/AlertService');
+const MaintenanceService = require('../services/MaintenanceService');
+const { PUBLIC_API_URL } = require('../config/env');
 
 const PUBLIC_DIR = path.join(__dirname, '..', '..', 'public');
 
@@ -242,10 +244,46 @@ async function testAlert(req, res) {
   return res.json({ code: 200, data, message: `${provider === 'telegram' ? 'Telegram' : 'Bark'} 测试推送成功` });
 }
 
+async function maintenanceProjects(req, res) {
+  return res.json({ code: 200, data: await StorageService.listMaintenanceProjects() });
+}
+
+async function checkMaintenanceProjects(req, res) {
+  const data = await MaintenanceService.checkUpstreams({ force: true });
+  return res.json({ code: 200, data, message: `已检查 ${data.checked || 0} 个上游项目，发现 ${data.updates || 0} 个待跟进版本` });
+}
+
+async function setMaintenanceProjectStatus(req, res) {
+  const projectKey = String(req.params.projectKey || '');
+  const action = String(req.body?.action || '');
+  if (!/^[a-z0-9_-]{2,64}$/i.test(projectKey) || !['followed', 'ignored', 'reset'].includes(action)) {
+    return res.status(400).json({ code: 400, message: '项目或操作无效' });
+  }
+  const data = await StorageService.setMaintenanceProjectStatus(projectKey, action, actor(req));
+  if (!data) return res.status(404).json({ code: 404, message: '项目不存在' });
+  const messages = { followed: '已记录为完成评估/跟进', ignored: '已忽略当前版本', reset: '已重置跟进状态' };
+  return res.json({ code: 200, data, message: messages[action] });
+}
+
+async function createMaintenanceToken(req, res) {
+  const data = await StorageService.createMaintenanceToken(actor(req), 15, 50);
+  return res.json({
+    code: 200,
+    data: {
+      ...data,
+      snapshotUrl: `${PUBLIC_API_URL}/v1/maintenance/snapshot`,
+      upstreamsUrl: `${PUBLIC_API_URL}/v1/maintenance/upstreams`
+    },
+    message: '15 分钟只读令牌已生成，仅显示一次'
+  });
+}
+
 module.exports = {
   page, stylesheet, script, login, session, logout, overview, sites, setSiteStatus,
   saveIntegration, setSiteControls, setClientStatus, rotateClientSecret,
   riskSummary, suspects, suspectDetail, setSuspectAction, clearSuspectAction,
   rules, previewRule, createRule, setRuleStatus, deleteRule, audits,
-  alertSettings, saveAlertSettings, alertActivity, testAlert
+  alertSettings, saveAlertSettings, alertActivity, testAlert,
+  maintenanceProjects, checkMaintenanceProjects, setMaintenanceProjectStatus,
+  createMaintenanceToken
 };

@@ -256,6 +256,20 @@ td.action-column .button { min-width: 68px; }
 .panel-subhead { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px 4px; }
 .panel-subhead p { margin: 3px 0 0; }
 .alert-deliveries { border-top: 1px solid var(--border); }
+.maintenance-token-box { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 14px; margin: 14px 18px; padding: 14px; border: 1px solid #b8c9ef; border-radius: 12px; background: #f4f7ff; }
+.maintenance-token-box > div:first-child { grid-column: 1 / -1; }
+.maintenance-token-box p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
+.maintenance-token-box label { margin: 0; }
+.token-actions { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 12px; }
+.maintenance-legend { display: flex; gap: 8px 18px; flex-wrap: wrap; padding: 10px 18px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.maintenance-project { min-width: 190px; }
+.maintenance-project a { display: block; margin-top: 3px; color: var(--primary); font-size: 12px; overflow-wrap: anywhere; }
+.version-stack { display: grid; gap: 3px; }
+.version-stack small { color: var(--muted); }
+.update-status { display: inline-flex; padding: 4px 8px; border-radius: 999px; background: #eef2f8; color: #42526a; font-size: 12px; font-weight: 700; }
+.update-status.available { background: #fff3df; color: #8a5700; }
+.update-status.followed { background: var(--success-bg); color: var(--success); }
+.update-status.error { background: var(--danger-bg); color: var(--danger); }
 
 .toast {
   position: fixed;
@@ -277,6 +291,8 @@ td.action-column .button { min-width: 68px; }
   .topbar, .panel-head { align-items: flex-start; }
   .risk-metrics, .inline-form, .alert-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .alert-block.thresholds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .maintenance-token-box { grid-template-columns: 1fr; }
+  .maintenance-token-box > div:first-child, .token-actions { grid-column: 1; }
   .signal-detail-grid { grid-template-columns: 1fr; }
   .global-rule-box { grid-template-columns: 1fr; }
   .global-rule-box p { grid-column: 1; }
