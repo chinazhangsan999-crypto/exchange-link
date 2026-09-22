@@ -6,7 +6,7 @@ const path = require('node:path');
 const test = require('node:test');
 
 const riskRoot = path.join(__dirname, '..');
-const projectRoot = path.join(riskRoot, '..');
+const projectRoot = path.resolve(process.env.WEBRING_PROJECT_ROOT || path.join(riskRoot, '..'));
 
 test('导航站维护接口沿用 HMAC 并实施细粒度 scope', () => {
   const routes = fs.readFileSync(path.join(riskRoot, 'src/routes/index.js'), 'utf8');

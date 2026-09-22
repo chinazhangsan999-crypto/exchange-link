@@ -38,7 +38,7 @@ test('数据库迁移持久化后台账号、会话、规则修订和新增参�
 });
 
 test('导航站把关键正负机器人信号接入风险中心', () => {
-  const projectRoot = path.join(root, '..');
+  const projectRoot = path.resolve(process.env.WEBRING_PROJECT_ROOT || path.join(root, '..'));
   const publicController = fs.readFileSync(path.join(projectRoot, 'src', 'controllers', 'PublicController.js'), 'utf8');
   const visitorRisk = fs.readFileSync(path.join(projectRoot, 'src', 'services', 'VisitorRiskService.js'), 'utf8');
   const readAccess = fs.readFileSync(path.join(projectRoot, 'src', 'middlewares', 'readAccess.js'), 'utf8');
