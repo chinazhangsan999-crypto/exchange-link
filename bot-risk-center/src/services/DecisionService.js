@@ -30,7 +30,7 @@ function normalizeEvent(input, siteKey) {
   };
 }
 
-function applyEvents(siteKey, inputs = [], now = Date.now()) {
+function applyEvents(siteKey, inputs = [], now = Date.now(), policy = {}) {
   const accepted = [];
   const touched = new Map();
   for (const input of inputs.slice(0, 500)) {
@@ -47,7 +47,7 @@ function applyEvents(siteKey, inputs = [], now = Date.now()) {
   for (const [visitorHash, visitorEvents] of touched) {
     const cacheKey = key(siteKey, visitorHash);
     const previous = decisions.get(cacheKey);
-    const result = RiskScoringService.evaluate(visitorEvents, previous?.score || 0);
+    const result = RiskScoringService.evaluate(visitorEvents, previous?.score || 0, policy.configuration || policy);
     const item = {
       sequence: ++sequence,
       siteKey,
@@ -56,7 +56,7 @@ function applyEvents(siteKey, inputs = [], now = Date.now()) {
       score: result.score,
       decision: result.decision,
       reasons: [...new Set([...(previous?.reasons || []), ...result.reasons])],
-      policyVersion: DEFAULT_POLICY_VERSION,
+      policyVersion: String(policy.version || DEFAULT_POLICY_VERSION),
       expiresAt: now + 5 * 60_000
     };
     decisions.set(cacheKey, item, { ttl: item.expiresAt - now });
@@ -100,4 +100,27 @@ function setSequenceFloor(value) {
   sequence = Math.max(sequence, Number(value) || 0);
 }
 
-module.exports = { DEFAULT_POLICY_VERSION, applyEvents, evaluate, listDelta, setSequenceFloor, resetForTests };
+function hydrate(items = [], now = Date.now()) {
+  let restored = 0;
+  for (const item of items) {
+    const expiresAt = new Date(item.expiresAt || item.expires_at || 0).getTime();
+    if (!item.siteKey || !item.subjectHash || expiresAt <= now) continue;
+    const normalized = {
+      sequence: Number(item.sequence) || 0,
+      siteKey: String(item.siteKey),
+      subjectType: String(item.subjectType || 'visitor'),
+      subjectHash: String(item.subjectHash),
+      score: Math.max(0, Math.min(100, Number(item.score) || 0)),
+      decision: String(item.decision || 'allow'),
+      reasons: Array.isArray(item.reasons) ? item.reasons : [],
+      policyVersion: String(item.policyVersion || DEFAULT_POLICY_VERSION),
+      expiresAt
+    };
+    decisions.set(key(normalized.siteKey, normalized.subjectHash), normalized, { ttl: expiresAt - now });
+    sequence = Math.max(sequence, normalized.sequence);
+    restored += 1;
+  }
+  return restored;
+}
+
+module.exports = { DEFAULT_POLICY_VERSION, applyEvents, evaluate, listDelta, setSequenceFloor, hydrate, resetForTests };

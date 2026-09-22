@@ -1,7 +1,9 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
-  const initialTab = window.location.hash === '#suspects' ? 'suspects' : 'connections';
+  const validTabs = new Set(['connections', 'suspects', 'detection', 'quality', 'rules', 'alerts', 'maintenance', 'security', 'audits']);
+  const requestedTab = window.location.hash.replace(/^#/, '');
+  const initialTab = validTabs.has(requestedTab) ? requestedTab : 'connections';
   const state = { csrf: '', sites: [], suspectPage: 1, suspectTotal: 0, suspectItems: [], selectedSuspects: new Set(), currentSuspect: null, activeTab: initialTab, riskRange: '24h' };
   const signalLabels = Object.freeze({
     cloudflare_confirmed_bot: 'Cloudflare 已确认机器人', verified_search_bot: '已验证搜索引擎蜘蛛',
@@ -146,6 +148,13 @@
       select.replaceChildren(first, ...state.sites.map(site => { const option = node('option', site.name || site.siteKey); option.value = site.siteKey; return option; }));
       select.value = current;
     }
+    const identitySite = $('identity-site');
+    if (identitySite) {
+      const current = identitySite.value || '*';
+      const all = node('option', '所有站点'); all.value = '*';
+      identitySite.replaceChildren(all, ...state.sites.map(site => { const option = node('option', site.name || site.siteKey); option.value = site.siteKey; return option; }));
+      identitySite.value = current;
+    }
     const driveSites = $('drive-sites');
     if (driveSites) {
       const selected = new Set([...driveSites.selectedOptions].map(option => option.value));
@@ -246,8 +255,103 @@
     $('suspect-dialog').showModal();
   }
 
-  async function loadRules() { const result = await request('/admin/api/risk/rules'); const body = $('rules-body'); body.replaceChildren(); if (!result.data.length) return emptyRow(body, '尚未配置人工信号规则。', 6); for (const rule of result.data) { const tr = node('tr'); tr.dataset.ruleId = rule.id; const actions = node('td', '', 'action-column'); const group = node('div', '', 'inline-actions'); group.append(actionButton(rule.enabled ? '停用' : '启用', 'toggle-rule', rule.enabled ? 'danger' : 'success'), actionButton('删除', 'delete-rule', 'danger')); actions.append(group); tr.append(node('td', rule.scope === 'all' ? '任意站点' : rule.siteName), node('td', `${signalLabel(rule.signal)}\n${rule.signal}`), node('td', rule.action), node('td', rule.permanent ? '永久' : `${rule.durationMinutes} 分钟`), node('td', rule.enabled ? '已启用' : '已停用'), actions); body.append(tr); } }
-  async function loadAudits() { const result = await request('/admin/api/audits?limit=100'); const body = $('audits-body'); body.replaceChildren(); if (!result.data.length) return emptyRow(body, '尚无管理操作记录。', 5); for (const item of result.data) { const tr = node('tr'); tr.append(node('td', formatDate(item.createdAt)), node('td', item.action), node('td', item.target), node('td', item.actor), node('td', JSON.stringify(item.details))); body.append(tr); } }
+  async function loadRules() {
+    const [result, revisions, policies] = await Promise.all([request('/admin/api/risk/rules'), request('/admin/api/risk/rules/revisions?limit=100'), request('/admin/api/risk/policies')]);
+    const body = $('rules-body'); body.replaceChildren();
+    if (!result.data.length) emptyRow(body, '尚未配置人工信号规则。', 7);
+    for (const rule of result.data) {
+      const tr = node('tr'); tr.dataset.ruleId = rule.id;
+      const actions = node('td', '', 'action-column'); const group = node('div', '', 'inline-actions');
+      group.append(actionButton(rule.enabled ? '停用' : '启用', 'toggle-rule', rule.enabled ? 'danger' : 'success'), actionButton('删除', 'delete-rule', 'danger')); actions.append(group);
+      tr.append(node('td', rule.scope === 'all' ? '任意站点' : rule.siteName), node('td', `${signalLabel(rule.signal)}\n${rule.signal}`), node('td', rule.action), node('td', rule.mode === 'shadow' ? '影子观察' : '正式执行'), node('td', rule.permanent ? '永久' : `${rule.durationMinutes} 分钟`), node('td', rule.enabled ? '已启用' : '已停用'), actions); body.append(tr);
+    }
+    const revisionsBody = $('rule-revisions-body'); revisionsBody.replaceChildren();
+    if (!revisions.data.length) emptyRow(revisionsBody, '尚无规则修订记录。', 5);
+    for (const item of revisions.data) {
+      const snapshot = item.snapshot || {};
+      const tr = node('tr'); tr.append(node('td', formatDate(item.createdAt)), node('td', String(item.ruleId || '—')),
+        node('td', item.operation), node('td', item.createdBy), node('td', `${snapshot.signal || '—'} · ${snapshot.action || '—'} · ${snapshot.mode || 'enforce'}`));
+      revisionsBody.append(tr);
+    }
+    const policiesBody = $('policies-body'); policiesBody.replaceChildren();
+    for (const item of policies.data || []) {
+      const values = item.configuration?.thresholds || {};
+      const tr = node('tr'); tr.dataset.policyId = item.id;
+      const action = node('td', '', 'action-column');
+      if (!item.active) action.append(actionButton('启用 / 回滚到此版本', 'activate-policy', 'secondary'));
+      tr.append(node('td', item.version), node('td', item.name), node('td', `${values.observe ?? 25} / ${values.silentChallenge ?? 50} / ${values.strongChallenge ?? 75} / ${values.deny ?? 90}`),
+        node('td', item.active ? '当前生效' : '历史 / 草稿'), node('td', formatDate(item.createdAt)), action); policiesBody.append(tr);
+    }
+  }
+
+  async function loadDetection() {
+    const range = $('detection-range').value;
+    const [capabilities, identities] = await Promise.all([
+      request(`/admin/api/detection/capabilities?range=${encodeURIComponent(range)}`),
+      request('/admin/api/detection/identity-lists')
+    ]);
+    const body = $('detection-body'); body.replaceChildren();
+    const statusLabels = { connected: '已接入', partial: '部分接入', not_connected: '尚未接入' };
+    const confidenceLabels = { high: '强', medium: '中', low: '弱' };
+    for (const item of capabilities.data.items || []) {
+      const tr = node('tr');
+      const name = node('td'); name.append(node('strong', item.label), node('code', item.signal));
+      const status = node('td'); status.append(chip(statusLabels[item.integrationStatus] || item.integrationStatus, item.integrationStatus === 'connected'));
+      const score = node('td', `${item.weight > 0 ? '+' : ''}${item.weight}${item.hardDeny ? ' · 强制拒绝' : ''}`, 'numeric');
+      tr.append(name, node('td', item.category), status, node('td', confidenceLabels[item.confidence] || item.confidence), score,
+        node('td', `${item.events} 次 / ${item.visitors} 人`, 'numeric'), node('td', formatDate(item.lastSeen)), node('td', item.implementationNote));
+      body.append(tr);
+    }
+    const identityBody = $('identity-body'); identityBody.replaceChildren();
+    if (!identities.data.length) emptyRow(identityBody, '尚无人工允许或阻止名单。', 6);
+    for (const item of identities.data) {
+      const tr = node('tr'); tr.dataset.id = item.id; tr.dataset.listType = item.listType;
+      const action = node('td', '', 'action-column'); action.append(actionButton('删除', 'delete-identity', 'danger'));
+      tr.append(node('td', item.listType === 'allow' ? '允许' : '阻止'), node('td', item.siteKey === '*' ? '所有站点' : item.siteKey),
+        node('td', `${item.subjectType}\n${item.subjectHash}`), node('td', item.reason || '—'), node('td', item.expiresAt ? formatDate(item.expiresAt) : '永久'), action);
+      identityBody.append(tr);
+    }
+  }
+
+  async function loadQuality() {
+    const [result, pipelineResult] = await Promise.all([request(`/admin/api/detection/quality?range=${encodeURIComponent($('quality-range').value)}`), request('/admin/api/detection/pipeline')]);
+    const data = result.data; const challenge = data.challenge || {};
+    $('quality-total').textContent = challenge.total || 0; $('quality-passed').textContent = challenge.passed || 0;
+    $('quality-failed').textContent = challenge.failed || 0; $('quality-corrections').textContent = data.manualCorrections || 0;
+    $('quality-average').textContent = `${challenge.averageMs || 0} ms`; $('quality-p95').textContent = `${challenge.p95Ms || 0} ms`;
+    $('quality-pass-rate').textContent = challenge.total ? `${Math.round(challenge.passed * 1000 / challenge.total) / 10}%` : '暂无数据';
+    $('quality-decisions').replaceChildren(...(data.decisions || []).map(item => node('span', `${item.decision} · ${item.count}`, 'signal-chip')));
+    $('quality-signals').replaceChildren(...(data.topSignals || []).map(item => node('span', `${signalLabel(item.signal)} · ${item.visitors} 人 / ${item.count} 次`, 'signal-chip')));
+    const pipeline = pipelineResult.data;
+    $('pipeline-summary').replaceChildren(
+      chip(`PostgreSQL ${pipeline.database ? '正常' : '异常'}`, pipeline.database),
+      chip(`Redis ${pipeline.redis ? '正常' : '异常'}`, pipeline.redis),
+      node('span', `5分钟：事件 ${pipeline.events5m} · 决策 ${pipeline.decisions5m} · 验证 ${pipeline.challenges5m}`, 'signal-chip')
+    );
+    const pipelineBody = $('pipeline-body'); pipelineBody.replaceChildren();
+    if (!pipeline.sites.length) emptyRow(pipelineBody, '没有启用的导航站。', 5);
+    for (const item of pipeline.sites) {
+      const tr = node('tr'); const status = node('td'); status.append(chip(item.stale ? '上报过期' : '正常', !item.stale));
+      tr.append(node('td', `${item.name}\n${item.siteKey}`), node('td', String(item.events24h), 'numeric'), node('td', formatDate(item.lastUsedAt)), status, node('td', item.lastError || '—')); pipelineBody.append(tr);
+    }
+  }
+
+  async function loadSecurity() {
+    const result = await request('/admin/api/security'); const data = result.data;
+    $('security-username').value = data.account.username || '';
+    $('security-account-meta').textContent = `当前账号：${data.account.username || '—'} · 最近修改：${formatDate(data.account.passwordChangedAt)}`;
+    const body = $('security-sessions-body'); body.replaceChildren();
+    if (!data.sessions.length) return emptyRow(body, '没有有效会话。', 5);
+    for (const item of data.sessions) {
+      const tr = node('tr'); tr.dataset.sessionId = item.id;
+      const device = String(item.userAgent || '未知设备').slice(0, 120);
+      const status = item.revokedAt ? '已撤销' : item.current ? '当前设备' : '有效';
+      const action = node('td', '', 'action-column');
+      if (!item.revokedAt) action.append(actionButton(item.current ? '退出当前设备' : '下线', 'revoke-session', 'danger'));
+      tr.append(node('td', device), node('td', item.sourceIp || '未知'), node('td', formatDate(item.lastSeenAt)), node('td', status), action); body.append(tr);
+    }
+  }
+  async function loadAudits() { const result = await request('/admin/api/audits?limit=100'); const body = $('audits-body'); body.replaceChildren(); if (!result.data.length) return emptyRow(body, '尚无管理操作记录。', 5); for (const item of result.data) { const tr = node('tr'); const actorCell = node('td'); actorCell.append(node('strong', item.actor), node('small', item.sourceIp || '未记录来源')); tr.append(node('td', formatDate(item.createdAt)), node('td', item.action), node('td', item.target), actorCell, node('td', JSON.stringify(item.details))); body.append(tr); } }
   function numberValue(id) { return Number($(id).value); }
   function renderAlertActivity(data) {
     const activityBody = $('alert-activity-body'); activityBody.replaceChildren();
@@ -417,7 +521,16 @@
     $('backup-drive-now').disabled = !data.personalConnected;
     $('drive-last-status').textContent = data.lastError ? `最近错误：${data.lastError}` : (data.lastBackupAt ? `最近成功备份：${formatDate(data.lastBackupAt)} · 文件 ID ${data.lastFileId || '—'}` : '尚无备份记录。');
   }
-  async function loadActiveTab() { if (state.activeTab === 'suspects') { await loadSuspects(); if ($('analysis-backup-details').open) await loadDriveSettings(); } else if (state.activeTab === 'rules') await loadRules(); else if (state.activeTab === 'alerts') await loadAlerts(); else if (state.activeTab === 'maintenance') await loadMaintenance(); else if (state.activeTab === 'audits') await loadAudits(); }
+  async function loadActiveTab() {
+    if (state.activeTab === 'suspects') { await loadSuspects(); if ($('analysis-backup-details').open) await loadDriveSettings(); }
+    else if (state.activeTab === 'detection') await loadDetection();
+    else if (state.activeTab === 'quality') await loadQuality();
+    else if (state.activeTab === 'rules') await loadRules();
+    else if (state.activeTab === 'alerts') await loadAlerts();
+    else if (state.activeTab === 'maintenance') await loadMaintenance();
+    else if (state.activeTab === 'security') await loadSecurity();
+    else if (state.activeTab === 'audits') await loadAudits();
+  }
   async function loadDashboard() { await loadOverviewAndSites(); await loadActiveTab(); }
   function activateTab(name, load = true) {
     const tab = document.querySelector(`[data-tab="${name}"]`);
@@ -461,8 +574,80 @@
   $('rule-scope').addEventListener('change', event => { const anySite = event.currentTarget.value === 'all'; $('rule-site').disabled = anySite; $('rule-site').required = !anySite; });
   $('rule-permanent').addEventListener('change', event => { $('rule-duration').disabled = event.currentTarget.checked; $('rule-duration').required = !event.currentTarget.checked; });
   $('preview-rule').addEventListener('click', async () => { try { const siteKey = $('rule-scope').value === 'all' ? '*' : $('rule-site').value; const query = new URLSearchParams({ siteKey, signal: $('rule-signal').value.trim() }); const result = await request(`/admin/api/risk/rules/preview?${query}`); $('rule-preview-result').textContent = `近 24 小时将影响 ${result.data.visitors24h} 个访客、${result.data.events24h} 次事件。`; } catch (error) { toast(error.message); } });
-  $('rule-form').addEventListener('submit', async event => { event.preventDefault(); try { const siteKey = $('rule-scope').value === 'all' ? '*' : $('rule-site').value; await request('/admin/api/risk/rules', { method: 'POST', body: JSON.stringify({ siteKey, signal: $('rule-signal').value.trim(), action: $('rule-action').value, permanent: $('rule-permanent').checked, durationMinutes: $('rule-permanent').checked ? null : Number($('rule-duration').value), reason: $('rule-reason').value.trim() }) }); toast('规则已创建'); $('rule-signal').value = ''; $('rule-reason').value = ''; $('rule-permanent').checked = false; $('rule-duration').disabled = false; $('rule-duration').required = true; await loadRules(); } catch (error) { toast(error.message); } });
-  $('rules-body').addEventListener('click', async event => { const button = event.target.closest('[data-action]'); const row = button?.closest('tr'); if (!row) return; try { if (button.dataset.action === 'delete-rule') { if (!confirm('确定删除该规则吗？')) return; await request(`/admin/api/risk/rules/${row.dataset.ruleId}`, { method: 'DELETE' }); } else { const enabled = row.children[4].textContent !== '已启用'; await request(`/admin/api/risk/rules/${row.dataset.ruleId}/status`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } await loadRules(); toast('规则已更新'); } catch (error) { toast(error.message); } });
+  $('rule-form').addEventListener('submit', async event => { event.preventDefault(); try { const siteKey = $('rule-scope').value === 'all' ? '*' : $('rule-site').value; await request('/admin/api/risk/rules', { method: 'POST', body: JSON.stringify({ siteKey, signal: $('rule-signal').value.trim(), action: $('rule-action').value, mode: $('rule-mode').value, permanent: $('rule-permanent').checked, durationMinutes: $('rule-permanent').checked ? null : Number($('rule-duration').value), reason: $('rule-reason').value.trim() }) }); toast($('rule-mode').value === 'shadow' ? '影子规则已创建，不会执行处置' : '正式规则已创建'); $('rule-signal').value = ''; $('rule-reason').value = ''; $('rule-permanent').checked = false; $('rule-duration').disabled = false; $('rule-duration').required = true; await loadRules(); } catch (error) { toast(error.message); } });
+  $('rules-body').addEventListener('click', async event => { const button = event.target.closest('[data-action]'); const row = button?.closest('tr'); if (!row) return; try { if (button.dataset.action === 'delete-rule') { if (!confirm('确定删除该规则吗？修订历史仍会保留。')) return; await request(`/admin/api/risk/rules/${row.dataset.ruleId}`, { method: 'DELETE' }); } else { const enabled = row.children[5].textContent !== '已启用'; await request(`/admin/api/risk/rules/${row.dataset.ruleId}/status`, { method: 'PUT', body: JSON.stringify({ enabled }) }); } await loadRules(); toast('规则已更新'); } catch (error) { toast(error.message); } });
+  $('policy-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    try {
+      const result = await request('/admin/api/risk/policies', { method: 'POST', body: JSON.stringify({
+        name: $('policy-name').value.trim(), version: $('policy-version').value.trim(), thresholds: {
+          observe: Number($('policy-observe').value), silentChallenge: Number($('policy-silent').value),
+          strongChallenge: Number($('policy-strong').value), deny: Number($('policy-deny').value)
+        }
+      }) });
+      toast(result.message); $('policy-version').value = ''; await loadRules();
+    } catch (error) { toast(error.message); }
+  });
+  $('policies-body').addEventListener('click', async event => {
+    const button = event.target.closest('[data-action="activate-policy"]'); const row = button?.closest('tr'); if (!row) return;
+    if (!confirm('启用该策略版本后，所有未指定独立策略的站点会立即使用它。确定继续吗？')) return;
+    try { const result = await request(`/admin/api/risk/policies/${row.dataset.policyId}/activate`, { method: 'POST' }); toast(result.message); await loadRules(); }
+    catch (error) { toast(error.message); }
+  });
+
+  $('detection-range').addEventListener('change', () => loadDetection().catch(error => toast(error.message)));
+  $('quality-range').addEventListener('change', () => loadQuality().catch(error => toast(error.message)));
+  $('identity-permanent').addEventListener('change', event => { $('identity-duration').disabled = event.currentTarget.checked; });
+  $('identity-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    try {
+      const result = await request('/admin/api/detection/identity-lists', { method: 'POST', body: JSON.stringify({
+        listType: $('identity-list-type').value, siteKey: $('identity-site').value,
+        subjectType: $('identity-subject-type').value, subjectHash: $('identity-subject').value.trim(),
+        reason: $('identity-reason').value.trim(), permanent: $('identity-permanent').checked,
+        durationMinutes: Number($('identity-duration').value)
+      }) });
+      toast(result.message); $('identity-subject').value = ''; $('identity-reason').value = ''; await loadDetection();
+    } catch (error) { toast(error.message); }
+  });
+  $('identity-body').addEventListener('click', async event => {
+    const button = event.target.closest('[data-action="delete-identity"]'); const row = button?.closest('tr');
+    if (!row || !confirm('确定删除该名单项吗？')) return;
+    try { await request(`/admin/api/detection/identity-lists/${row.dataset.listType}/${row.dataset.id}`, { method: 'DELETE' }); toast('名单项已删除'); await loadDetection(); }
+    catch (error) { toast(error.message); }
+  });
+
+  $('credential-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const nextPassword = $('security-new-password').value;
+    if (nextPassword !== $('security-confirm-password').value) return toast('两次输入的新密码不一致');
+    if (!confirm('修改后所有设备（包括当前设备）都会退出，确定继续吗？')) return;
+    try {
+      const result = await request('/admin/api/security/credentials', { method: 'PUT', body: JSON.stringify({
+        currentPassword: $('security-current-password').value,
+        username: $('security-username').value.trim(), newPassword: nextPassword
+      }) });
+      toast(result.message); setTimeout(() => { setAuthenticated(false); }, 600);
+    } catch (error) { toast(error.message); }
+  });
+  $('security-sessions-body').addEventListener('click', async event => {
+    const button = event.target.closest('[data-action="revoke-session"]'); const row = button?.closest('tr'); if (!row) return;
+    if (!confirm('确定撤销这个登录会话吗？')) return;
+    try { const result = await request(`/admin/api/security/sessions/${row.dataset.sessionId}`, { method: 'DELETE' }); toast(result.message); if (result.data.current) setAuthenticated(false); else await loadSecurity(); }
+    catch (error) { toast(error.message); }
+  });
+  $('revoke-other-sessions').addEventListener('click', async () => {
+    if (!confirm('确定让其他所有登录设备下线吗？当前设备会保留。')) return;
+    try { const result = await request('/admin/api/security/sessions/revoke-others', { method: 'POST' }); toast(result.message); await loadSecurity(); }
+    catch (error) { toast(error.message); }
+  });
+  $('revoke-all-sessions').addEventListener('click', async () => {
+    if (!confirm('确定让所有登录设备（包括当前设备）立即下线吗？')) return;
+    try {
+      const result = await request('/admin/api/security/sessions/revoke-all', { method: 'POST' });
+      toast(result.message); setTimeout(() => { setAuthenticated(false); }, 600);
+    } catch (error) { toast(error.message); }
+  });
 
   $('alert-form').addEventListener('submit', async event => {
     event.preventDefault();

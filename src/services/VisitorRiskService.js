@@ -12,6 +12,17 @@ const DETAIL_SCAN_SEQUENCE_LIMIT = 6;
 const DETAIL_MINUTE_WINDOW_MS = 60 * 1000;
 const DETAIL_MINUTE_LIMIT = 30;
 const SCRIPT_USER_AGENT = /(?:python-requests|curl\/|wget\/|scrapy|go-http-client|aiohttp|httpx\/)/i;
+const AI_CRAWLERS = Object.freeze([
+  ['OpenAI', /(?:gptbot|chatgpt-user|oai-searchbot)/i],
+  ['Anthropic', /(?:claudebot|claude-web|anthropic-ai)/i],
+  ['Perplexity', /perplexitybot/i], ['ByteDance', /bytespider/i],
+  ['Common Crawl', /ccbot/i], ['Google Extended', /google-extended/i],
+  ['Apple Extended', /applebot-extended/i], ['Meta', /meta-externalagent/i], ['Amazon', /amazonbot/i]
+]);
+
+function detectKnownAiCrawler(userAgent) {
+  return AI_CRAWLERS.find(([, pattern]) => pattern.test(String(userAgent || '')))?.[0] || '';
+}
 
 const visitorRiskCache = new LRUCache({
   max: 100000,
@@ -48,6 +59,7 @@ function recordBootstrapSignals(visitorId, metadata = {}, now = Date.now()) {
   if (!key) return null;
   let record = visitorRiskCache.get(key) || { score: 0, restrictedUntil: 0 };
   const flags = new Set(Array.isArray(record.signalFlags) ? record.signalFlags : []);
+  const newSignals = [];
   let points = 0;
   const fetchSite = String(metadata.fetchSite || '').toLowerCase();
   const fetchMode = String(metadata.fetchMode || '').toLowerCase();
@@ -56,6 +68,7 @@ function recordBootstrapSignals(visitorId, metadata = {}, now = Date.now()) {
 
   if (!fetchSite && !fetchMode && !fetchDest && !flags.has('missing-fetch-metadata')) {
     flags.add('missing-fetch-metadata');
+    newSignals.push('missing_fetch_metadata');
     points += 15;
   }
   if (fetchSite && !['same-origin', 'same-site', 'none'].includes(fetchSite)
@@ -73,10 +86,17 @@ function recordBootstrapSignals(visitorId, metadata = {}, now = Date.now()) {
   }
   if (SCRIPT_USER_AGENT.test(userAgent) && !flags.has('script-user-agent')) {
     flags.add('script-user-agent');
+    newSignals.push('script_user_agent');
     points += 50;
   }
+  const aiCrawler = detectKnownAiCrawler(userAgent);
+  if (aiCrawler && !flags.has('known-ai-crawler')) {
+    flags.add('known-ai-crawler');
+    newSignals.push('known_ai_crawler');
+    points += 100;
+  }
 
-  record = addRiskScore({ ...record, signalFlags: [...flags] }, points, now);
+  record = addRiskScore({ ...record, signalFlags: [...flags], newSignals, aiCrawler }, points, now);
   return saveRecord(key, record);
 }
 
@@ -161,5 +181,6 @@ module.exports = {
   recordBootstrapSignals,
   recordDetailRead,
   markReadProofVerified,
-  getReadRestriction
+  getReadRestriction,
+  detectKnownAiCrawler
 };

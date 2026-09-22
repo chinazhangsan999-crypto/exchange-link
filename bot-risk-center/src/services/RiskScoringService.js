@@ -38,15 +38,21 @@ const HARD_DENY_SIGNALS = new Set([
   'browser_automation_confirmed'
 ]);
 
-function decisionForScore(score) {
-  if (score >= 90) return DECISIONS.DENY;
-  if (score >= 75) return DECISIONS.STRONG_CHALLENGE;
-  if (score >= 50) return DECISIONS.SILENT_CHALLENGE;
-  if (score >= 25) return DECISIONS.OBSERVE;
+function decisionForScore(score, thresholds = {}) {
+  const values = {
+    observe: Math.max(0, Math.min(100, Number(thresholds.observe) || 25)),
+    silentChallenge: Math.max(0, Math.min(100, Number(thresholds.silentChallenge) || 50)),
+    strongChallenge: Math.max(0, Math.min(100, Number(thresholds.strongChallenge) || 75)),
+    deny: Math.max(0, Math.min(100, Number(thresholds.deny) || 90))
+  };
+  if (score >= values.deny) return DECISIONS.DENY;
+  if (score >= values.strongChallenge) return DECISIONS.STRONG_CHALLENGE;
+  if (score >= values.silentChallenge) return DECISIONS.SILENT_CHALLENGE;
+  if (score >= values.observe) return DECISIONS.OBSERVE;
   return DECISIONS.ALLOW;
 }
 
-function evaluate(events = [], previousScore = 0) {
+function evaluate(events = [], previousScore = 0, policy = {}) {
   const reasons = [];
   let score = Number(previousScore) || 0;
   let hardDeny = false;
@@ -60,7 +66,7 @@ function evaluate(events = [], previousScore = 0) {
   score = Math.max(0, Math.min(100, score));
   return {
     score,
-    decision: hardDeny ? DECISIONS.DENY : decisionForScore(score),
+    decision: hardDeny ? DECISIONS.DENY : decisionForScore(score, policy.thresholds),
     reasons
   };
 }

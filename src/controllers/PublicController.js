@@ -441,8 +441,15 @@ function getReadBootstrap(req, res) {
     userAgent: req.get('user-agent'),
     expectedOrigin: req.trustedFrontendOrigin || `${req.protocol}://${req.get('host')}`
   });
-  if (localRisk?.signalFlags?.includes('script-user-agent')) {
-    BotRiskClient.enqueue(visitorId, 'script_user_agent', { path: '/api/read/bootstrap' });
+  for (const signal of localRisk?.newSignals || []) {
+    BotRiskClient.enqueue(visitorId, signal, {
+      path: '/api/read/bootstrap',
+      userAgent: String(req.get('user-agent') || '').slice(0, 240),
+      botName: signal === 'known_ai_crawler' ? localRisk.aiCrawler : '',
+      secFetchSite: String(req.get('sec-fetch-site') || ''),
+      secFetchMode: String(req.get('sec-fetch-mode') || ''),
+      secFetchDest: String(req.get('sec-fetch-dest') || '')
+    });
   }
   const centralDecision = BotRiskClient.getDecision(visitorId);
   if (centralDecision?.enforce && centralDecision.decision === 'deny') {
@@ -486,7 +493,10 @@ function verifyBrowserChallenge(req, res) {
   const body = req.body || {};
   const proof = BrowserChallengeService.verifyProof(visitorId, body);
   res.set('Cache-Control', 'private, no-store');
-  if (!proof.ok) return fail(res, '浏览器校验无效或已过期', 400);
+  if (!proof.ok) {
+    BotRiskClient.enqueue(visitorId, 'challenge_failed', { challengeType: 'browser', reason: proof.reason || 'invalid_or_expired' });
+    return fail(res, '浏览器校验无效或已过期', 400);
+  }
 
   const botD = body.botD && typeof body.botD === 'object' ? body.botD : {};
   const webdriver = body.webdriver === true;
@@ -529,6 +539,7 @@ function verifyReadProof(req, res) {
   const result = ReadProofService.verifyChallenge(visitorId, req.body || {});
   res.set('Cache-Control', 'private, no-store');
   if (!result.ok) {
+    BotRiskClient.enqueue(visitorId, 'challenge_failed', { challengeType: 'read', reason: result.reason || 'invalid_or_expired' });
     return res.status(400).json({
       code: 400,
       msg: IS_PRODUCTION ? '请求无法处理' : '计算校验无效或已过期',
@@ -714,6 +725,10 @@ async function trackPing(req, res) {
       return fail(res, '追踪会话已使用', 409);
     }
     const { newlyCounted, autoApproved } = transactionResult;
+    BotRiskClient.enqueue(ensureVisitorIdentity(req, res), 'normal_dwell', {
+      elapsedMs: Date.now() - Number(claim.started_at_ms || Date.now()),
+      newlyCounted: Boolean(newlyCounted)
+    });
     const attribution = { visitId, sourcePartnerId: Number(claim.partner_id) };
     PartnerPageViewService.recordConfirmedEntry({
       partnerId: attribution.sourcePartnerId,
@@ -1117,6 +1132,7 @@ async function go(req, res) {
     const attribution = readAttributionVisit(req);
     try {
       await dbMutex.runExclusive(() => LogModel.recordOutbound(link.id, clientIp, attribution || {}));
+      BotRiskClient.enqueue(ensureVisitorIdentity(req, res), 'outbound_interaction', { linkId: link.id });
     } catch (error) {
       console.error('[Outbound Track Error]:', error.message);
     }

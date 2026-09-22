@@ -22,7 +22,13 @@ test('风险后台只接受正确账号密码并签发 HttpOnly 严格会话', a
   });
 
   const request = { get(name) { return name === 'cookie' ? `${AdminAuthService.COOKIE_NAME}=${session.sessionId}` : ''; } };
-  assert.equal(AdminAuthService.sessionFromRequest(request).csrfToken, session.csrfToken);
-  AdminAuthService.destroySession(request);
-  assert.equal(AdminAuthService.sessionFromRequest(request), null);
+  assert.equal((await AdminAuthService.sessionFromRequest(request)).csrfToken, session.csrfToken);
+  await AdminAuthService.destroySession(request);
+  assert.equal(await AdminAuthService.sessionFromRequest(request), null);
+});
+
+test('管理员可修改账号密码且新密码使用独立 scrypt 盐值', async () => {
+  const hash = await AdminAuthService.passwordHash('new-secure-password');
+  assert.match(hash, /^scrypt\$[a-f0-9]{32}\$[a-f0-9]{128}$/);
+  assert.notEqual(hash, await AdminAuthService.passwordHash('new-secure-password'));
 });

@@ -16,6 +16,7 @@ const {
 const DecisionService = require('./DecisionService');
 const CredentialService = require('./CredentialService');
 const { SIGNAL_WEIGHTS } = require('./RiskScoringService');
+const DetectionCatalog = require('./DetectionCatalog');
 
 let pool = null;
 let redis = null;
@@ -44,12 +45,32 @@ async function initialize() {
   if (ready) return;
   if (DATABASE_URL) {
     pool = new Pool({ connectionString: DATABASE_URL, max: 10, idleTimeoutMillis: 30_000 });
-    for (const filename of ['001_initial.sql', '002_alerting.sql', '003_maintenance.sql', '004_agent_maintenance.sql', '005_analysis_drive.sql', '006_personal_drive_oauth.sql', '007_rule_telegram_backup.sql']) {
+    for (const filename of ['001_initial.sql', '002_alerting.sql', '003_maintenance.sql', '004_agent_maintenance.sql', '005_analysis_drive.sql', '006_personal_drive_oauth.sql', '007_rule_telegram_backup.sql', '008_detection_security.sql']) {
       const migration = fs.readFileSync(path.join(__dirname, '..', '..', 'migrations', filename), 'utf8');
       await pool.query(migration);
     }
+    const { ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = require('../config/env');
+    await pool.query(
+      `INSERT INTO admin_credentials (id, username, password_hash)
+       VALUES (1, $1, $2) ON CONFLICT (id) DO NOTHING`,
+      [ADMIN_USERNAME, ADMIN_PASSWORD_HASH]
+    );
     const sequenceResult = await pool.query('SELECT COALESCE(MAX(sequence), 0) AS sequence FROM risk_decisions');
     DecisionService.setSequenceFloor(sequenceResult.rows[0]?.sequence);
+    const activeDecisions = await pool.query(
+      `SELECT DISTINCT ON (site_key, subject_hash)
+              sequence, site_key, subject_type, subject_hash, score, decision,
+              reasons, policy_version, expires_at
+         FROM risk_decisions
+        WHERE revoked_at IS NULL AND expires_at > NOW()
+        ORDER BY site_key, subject_hash, sequence DESC
+        LIMIT 500000`
+    );
+    DecisionService.hydrate(activeDecisions.rows.map(row => ({
+      sequence: row.sequence, siteKey: row.site_key, subjectType: row.subject_type,
+      subjectHash: row.subject_hash, score: row.score, decision: row.decision,
+      reasons: row.reasons, policyVersion: row.policy_version, expiresAt: row.expires_at
+    })));
   }
   if (REDIS_URL) {
     redis = createClient({ url: REDIS_URL });
@@ -66,13 +87,25 @@ async function persistBatch(events, decisions) {
   try {
     await client.query('BEGIN');
     for (const event of events) {
-      await client.query(
+      const eventInsert = await client.query(
         `INSERT INTO risk_events
-          (event_id, site_key, visitor_hash, event_type, occurred_at, evidence)
-         VALUES ($1, $2, $3, $4, to_timestamp($5 / 1000.0), $6::jsonb)
+          (event_id, site_key, visitor_hash, event_type, occurred_at, risk_delta, evidence)
+         VALUES ($1, $2, $3, $4, to_timestamp($5 / 1000.0), $6, $7::jsonb)
          ON CONFLICT (event_id) DO NOTHING`,
-        [event.eventId, event.siteKey, event.visitorHash, event.eventType, event.occurredAt, JSON.stringify(event.evidence || {})]
+        [event.eventId, event.siteKey, event.visitorHash, event.eventType, event.occurredAt,
+          Number(SIGNAL_WEIGHTS[event.eventType] || 0), JSON.stringify(event.evidence || {})]
       );
+      if (eventInsert.rowCount > 0 && ['challenge_passed', 'browser_challenge_passed', 'challenge_failed'].includes(event.eventType)) {
+        await client.query(
+          `INSERT INTO challenge_audits
+            (site_key, visitor_hash, challenge_type, succeeded, elapsed_ms)
+           VALUES ($1,$2,$3,$4,$5)`,
+          [event.siteKey, event.visitorHash,
+            event.eventType === 'browser_challenge_passed' ? 'browser' : 'read',
+            event.eventType !== 'challenge_failed',
+            Number.isFinite(Number(event.evidence?.elapsedMs)) ? Number(event.evidence.elapsedMs) : null]
+        );
+      }
     }
     for (const item of decisions) {
       await client.query(
@@ -115,7 +148,7 @@ function scoreForAction(action, current = 0) {
 async function applyManualControls(siteKey, events, decisions) {
   if (!pool || !decisions.length) return decisions;
   const visitors = [...new Set(decisions.map(item => item.subjectHash))];
-  const [overrides, rules] = await Promise.all([
+  const [overrides, rules, allowEntries, blockEntries] = await Promise.all([
     pool.query(
       `SELECT visitor_hash, action, reason, expires_at
          FROM manual_overrides
@@ -124,15 +157,47 @@ async function applyManualControls(siteKey, events, decisions) {
       [siteKey, visitors]
     ),
     pool.query(
-      `SELECT id, signal, action, reason, duration_minutes, expires_at
+      `SELECT id, signal, action, reason, duration_minutes, expires_at, mode
          FROM signal_rules
         WHERE (site_key = $1 OR site_key = '*') AND enabled = TRUE
+          AND mode = 'enforce'
           AND (expires_at IS NULL OR expires_at > NOW())
         ORDER BY CASE WHEN site_key = $1 THEN 0 ELSE 1 END, created_at DESC`,
       [siteKey]
+    ),
+    pool.query(
+      `SELECT site_key,subject_type,subject_hash,reason FROM allowlists
+        WHERE (site_key=$1 OR site_key='*')
+          AND (subject_type<>'visitor' OR subject_hash=ANY($2::text[]))
+          AND (expires_at IS NULL OR expires_at>NOW())
+        ORDER BY CASE WHEN site_key=$1 THEN 0 ELSE 1 END`, [siteKey, visitors]
+    ),
+    pool.query(
+      `SELECT site_key,subject_type,subject_hash,reason FROM blocklists
+        WHERE (site_key=$1 OR site_key='*')
+          AND (subject_type<>'visitor' OR subject_hash=ANY($2::text[]))
+          AND (expires_at IS NULL OR expires_at>NOW())
+        ORDER BY CASE WHEN site_key=$1 THEN 0 ELSE 1 END`, [siteKey, visitors]
     )
   ]);
   const overrideByVisitor = new Map(overrides.rows.map(row => [row.visitor_hash, row]));
+  const evidenceByVisitor = new Map();
+  for (const event of events) {
+    const list = evidenceByVisitor.get(event.visitorHash) || [];
+    list.push({ eventType: event.eventType, ...(event.evidence || {}) });
+    evidenceByVisitor.set(event.visitorHash, list);
+  }
+  const identityMatch = (row, visitorHash) => {
+    if (row.subject_type === 'visitor') return row.subject_hash === visitorHash;
+    const expected = String(row.subject_hash || '').toLowerCase();
+    return (evidenceByVisitor.get(visitorHash) || []).some(evidence => {
+      if (row.subject_type === 'ua') return String(evidence.userAgent || evidence.ua || '').toLowerCase().includes(expected);
+      if (row.subject_type === 'ja4') return String(evidence.ja4 || '').toLowerCase() === expected;
+      if (row.subject_type === 'asn') return String(evidence.asn || '').toLowerCase() === expected.replace(/^as/, '');
+      if (row.subject_type === 'bot_identity') return String(evidence.botName || evidence.botKind || '').toLowerCase() === expected;
+      return false;
+    });
+  };
   const signalsByVisitor = new Map();
   for (const event of events) {
     const set = signalsByVisitor.get(event.visitorHash) || new Set();
@@ -141,6 +206,14 @@ async function applyManualControls(siteKey, events, decisions) {
   }
   const now = Date.now();
   return decisions.map(item => {
+    const allowEntry = allowEntries.rows.find(row => identityMatch(row, item.subjectHash));
+    if (allowEntry) {
+      return { ...item, score: 0, decision: 'allow', reasons: [`allowlist:${allowEntry.reason || 'manual'}`] };
+    }
+    const blockEntry = blockEntries.rows.find(row => identityMatch(row, item.subjectHash));
+    if (blockEntry) {
+      return { ...item, score: 100, decision: 'deny', reasons: [`blocklist:${blockEntry.reason || 'manual'}`] };
+    }
     const manual = overrideByVisitor.get(item.subjectHash);
     if (manual && ACTIONS.has(manual.action)) {
       return {
@@ -860,6 +933,7 @@ async function listSignalRules() {
     id: Number(row.id), siteKey: row.site_key, siteName: row.site_name,
     scope: row.site_key === '*' ? 'all' : 'site',
     signal: row.signal, action: row.action, reason: row.reason,
+    mode: row.mode || 'enforce', revision: Number(row.revision) || 1,
     enabled: Boolean(row.enabled),
     permanent: row.duration_minutes == null,
     durationMinutes: row.duration_minutes == null ? null : Number(row.duration_minutes),
@@ -890,12 +964,18 @@ async function createSignalRule(input, actor = 'risk-admin') {
   const minutes = permanent ? null : Math.max(1, Math.min(43_200, Number(input.durationMinutes) || 60));
   const result = await pool.query(
     `INSERT INTO signal_rules
-      (site_key, signal, action, reason, enabled, duration_minutes, created_by, expires_at)
+      (site_key, signal, action, reason, enabled, duration_minutes, created_by, mode, expires_at)
      VALUES ($1,$2,$3,$4,TRUE,$5,$6,
+       CASE WHEN $8::text = 'shadow' THEN 'shadow' ELSE 'enforce' END,
        CASE WHEN $7::int > 0 THEN NOW() + ($7 * INTERVAL '1 minute') ELSE NULL END)
      RETURNING id`,
     [input.siteKey, input.signal, input.action, input.reason || '', minutes, actor,
-      Math.max(0, Math.min(525_600, Number(input.ruleExpiresMinutes) || 0))]
+      Math.max(0, Math.min(525_600, Number(input.ruleExpiresMinutes) || 0)), input.mode]
+  );
+  await pool.query(
+    `INSERT INTO signal_rule_revisions (rule_id,operation,snapshot,created_by)
+     SELECT id,'create',to_jsonb(signal_rules),$2 FROM signal_rules WHERE id=$1`,
+    [result.rows[0].id, actor]
   );
   await pool.query(
     `INSERT INTO admin_audits (actor, action, target, details)
@@ -913,6 +993,11 @@ async function setSignalRuleEnabled(id, enabled, actor = 'risk-admin') {
   );
   if (!result.rows[0]) return null;
   await pool.query(
+    `INSERT INTO signal_rule_revisions (rule_id,operation,snapshot,created_by)
+     SELECT id,$2,to_jsonb(signal_rules),$3 FROM signal_rules WHERE id=$1`,
+    [id, enabled ? 'enable' : 'disable', actor]
+  );
+  await pool.query(
     `INSERT INTO admin_audits (actor, action, target, details)
      VALUES ($1, 'set_signal_rule_enabled', $2, $3::jsonb)`,
     [actor, String(id), JSON.stringify({ enabled })]
@@ -922,6 +1007,11 @@ async function setSignalRuleEnabled(id, enabled, actor = 'risk-admin') {
 
 async function deleteSignalRule(id, actor = 'risk-admin') {
   if (!pool) return false;
+  await pool.query(
+    `INSERT INTO signal_rule_revisions (rule_id,operation,snapshot,created_by)
+     SELECT id,'delete',to_jsonb(signal_rules),$2 FROM signal_rules WHERE id=$1`,
+    [id, actor]
+  );
   const result = await pool.query('DELETE FROM signal_rules WHERE id = $1', [id]);
   await pool.query(
     `INSERT INTO admin_audits (actor, action, target, details)
@@ -934,14 +1024,342 @@ async function deleteSignalRule(id, actor = 'risk-admin') {
 async function listAdminAudits(limit = 100) {
   if (!pool) return [];
   const result = await pool.query(
-    `SELECT actor, action, target, details, created_at
+    `SELECT actor, action, target, details, source_ip, user_agent, created_at
        FROM admin_audits ORDER BY created_at DESC LIMIT $1`,
     [Math.max(1, Math.min(500, Number(limit) || 100))]
   );
   return result.rows.map(row => ({
     actor: row.actor, action: row.action, target: row.target,
-    details: row.details || {}, createdAt: row.created_at
+    details: row.details || {}, sourceIp: row.source_ip || '', userAgent: row.user_agent || '', createdAt: row.created_at
   }));
+}
+
+async function recordAdminAudit(actor, action, target, details = {}, context = {}) {
+  if (!pool) return;
+  await pool.query(
+    `INSERT INTO admin_audits (actor,action,target,details,source_ip,user_agent)
+     VALUES ($1,$2,$3,$4::jsonb,$5,$6)`,
+    [String(actor || 'unknown').slice(0, 120), String(action || '').slice(0, 120),
+      String(target || '').slice(0, 300), JSON.stringify(details || {}),
+      String(context.sourceIp || '').slice(0, 120), String(context.userAgent || '').slice(0, 500)]
+  );
+}
+
+async function getAdminCredential() {
+  if (!pool) return null;
+  const result = await pool.query(
+    'SELECT username,password_hash,credential_version,password_changed_at FROM admin_credentials WHERE id=1'
+  );
+  const row = result.rows[0];
+  return row ? {
+    username: row.username, passwordHash: row.password_hash,
+    credentialVersion: Number(row.credential_version) || 1,
+    passwordChangedAt: row.password_changed_at
+  } : null;
+}
+
+async function updateAdminCredential({ username, passwordHash }, context = {}) {
+  if (!pool) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await client.query(
+      `UPDATE admin_credentials SET username=$1,password_hash=$2,
+         credential_version=credential_version+1,password_changed_at=NOW(),updated_at=NOW()
+       WHERE id=1 RETURNING username,credential_version,password_changed_at`,
+      [username, passwordHash]
+    );
+    await client.query(
+      `UPDATE admin_sessions SET revoked_at=NOW(),revoke_reason='credentials_changed'
+       WHERE revoked_at IS NULL`,
+    );
+    await client.query(
+      `INSERT INTO admin_audits (actor,action,target,details,source_ip,user_agent)
+       VALUES ($1,'change_admin_credentials','admin-account',$2::jsonb,$3,$4)`,
+      [context.actor || username, JSON.stringify({ username, allSessionsRevoked: true }),
+        String(context.sourceIp || '').slice(0, 120), String(context.userAgent || '').slice(0, 500)]
+    );
+    await client.query('COMMIT');
+    return {
+      username: result.rows[0].username,
+      credentialVersion: Number(result.rows[0].credential_version),
+      passwordChangedAt: result.rows[0].password_changed_at
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally { client.release(); }
+}
+
+async function createAdminSessionRecord(input) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `INSERT INTO admin_sessions
+       (session_hash,username,csrf_token,source_ip,user_agent,credential_version,expires_at)
+     VALUES ($1,$2,$3,$4,$5,$6,to_timestamp($7 / 1000.0))
+     RETURNING id,created_at,last_seen_at,expires_at`,
+    [input.sessionHash, input.username, input.csrfToken, input.sourceIp || '', input.userAgent || '',
+      input.credentialVersion || 1, input.expiresAt]
+  );
+  return { id: Number(result.rows[0].id), ...result.rows[0] };
+}
+
+async function getAdminSessionRecord(sessionHash) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `SELECT s.id,s.username,s.csrf_token,s.source_ip,s.user_agent,s.created_at,s.last_seen_at,s.expires_at,
+            s.credential_version,c.credential_version AS current_credential_version
+       FROM admin_sessions s JOIN admin_credentials c ON c.id=1
+      WHERE s.session_hash=$1 AND s.revoked_at IS NULL AND s.expires_at>NOW()`,
+    [sessionHash]
+  );
+  const row = result.rows[0];
+  if (!row || Number(row.credential_version) !== Number(row.current_credential_version)) return null;
+  if (Date.now() - new Date(row.last_seen_at).getTime() > 60_000) {
+    await pool.query('UPDATE admin_sessions SET last_seen_at=NOW() WHERE id=$1', [row.id]);
+  }
+  return {
+    id: Number(row.id), username: row.username, csrfToken: row.csrf_token,
+    sourceIp: row.source_ip, userAgent: row.user_agent,
+    createdAt: row.created_at, lastSeenAt: row.last_seen_at, expiresAt: new Date(row.expires_at).getTime()
+  };
+}
+
+async function listAdminSessions(currentSessionHash) {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT id,session_hash,username,source_ip,user_agent,created_at,last_seen_at,expires_at,revoked_at,revoke_reason
+       FROM admin_sessions WHERE expires_at>NOW()-INTERVAL '30 days'
+      ORDER BY revoked_at NULLS FIRST,last_seen_at DESC LIMIT 200`
+  );
+  return result.rows.map(row => ({
+    id: Number(row.id), username: row.username, sourceIp: row.source_ip,
+    userAgent: row.user_agent, createdAt: row.created_at, lastSeenAt: row.last_seen_at,
+    expiresAt: row.expires_at, revokedAt: row.revoked_at, revokeReason: row.revoke_reason,
+    current: row.session_hash === currentSessionHash
+  }));
+}
+
+async function revokeAdminSession(id, currentSessionHash, actor, context = {}) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `UPDATE admin_sessions SET revoked_at=NOW(),revoke_reason='manual_revoke'
+      WHERE id=$1 AND revoked_at IS NULL RETURNING id,session_hash,username`, [id]
+  );
+  if (!result.rows[0]) return null;
+  await recordAdminAudit(actor, 'revoke_admin_session', String(id), {
+    revokedUsername: result.rows[0].username,
+    revokedCurrentSession: result.rows[0].session_hash === currentSessionHash
+  }, context);
+  return { id: Number(id), current: result.rows[0].session_hash === currentSessionHash };
+}
+
+async function revokeOtherAdminSessions(currentSessionHash, actor, context = {}) {
+  if (!pool) return 0;
+  const result = await pool.query(
+    `UPDATE admin_sessions SET revoked_at=NOW(),revoke_reason='revoke_other_sessions'
+      WHERE session_hash<>$1 AND revoked_at IS NULL AND expires_at>NOW()`, [currentSessionHash]
+  );
+  await recordAdminAudit(actor, 'revoke_other_admin_sessions', 'admin-sessions', { count: result.rowCount }, context);
+  return result.rowCount;
+}
+
+async function revokeAllAdminSessions(actor, context = {}) {
+  if (!pool) return 0;
+  const result = await pool.query(
+    `UPDATE admin_sessions SET revoked_at=NOW(),revoke_reason='revoke_all_sessions'
+      WHERE revoked_at IS NULL AND expires_at>NOW()`
+  );
+  await recordAdminAudit(actor, 'revoke_all_admin_sessions', 'admin-sessions', { count: result.rowCount }, context);
+  return result.rowCount;
+}
+
+async function revokeAdminSessionByHash(sessionHash, reason = 'logout') {
+  if (!pool) return false;
+  const result = await pool.query(
+    `UPDATE admin_sessions SET revoked_at=NOW(),revoke_reason=$2
+      WHERE session_hash=$1 AND revoked_at IS NULL`, [sessionHash, reason]
+  );
+  return result.rowCount > 0;
+}
+
+async function getDetectionCapabilities(range = '24h') {
+  const window = resolveRiskWindow(range);
+  const catalog = DetectionCatalog.list();
+  if (!pool) return { range: window.key, rangeLabel: window.label, items: catalog.map(item => ({ ...item, events: 0, visitors: 0, lastSeen: null })) };
+  const result = await pool.query(
+    `SELECT event_type,COUNT(*)::int AS events,COUNT(DISTINCT (site_key,visitor_hash))::int AS visitors,
+            MAX(occurred_at) AS last_seen
+       FROM risk_events WHERE TRUE ${timeWindowClause('created_at', window)} GROUP BY event_type`
+  );
+  const metrics = new Map(result.rows.map(row => [row.event_type, row]));
+  return {
+    range: window.key, rangeLabel: window.label,
+    items: catalog.map(item => {
+      const row = metrics.get(item.signal);
+      return { ...item, events: Number(row?.events) || 0, visitors: Number(row?.visitors) || 0, lastSeen: row?.last_seen || null };
+    })
+  };
+}
+
+function baselinePolicy() {
+  return { version: DecisionService.DEFAULT_POLICY_VERSION, name: '基础策略',
+    configuration: { thresholds: { observe: 25, silentChallenge: 50, strongChallenge: 75, deny: 90 } } };
+}
+
+async function getEffectivePolicy(siteKey = '') {
+  if (!pool) return baselinePolicy();
+  const result = await pool.query(
+    `SELECT p.name,p.version,p.configuration,p.active,p.created_at
+       FROM policies p LEFT JOIN sites s ON s.policy_id=p.id AND s.site_key=$1
+      WHERE p.id=s.policy_id OR p.active=TRUE
+      ORDER BY (p.id=s.policy_id) DESC,p.created_at DESC LIMIT 1`, [siteKey || '']
+  );
+  const row = result.rows[0];
+  return row ? { name: row.name, version: row.version, configuration: row.configuration || baselinePolicy().configuration,
+    active: Boolean(row.active), createdAt: row.created_at } : baselinePolicy();
+}
+
+async function listPolicies() {
+  if (!pool) return [baselinePolicy()];
+  const result = await pool.query('SELECT id,name,version,configuration,active,created_at FROM policies ORDER BY created_at DESC');
+  return result.rows.map(row => ({ id: Number(row.id), name: row.name, version: row.version,
+    configuration: row.configuration || {}, active: Boolean(row.active), createdAt: row.created_at }));
+}
+
+async function createPolicy(input, actor) {
+  if (!pool) return null;
+  const result = await pool.query(
+    `INSERT INTO policies(name,version,configuration,active) VALUES($1,$2,$3::jsonb,FALSE) RETURNING id`,
+    [input.name, input.version, JSON.stringify({ thresholds: input.thresholds })]
+  );
+  await recordAdminAudit(actor, 'create_policy_version', input.version, { thresholds: input.thresholds });
+  return Number(result.rows[0].id);
+}
+
+async function activatePolicy(id, actor) {
+  if (!pool) return null;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('UPDATE policies SET active=FALSE WHERE active=TRUE');
+    const result = await client.query('UPDATE policies SET active=TRUE WHERE id=$1 RETURNING id,version', [id]);
+    if (!result.rows[0]) { await client.query('ROLLBACK'); return null; }
+    await client.query('INSERT INTO admin_audits(actor,action,target,details) VALUES($1,\'activate_policy_version\',$2,\'{}\'::jsonb)', [actor, result.rows[0].version]);
+    await client.query('COMMIT');
+    return { id: Number(result.rows[0].id), version: result.rows[0].version };
+  } catch (error) { await client.query('ROLLBACK'); throw error; }
+  finally { client.release(); }
+}
+
+async function getDetectionQuality(range = '24h') {
+  const window = resolveRiskWindow(range);
+  if (!pool) return { range: window.key, rangeLabel: window.label, challenge: {}, decisions: [], manualCorrections: 0 };
+  const [challenge, decisions, corrections, signals] = await Promise.all([
+    pool.query(
+      `SELECT COUNT(*)::int AS total,COUNT(*) FILTER(WHERE succeeded)::int AS passed,
+              COUNT(*) FILTER(WHERE NOT succeeded)::int AS failed,
+              ROUND(AVG(elapsed_ms) FILTER(WHERE succeeded AND elapsed_ms IS NOT NULL))::int AS avg_ms,
+              PERCENTILE_CONT(0.95) WITHIN GROUP(ORDER BY elapsed_ms)
+                FILTER(WHERE succeeded AND elapsed_ms IS NOT NULL)::int AS p95_ms
+         FROM challenge_audits WHERE TRUE ${timeWindowClause('created_at', window)}`
+    ),
+    pool.query(
+      `WITH latest AS (SELECT DISTINCT ON(site_key,subject_hash) decision
+         FROM risk_decisions WHERE TRUE ${timeWindowClause('created_at', window)}
+         ORDER BY site_key,subject_hash,sequence DESC)
+       SELECT decision,COUNT(*)::int AS count FROM latest GROUP BY decision ORDER BY count DESC`
+    ),
+    pool.query(
+      `SELECT COUNT(*)::int AS count FROM manual_overrides
+        WHERE action='allow' ${timeWindowClause('created_at', window)}`
+    ),
+    pool.query(
+      `SELECT event_type,COUNT(*)::int AS count,COUNT(DISTINCT visitor_hash)::int AS visitors
+         FROM risk_events WHERE TRUE ${timeWindowClause('created_at', window)}
+        GROUP BY event_type ORDER BY count DESC LIMIT 12`
+    )
+  ]);
+  const row = challenge.rows[0] || {};
+  return {
+    range: window.key, rangeLabel: window.label,
+    challenge: { total: Number(row.total) || 0, passed: Number(row.passed) || 0,
+      failed: Number(row.failed) || 0, averageMs: Number(row.avg_ms) || 0, p95Ms: Number(row.p95_ms) || 0 },
+    decisions: decisions.rows.map(item => ({ decision: item.decision, count: Number(item.count) })),
+    manualCorrections: Number(corrections.rows[0]?.count) || 0,
+    topSignals: signals.rows.map(item => ({ signal: item.event_type, count: Number(item.count), visitors: Number(item.visitors) }))
+  };
+}
+
+async function getPipelineHealth() {
+  if (!pool) return { database: false, redis: Boolean(redis?.isReady), events5m: 0, decisions5m: 0, sites: [] };
+  const [summary, sites] = await Promise.all([
+    pool.query(`SELECT
+      (SELECT COUNT(*)::int FROM risk_events WHERE created_at>=NOW()-INTERVAL '5 minutes') AS events_5m,
+      (SELECT COUNT(*)::int FROM risk_decisions WHERE created_at>=NOW()-INTERVAL '5 minutes') AS decisions_5m,
+      (SELECT COUNT(*)::int FROM challenge_audits WHERE created_at>=NOW()-INTERVAL '5 minutes') AS challenges_5m`),
+    pool.query(`SELECT s.site_key,s.name,
+      (SELECT MAX(c.last_used_at) FROM api_clients c WHERE c.site_key=s.site_key) AS last_used_at,
+      (SELECT COUNT(*)::int FROM risk_events e WHERE e.site_key=s.site_key AND e.created_at>=NOW()-INTERVAL '24 hours') AS events_24h,
+      COALESCE((SELECT c.last_error FROM api_clients c WHERE c.site_key=s.site_key AND c.last_error<>'' ORDER BY c.last_used_at DESC NULLS LAST LIMIT 1),'') AS last_error
+      FROM sites s WHERE s.enabled=TRUE ORDER BY s.name`)
+  ]);
+  const row = summary.rows[0] || {};
+  return {
+    database: true, redis: Boolean(redis?.isReady), events5m: Number(row.events_5m) || 0,
+    decisions5m: Number(row.decisions_5m) || 0, challenges5m: Number(row.challenges_5m) || 0,
+    sites: sites.rows.map(item => ({ siteKey: item.site_key, name: item.name, lastUsedAt: item.last_used_at,
+      events24h: Number(item.events_24h) || 0, lastError: item.last_error || '',
+      stale: !item.last_used_at || Date.now() - new Date(item.last_used_at).getTime() > 12 * 60 * 60_000 }))
+  };
+}
+
+async function listIdentityEntries() {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT 'allow' AS list_type,id,site_key,subject_type,subject_hash,reason,expires_at,created_at FROM allowlists
+     UNION ALL
+     SELECT 'block' AS list_type,id,site_key,subject_type,subject_hash,reason,expires_at,created_at FROM blocklists
+     ORDER BY created_at DESC LIMIT 500`
+  );
+  return result.rows.map(row => ({ listType: row.list_type, id: Number(row.id), siteKey: row.site_key,
+    subjectType: row.subject_type, subjectHash: row.subject_hash, reason: row.reason,
+    expiresAt: row.expires_at, createdAt: row.created_at }));
+}
+
+async function saveIdentityEntry(input, actor) {
+  if (!pool) return null;
+  const table = input.listType === 'block' ? 'blocklists' : 'allowlists';
+  const result = await pool.query(
+    `INSERT INTO ${table} (site_key,subject_type,subject_hash,reason,expires_at)
+     VALUES ($1,$2,$3,$4,CASE WHEN $5::int>0 THEN NOW()+($5*INTERVAL '1 minute') ELSE NULL END)
+     ON CONFLICT(site_key,subject_type,subject_hash) DO UPDATE SET reason=EXCLUDED.reason,expires_at=EXCLUDED.expires_at
+     RETURNING id`,
+    [input.siteKey, input.subjectType, input.subjectHash, input.reason || '', Number(input.durationMinutes) || 0]
+  );
+  await recordAdminAudit(actor, `save_${input.listType}_entry`, `${input.siteKey}:${input.subjectHash}`, {
+    subjectType: input.subjectType, durationMinutes: Number(input.durationMinutes) || null
+  });
+  return Number(result.rows[0].id);
+}
+
+async function deleteIdentityEntry(listType, id, actor) {
+  if (!pool) return false;
+  const table = listType === 'block' ? 'blocklists' : 'allowlists';
+  const result = await pool.query(`DELETE FROM ${table} WHERE id=$1`, [id]);
+  if (result.rowCount) await recordAdminAudit(actor, `delete_${listType}_entry`, String(id));
+  return result.rowCount > 0;
+}
+
+async function listRuleRevisions(limit = 100) {
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT id,rule_id,operation,snapshot,created_by,created_at
+       FROM signal_rule_revisions ORDER BY created_at DESC LIMIT $1`,
+    [Math.max(1, Math.min(500, Number(limit) || 100))]
+  );
+  return result.rows.map(row => ({ id: Number(row.id), ruleId: Number(row.rule_id), operation: row.operation,
+    snapshot: row.snapshot || {}, createdBy: row.created_by, createdAt: row.created_at }));
 }
 
 function encryptedColumns(prefix, encrypted) {
@@ -2060,6 +2478,7 @@ async function close() {
 }
 
 function isReady() { return ready; }
+function hasDatabase() { return Boolean(pool); }
 
 module.exports = {
   initialize,
@@ -2088,7 +2507,28 @@ module.exports = {
   createSignalRule,
   setSignalRuleEnabled,
   deleteSignalRule,
+  listRuleRevisions,
   listAdminAudits,
+  recordAdminAudit,
+  getAdminCredential,
+  updateAdminCredential,
+  createAdminSessionRecord,
+  getAdminSessionRecord,
+  listAdminSessions,
+  revokeAdminSession,
+  revokeOtherAdminSessions,
+  revokeAllAdminSessions,
+  revokeAdminSessionByHash,
+  getDetectionCapabilities,
+  getDetectionQuality,
+  getPipelineHealth,
+  getEffectivePolicy,
+  listPolicies,
+  createPolicy,
+  activatePolicy,
+  listIdentityEntries,
+  saveIdentityEntry,
+  deleteIdentityEntry,
   getAlertSettings,
   saveAlertSettings,
   listAlertCandidates,
@@ -2130,5 +2570,6 @@ module.exports = {
   getRuleBackupRunForRetry,
   listRuleBackupRuns,
   close,
-  isReady
+  isReady,
+  hasDatabase
 };

@@ -1,15 +1,21 @@
 'use strict';
 
+const { LRUCache } = require('lru-cache');
 const { IS_PRODUCTION } = require('../config/env');
 const { ensureVisitorIdentity, getCookie } = require('./rateLimit');
 const BrowserChallengeService = require('../services/BrowserChallengeService');
 const BotRiskClient = require('../services/BotRiskClient');
+const reportedBrowserAccess = new LRUCache({ max: 100000, ttl: 30 * 60_000 });
 
 function requireBrowserAccess(req, res, next) {
   const visitorId = ensureVisitorIdentity(req, res);
   const token = getCookie(req, BrowserChallengeService.COOKIE_NAME);
   const access = BrowserChallengeService.verifyAccessToken(token, visitorId, req.get('user-agent') || '');
   req.browserAccess = access;
+  if (access && !reportedBrowserAccess.has(visitorId)) {
+    reportedBrowserAccess.set(visitorId, true);
+    BotRiskClient.enqueue(visitorId, 'valid_browser_access', { accessLevel: access.level || 'browser' });
+  }
   const decision = BotRiskClient.getDecision(visitorId);
   if (!BrowserChallengeService.isEnforced() || !decision?.enforce || access) return next();
   if (decision.decision === 'deny') {

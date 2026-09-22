@@ -116,7 +116,10 @@ function requireReadAccess(requiredScope) {
     if (record.visitorId !== visitorId || record.origin !== origin) {
       return sendReadAccessDenied(res, '读取凭证与当前访客不匹配');
     }
-    if (record.uses >= READ_TOKEN_MAX_USES) return sendReadAccessRequired(res, '读取凭证使用次数已达上限');
+    if (record.uses >= READ_TOKEN_MAX_USES) {
+      BotRiskClient.enqueue(visitorId, 'token_replay', { jti: payload.jti.slice(0, 12), uses: record.uses });
+      return sendReadAccessRequired(res, '读取凭证使用次数已达上限');
+    }
 
     if (requiredScope === 'links:detail') {
       VisitorRiskService.recordDetailRead(visitorId, Number(req.params.id));
@@ -135,6 +138,10 @@ function requireReadAccess(requiredScope) {
     }
 
     record.uses += 1;
+    if (!record.validReported) {
+      record.validReported = true;
+      BotRiskClient.enqueue(visitorId, 'valid_read_token', { scope: requiredScope });
+    }
     issuedReadTokens.set(payload.jti, record, {
       ttl: Math.max(1, record.expiresAt - Date.now())
     });

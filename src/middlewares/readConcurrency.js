@@ -1,6 +1,7 @@
 'use strict';
 
 const { IS_PRODUCTION } = require('../config/env');
+const BotRiskClient = require('../services/BotRiskClient');
 
 // 前端读取队列同样限制为 2；服务端硬上限防止绕过页面脚本后并发抓取。
 const MAX_CONCURRENT_READS = 2;
@@ -18,6 +19,7 @@ function limitReadConcurrency(req, res, next) {
 
   const activeCount = Number(activeReads.get(visitorId) || 0);
   if (activeCount >= MAX_CONCURRENT_READS) {
+    BotRiskClient.enqueue(visitorId, 'high_concurrency', { concurrency: activeCount + 1, limit: MAX_CONCURRENT_READS });
     res.set('Cache-Control', 'private, no-store');
     res.set('Retry-After', '1');
     return res.status(429).json({ code: 429, msg: IS_PRODUCTION ? '请求无法处理' : '当前页面读取任务较多，请稍后重试', data: null });

@@ -29,20 +29,22 @@ function script(req, res) {
 
 async function login(req, res) {
   const source = String(req.get('CF-Connecting-IP') || req.ip || 'unknown');
-  const session = await AdminAuthService.createSession(req.body?.username, req.body?.password, source);
+  const session = await AdminAuthService.createSession(req.body?.username, req.body?.password, {
+    sourceIp: source, userAgent: req.get('user-agent') || ''
+  });
   if (!session) return res.status(401).json({ code: 401, message: '账号或密码错误' });
   res.cookie(AdminAuthService.COOKIE_NAME, session.sessionId, AdminAuthService.cookieOptions());
   return res.json({ code: 200, data: { csrfToken: session.csrfToken, expiresAt: session.expiresAt } });
 }
 
-function session(req, res) {
-  const current = AdminAuthService.sessionFromRequest(req);
+async function session(req, res) {
+  const current = await AdminAuthService.sessionFromRequest(req);
   if (!current) return res.status(401).json({ code: 401, message: 'Unauthorized' });
   return res.json({ code: 200, data: { csrfToken: current.csrfToken, expiresAt: current.expiresAt } });
 }
 
-function logout(req, res) {
-  AdminAuthService.destroySession(req);
+async function logout(req, res) {
+  await AdminAuthService.destroySession(req);
   res.clearCookie(AdminAuthService.COOKIE_NAME, { ...AdminAuthService.cookieOptions(), maxAge: undefined });
   return res.json({ code: 200, message: '已退出' });
 }
@@ -181,6 +183,7 @@ async function previewRule(req, res) {
 async function createRule(req, res) {
   const input = req.body || {};
   input.permanent = input.permanent === true;
+  input.mode = input.mode === 'shadow' ? 'shadow' : 'enforce';
   const validRuleSite = input.siteKey === '*' || validSiteKey(input.siteKey);
   if (!validRuleSite || !/^[a-z0-9_-]{2,64}$/i.test(String(input.signal || ''))
     || !['allow', 'observe', 'silent_challenge', 'strong_challenge', 'deny'].includes(String(input.action || ''))) {
@@ -247,6 +250,123 @@ async function retryRuleBackup(req, res) {
 
 async function audits(req, res) {
   return res.json({ code: 200, data: await StorageService.listAdminAudits(req.query.limit) });
+}
+
+function adminRequestContext(req) {
+  return {
+    sourceIp: String(req.get('CF-Connecting-IP') || req.ip || 'unknown'),
+    userAgent: String(req.get('user-agent') || '')
+  };
+}
+
+async function detectionCapabilities(req, res) {
+  return res.json({ code: 200, data: await StorageService.getDetectionCapabilities(String(req.query.range || '24h')) });
+}
+
+async function detectionQuality(req, res) {
+  return res.json({ code: 200, data: await StorageService.getDetectionQuality(String(req.query.range || '24h')) });
+}
+
+async function pipelineHealth(req, res) {
+  return res.json({ code: 200, data: await StorageService.getPipelineHealth() });
+}
+
+async function identityEntries(req, res) {
+  return res.json({ code: 200, data: await StorageService.listIdentityEntries() });
+}
+
+async function saveIdentityEntry(req, res) {
+  const input = req.body || {};
+  if (!['allow', 'block'].includes(String(input.listType || ''))
+    || !(input.siteKey === '*' || validSiteKey(input.siteKey))
+    || !['visitor', 'bot_identity', 'ua', 'ja4', 'asn'].includes(String(input.subjectType || ''))
+    || !String(input.subjectHash || '').trim() || String(input.subjectHash).length > 300) {
+    return res.status(400).json({ code: 400, message: '名单参数无效' });
+  }
+  const id = await StorageService.saveIdentityEntry({
+    listType: input.listType, siteKey: input.siteKey, subjectType: input.subjectType,
+    subjectHash: String(input.subjectHash).trim(), reason: String(input.reason || '').trim().slice(0, 300),
+    durationMinutes: input.permanent === true ? 0 : Math.max(1, Math.min(525600, Number(input.durationMinutes) || 60))
+  }, actor(req));
+  return res.json({ code: 200, data: { id }, message: '名单项已保存' });
+}
+
+async function deleteIdentityEntry(req, res) {
+  const listType = String(req.params.listType || '');
+  if (!['allow', 'block'].includes(listType)) return res.status(400).json({ code: 400, message: '名单类型无效' });
+  const removed = await StorageService.deleteIdentityEntry(listType, Number(req.params.id), actor(req));
+  return removed ? res.json({ code: 200, message: '名单项已删除' })
+    : res.status(404).json({ code: 404, message: '名单项不存在' });
+}
+
+async function ruleRevisions(req, res) {
+  return res.json({ code: 200, data: await StorageService.listRuleRevisions(req.query.limit) });
+}
+
+async function policies(req, res) {
+  return res.json({ code: 200, data: await StorageService.listPolicies() });
+}
+
+async function createPolicy(req, res) {
+  const input = req.body || {};
+  const thresholds = input.thresholds || {};
+  const values = ['observe', 'silentChallenge', 'strongChallenge', 'deny'].map(key => Number(thresholds[key]));
+  if (!String(input.name || '').trim() || !/^[A-Za-z0-9_.-]{3,80}$/.test(String(input.version || ''))
+    || values.some(value => !Number.isInteger(value) || value < 0 || value > 100)
+    || !(values[0] < values[1] && values[1] < values[2] && values[2] < values[3])) {
+    return res.status(400).json({ code: 400, message: '策略名称、版本或递增阈值无效' });
+  }
+  const id = await StorageService.createPolicy({ name: String(input.name).trim().slice(0, 120),
+    version: String(input.version), thresholds: { observe: values[0], silentChallenge: values[1], strongChallenge: values[2], deny: values[3] } }, actor(req));
+  return res.json({ code: 200, data: { id }, message: '策略草稿版本已创建，尚未启用' });
+}
+
+async function activatePolicy(req, res) {
+  const data = await StorageService.activatePolicy(Number(req.params.id), actor(req));
+  return data ? res.json({ code: 200, data, message: `策略 ${data.version} 已启用` })
+    : res.status(404).json({ code: 404, message: '策略不存在' });
+}
+
+async function securityOverview(req, res) {
+  const [credential, sessions] = await Promise.all([
+    StorageService.getAdminCredential(), AdminAuthService.listSessions(req.riskAdmin)
+  ]);
+  return res.json({ code: 200, data: {
+    account: { username: credential?.username || req.riskAdmin.username, passwordChangedAt: credential?.passwordChangedAt || null },
+    sessions
+  } });
+}
+
+async function changeCredentials(req, res) {
+  try {
+    const result = await AdminAuthService.changeCredentials(
+      req.riskAdmin, req.body?.currentPassword, req.body?.username, req.body?.newPassword,
+      adminRequestContext(req)
+    );
+    if (!result) return res.status(403).json({ code: 403, message: '当前密码不正确' });
+    res.clearCookie(AdminAuthService.COOKIE_NAME, { ...AdminAuthService.cookieOptions(), maxAge: undefined });
+    return res.json({ code: 200, data: result, message: '账号密码已修改，所有登录设备已退出，请重新登录' });
+  } catch (error) {
+    return res.status(400).json({ code: 400, message: error.message });
+  }
+}
+
+async function revokeSession(req, res) {
+  const data = await AdminAuthService.revokeSession(req.riskAdmin, Number(req.params.id), adminRequestContext(req));
+  if (!data) return res.status(404).json({ code: 404, message: '会话不存在或已失效' });
+  if (data.current) res.clearCookie(AdminAuthService.COOKIE_NAME, { ...AdminAuthService.cookieOptions(), maxAge: undefined });
+  return res.json({ code: 200, data, message: data.current ? '当前会话已撤销' : '指定会话已撤销' });
+}
+
+async function revokeOtherSessions(req, res) {
+  const count = await AdminAuthService.revokeOtherSessions(req.riskAdmin, adminRequestContext(req));
+  return res.json({ code: 200, data: { count }, message: `已下线 ${count} 个其他会话` });
+}
+
+async function revokeAllSessions(req, res) {
+  const count = await AdminAuthService.revokeAllSessions(req.riskAdmin, adminRequestContext(req));
+  res.clearCookie(AdminAuthService.COOKIE_NAME, { ...AdminAuthService.cookieOptions(), maxAge: undefined });
+  return res.json({ code: 200, data: { count }, message: `已下线全部 ${count} 个会话` });
 }
 
 async function alertSettings(req, res) {
@@ -417,7 +537,9 @@ module.exports = {
   page, stylesheet, script, login, session, logout, overview, sites, setSiteStatus,
   saveIntegration, setSiteControls, setClientStatus, rotateClientSecret,
   riskSummary, suspects, suspectDetail, setSuspectAction, clearSuspectAction,
-  rules, previewRule, createRule, setRuleStatus, deleteRule, audits,
+  rules, previewRule, createRule, setRuleStatus, deleteRule, ruleRevisions, policies, createPolicy, activatePolicy, audits,
+  detectionCapabilities, detectionQuality, pipelineHealth, identityEntries, saveIdentityEntry, deleteIdentityEntry,
+  securityOverview, changeCredentials, revokeSession, revokeOtherSessions, revokeAllSessions,
   alertSettings, saveAlertSettings, alertActivity, testAlert,
   ruleBackupSettings, saveRuleBackupSettings, ruleBackupStatus, testRuleBackup, runRuleBackup, retryRuleBackup,
   maintenanceProjects, maintenanceSites, checkMaintenanceProjects, setMaintenanceProjectStatus,
