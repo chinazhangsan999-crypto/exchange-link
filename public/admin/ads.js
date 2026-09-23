@@ -106,12 +106,13 @@
     let modal = document.querySelector('#ad-modal');
     if (modal) return modal;
     modal = document.createElement('div'); modal.id = 'ad-modal'; modal.className = 'modal';
-    modal.innerHTML = `<form id="ad-form" class="dialog dialog-wide"><h3 id="ad-form-title">新增广告</h3><input type="hidden" name="id"><div class="form-grid"><label>广告类型<select name="ad_type" required><option value="normal">普通图链</option><option value="code">代码联盟</option></select></label><label>广告位置<select name="ad_position" required><option value="banner" data-kind="normal">常规横幅</option><option value="icon" data-kind="normal">网格图标</option><option value="top_float" data-kind="code">顶部悬浮</option><option value="bottom_float" data-kind="code">底部悬浮</option><option value="icon_float" data-kind="code">图标悬浮</option></select></label><label class="platform-field">显示端<select name="platform" required><option value="all">全部显示</option><option value="pc">仅电脑端</option><option value="ios">仅 iOS 端</option><option value="non_ios">非 iOS 端</option><option value="android">仅安卓端</option><option value="harmony">仅鸿蒙端</option></select><span class="hint platform-note">仅普通图链支持设备定向</span></label><label>排序权重<input name="sort_order" type="number" min="0" max="999999" step="1" value="0" required></label><label class="full">广告标题<input name="title" maxlength="80" required placeholder="例如：合作品牌"></label><label class="full">广告介绍 <span class="hint">（选填）</span><textarea name="description" maxlength="300" placeholder="鼠标悬浮时显示；留空则不显示提示"></textarea></label><label class="full code-field">自定义代码 <span class="hint">（代码联盟必填，支持联盟提供的完整代码）</span><textarea name="ad_code" class="code-editor" placeholder="粘贴第三方 HTML 或 JavaScript 代码"></textarea></label><label class="full image-field">图片链接 <span class="hint">（普通图链必填）</span><input name="image_url" type="url" placeholder="https://example.com/image.jpg"></label><label class="full target-field">广告链接 <span class="hint">（普通图链必填）</span><input name="target_url" type="url" placeholder="https://example.com/"></label></div><div class="dialog-foot"><button id="close-ad-modal" type="button" class="button ghost">取消</button><button type="submit" class="button">保存广告</button></div></form>`;
+    modal.innerHTML = `<form id="ad-form" class="dialog dialog-wide"><h3 id="ad-form-title">新增广告</h3><input type="hidden" name="id"><div class="form-grid"><label>广告类型<select name="ad_type" required><option value="normal">普通图链</option><option value="code">代码联盟</option></select></label><label>广告位置<select name="ad_position" required><option value="banner" data-kind="normal">常规横幅</option><option value="icon" data-kind="normal">网格图标</option><option value="top_float" data-kind="code">顶部悬浮</option><option value="bottom_float" data-kind="code">底部悬浮</option><option value="icon_float" data-kind="code">图标悬浮</option></select><span class="hint code-position-note"></span></label><label class="platform-field">显示端<select name="platform" required><option value="all">全部显示</option><option value="pc">仅电脑端</option><option value="ios">仅 iOS 端</option><option value="non_ios">非 iOS 端</option><option value="android">仅安卓端</option><option value="harmony">仅鸿蒙端</option></select><span class="hint platform-note">仅普通图链支持设备定向</span></label><label>排序权重<input name="sort_order" type="number" min="0" max="999999" step="1" value="0" required></label><label class="full code-render-field">代码加载方式<select name="render_mode"><option value="sandbox">沙箱 iframe（推荐）</option><option value="direct">加载后复制到主页面执行</option></select><span class="hint">两种方式都通过上方独立广告 API 域名加载；沙箱由系统固定位置，主页面执行由代码自己决定位置。</span></label><label class="full">广告标题<input name="title" maxlength="80" required placeholder="例如：合作品牌"></label><label class="full">广告介绍 <span class="hint">（选填）</span><textarea name="description" maxlength="300" placeholder="鼠标悬浮时显示；留空则不显示提示"></textarea></label><label class="full code-field">自定义代码 <span class="hint">（代码联盟必填，支持联盟提供的完整代码）</span><textarea name="ad_code" class="code-editor" placeholder="粘贴第三方 HTML 或 JavaScript 代码"></textarea></label><label class="full image-field">图片链接 <span class="hint">（普通图链必填）</span><input name="image_url" type="url" placeholder="https://example.com/image.jpg"></label><label class="full target-field">广告链接 <span class="hint">（普通图链必填）</span><input name="target_url" type="url" placeholder="https://example.com/"></label></div><div class="dialog-foot"><button id="close-ad-modal" type="button" class="button ghost">取消</button><button type="submit" class="button">保存广告</button></div></form>`;
     document.body.append(modal);
     modal.querySelector('#close-ad-modal').onclick = () => modal.classList.remove('open');
     modal.onclick = event => { if (event.target === modal) modal.classList.remove('open'); };
     const form = modal.querySelector('#ad-form');
     form.elements.ad_type.addEventListener('change', () => updateAdModeFields(form));
+    form.elements.render_mode.addEventListener('change', () => updateAdModeFields(form));
     form.onsubmit = saveAd;
     return modal;
   }
@@ -129,15 +130,19 @@
     form.elements.target_url.required = !isCode;
     form.querySelector('.code-field')?.classList.toggle('is-required', isCode);
     form.querySelector('.code-field')?.classList.toggle('field-hidden', !isCode);
+    form.querySelector('.code-render-field')?.classList.toggle('field-hidden', !isCode);
     form.querySelector('.image-field')?.classList.toggle('field-hidden', isCode);
     form.querySelector('.target-field')?.classList.toggle('field-hidden', isCode);
     form.querySelector('.platform-field')?.classList.toggle('field-disabled', isCode);
+    const note = form.querySelector('.code-position-note');
+    if (note) note.textContent = isCode && form.elements.render_mode.value === 'direct' ? 'Direct 模式仅作分类，实际位置由代码决定' : '';
   }
 
   function openModal(ad = null) {
     const modal = ensureModal(), form = modal.querySelector('#ad-form'); form.reset();
     form.elements.id.value = ad?.id || ''; form.elements.ad_type.value = ad?.ad_type || 'normal'; form.elements.ad_position.value = ad?.ad_position || (ad?.ad_type === 'code' ? 'top_float' : 'banner'); form.elements.platform.value = ad?.platform || 'all'; form.elements.title.value = ad?.title || '';
     form.elements.description.value = ad?.description || ''; form.elements.ad_code.value = ad?.ad_code || ''; form.elements.image_url.value = ad?.image_url || ''; form.elements.target_url.value = ad?.target_url || ''; form.elements.sort_order.value = Number(ad?.sort_order || 0);
+    form.elements.render_mode.value = ad ? (ad.render_mode === 'sandbox' ? 'sandbox' : 'direct') : 'sandbox';
     updateAdModeFields(form);
     modal.querySelector('#ad-form-title').textContent = ad ? '编辑广告' : '新增广告'; modal.classList.add('open');
   }
@@ -147,13 +152,20 @@
     const typeName = { normal: '普通图链', code: '代码联盟' };
     const positionName = { banner: '常规横幅', icon: '网格图标', top_float: '顶部悬浮', bottom_float: '底部悬浮', icon_float: '图标悬浮' };
     const platformName = { all: '全部显示', pc: '仅电脑端', ios: '仅 iOS', non_ios: '非 iOS', android: '仅安卓', harmony: '仅鸿蒙' };
-    body.innerHTML = rows.map(ad => `<tr><td class="ad-title-cell"><b title="${esc(ad.title)}">${esc(ad.title)}</b><small title="${esc(ad.description || '')}">${ad.ad_type === 'code' ? '已配置自定义代码' : (ad.description ? '已填写悬浮介绍' : '普通图链')}</small></td><td><span class="ad-type-pill ${esc(ad.ad_type)}">${typeName[ad.ad_type] || '普通图链'}</span></td><td><span class="ad-platform-pill">${positionName[ad.ad_position] || '—'}</span></td><td><span class="ad-platform-pill ${esc(ad.platform || 'all')}">${ad.ad_type === 'code' ? '全部显示' : (platformName[ad.platform] || '全部显示')}</span></td><td><b>${Number(ad.sort_order || 0)}</b></td><td><span class="tag ${Number(ad.status) ? 'ad-status-on' : 'ad-status-off'}">${Number(ad.status) ? '启用' : '停用'}</span></td><td>${ad.target_url ? `<a class="ad-target-cell" href="${esc(ad.target_url)}" target="_blank" rel="noopener" title="${esc(ad.target_url)}">${esc(ad.target_url)}</a>` : '<span class="hint">代码内定义</span>'}</td><td><div class="actions"><button type="button" class="action ad-edit" data-id="${ad.id}">编辑</button><button type="button" class="action ad-toggle" data-id="${ad.id}" data-status="${Number(ad.status) ? 0 : 1}">${Number(ad.status) ? '停用' : '启用'}</button><button type="button" class="action delete ad-delete" data-id="${ad.id}">删除</button></div></td></tr>`).join('') || '<tr><td colspan="8" class="hint">暂无广告；未配置时前台不会产生任何留白。</td></tr>';
+    body.innerHTML = rows.map(ad => {
+      const central = ad.managed_by === 'central';
+      const syncText = central ? '总后台下发' : ({synced:'已同步总后台',pending:'待同步',error:'同步失败'}[ad.edge_sync_status] || '未同步');
+      const actions = central
+        ? '<span class="hint">请在总后台管理</span>'
+        : `<div class="actions"><button type="button" class="action ad-edit" data-id="${ad.id}">编辑</button><button type="button" class="action ad-toggle" data-id="${ad.id}" data-status="${Number(ad.status) ? 0 : 1}">${Number(ad.status) ? '停用' : '启用'}</button><button type="button" class="action delete ad-delete" data-id="${ad.id}">删除</button></div>`;
+      return `<tr><td class="ad-title-cell"><b title="${esc(ad.title)}">${esc(ad.title)}</b><small title="${esc(ad.description || '')}">${ad.ad_type === 'code' ? '已配置自定义代码' : (ad.description ? '已填写悬浮介绍' : '普通图链')}</small></td><td><span class="ad-platform-pill">${central ? '总后台' : '本站'}</span></td><td><span class="ad-type-pill ${esc(ad.ad_type)}">${typeName[ad.ad_type] || '普通图链'}</span></td><td><span class="ad-platform-pill">${positionName[ad.ad_position] || '—'}</span></td><td><span class="ad-platform-pill ${esc(ad.platform || 'all')}">${ad.ad_type === 'code' ? '全部显示' : (platformName[ad.platform] || '全部显示')}</span></td><td>${ad.ad_type === 'code' ? (ad.render_mode === 'sandbox' ? '沙箱 iframe' : '主页面执行') : '—'}</td><td>${syncText}</td><td><b>${Number(ad.sort_order || 0)}</b></td><td><span class="tag ${Number(ad.status) ? 'ad-status-on' : 'ad-status-off'}">${Number(ad.status) ? '启用' : '停用'}</span></td><td>${ad.target_url ? `<a class="ad-target-cell" href="${esc(ad.target_url)}" target="_blank" rel="noopener" title="${esc(ad.target_url)}">${esc(ad.target_url)}</a>` : '<span class="hint">代码内定义</span>'}</td><td>${actions}</td></tr>`;
+    }).join('') || '<tr><td colspan="11" class="hint">暂无广告；未配置时前台不会产生任何留白。</td></tr>';
     body.querySelectorAll('.ad-edit').forEach(button => button.onclick = () => openModal(rows.find(ad => Number(ad.id) === Number(button.dataset.id))));
     body.querySelectorAll('.ad-toggle').forEach(button => button.onclick = () => toggleAd(button));
     body.querySelectorAll('.ad-delete').forEach(button => button.onclick = () => removeAd(button));
   }
 
-  async function loadAds() { if (!hasSession()) return; try { rows = await request('/api/admin/ads'); render(); } catch (error) { notify(error.message); } }
+  async function loadAds() { if (!hasSession()) return; try { [rows] = await Promise.all([request('/api/admin/ads'), loadAdEdgeStatus()]); render(); } catch (error) { notify(error.message); } }
   async function saveAd(event) { event.preventDefault(); const form = event.currentTarget, data = Object.fromEntries(new FormData(form)); const id = data.id; delete data.id; data.sort_order = Number(data.sort_order); if (data.ad_type === 'code') data.platform = 'all'; const current = id ? rows.find(ad => Number(ad.id) === Number(id)) : null; data.status = current ? Number(current.status) : 1; try { await request(id ? `/api/admin/ads/${id}` : '/api/admin/ads', { method: id ? 'PUT' : 'POST', body: JSON.stringify(data) }); form.closest('.modal').classList.remove('open'); notify(id ? '广告已更新' : '广告已新增'); await loadAds(); } catch (error) { notify(error.message); } }
   async function toggleAd(button) { try { await request(`/api/admin/ads/${button.dataset.id}/status`, { method: 'PATCH', body: JSON.stringify({ status: Number(button.dataset.status) }) }); notify(Number(button.dataset.status) ? '广告已启用' : '广告已停用'); await loadAds(); } catch (error) { notify(error.message); } }
   async function removeAd(button) { if (!confirm('确定删除这条广告吗？')) return; try { await request(`/api/admin/ads/${button.dataset.id}`, { method: 'DELETE' }); notify('广告已删除'); await loadAds(); } catch (error) { notify(error.message); } }
@@ -162,10 +174,29 @@
     const table = document.querySelector('#ads table');
     if (!table) return;
     table.className = 'admin-ad-table';
-    table.querySelector('thead').innerHTML = '<tr><th>广告标题</th><th>类型</th><th>位置</th><th>显示端</th><th>排序</th><th>状态</th><th>目标链接</th><th>操作</th></tr>';
+    table.querySelector('thead').innerHTML = '<tr><th>广告标题</th><th>来源</th><th>类型</th><th>位置</th><th>显示端</th><th>加载方式</th><th>同步状态</th><th>排序</th><th>状态</th><th>目标链接</th><th>操作</th></tr>';
   }
 
-  ensureStyle(); ensureMirrorPanel(); ensureMirrorsNav(); ensureAdsTableStructure(); document.querySelector('#open-ad-modal')?.addEventListener('click', () => openModal());
+  function ensureAdEdgePanel() {
+    if (document.querySelector('#ad-edge-panel')) return;
+    const box = document.createElement('div'); box.id = 'ad-edge-panel'; box.className = 'box ad-edge-panel';
+    box.innerHTML = '<div class="box-head"><div><h2>广告 API</h2><p class="hint">普通图文由本站直接输出，仅将配置同步到总后台；所有代码广告经独立广告 API 加载。总后台广告自动下发，本站广告可手动补同步。</p></div><div class="actions"><button id="sync-local-code-ads" type="button" class="button ghost">同步本站广告</button><button id="check-ad-edge" type="button" class="button ghost">检查连接</button></div></div><div class="ad-edge-status-grid"><div><small>API 域名</small><b id="ad-edge-origin">读取中…</b></div><div><small>导航站同步状态</small><b id="ad-edge-sync">读取中…</b></div><div><small>Worker 版本</small><b id="ad-edge-version">—</b></div><div><small>最近同步</small><b id="ad-edge-time">—</b></div></div>';
+    document.querySelector('#ads')?.prepend(box);
+    box.querySelector('#check-ad-edge').onclick = async () => { try { await request('/api/admin/ads/edge-status/check', { method: 'POST' }); notify('广告 API 连接正常'); } catch (error) { notify(error.message); } };
+    box.querySelector('#sync-local-code-ads').onclick = async event => { const button = event.currentTarget; try { button.disabled = true; button.textContent = '同步中…'; const result = await request('/api/admin/ads/edge-status/sync', { method: 'POST' }); notify(result.failed ? `同步完成：成功 ${result.synced} 条，失败 ${result.failed} 条` : `已同步 ${result.synced} 条本站广告`); await loadAds(); } catch (error) { notify(error.message); } finally { button.disabled = false; button.textContent = '同步本站广告'; } };
+  }
+
+  async function loadAdEdgeStatus() {
+    const data = await request('/api/admin/ads/edge-status');
+    const set = (id, value) => { const node = document.querySelector(id); if (node) node.textContent = value; };
+    set('#ad-edge-origin', data.origin || '尚未配置');
+    set('#ad-edge-sync', data.configured ? (data.connected ? '已同步' : '已配置，等待连接') : '尚未配置');
+    set('#ad-edge-version', data.workerVersion || '—');
+    set('#ad-edge-time', data.lastSyncedAt ? new Date(data.lastSyncedAt).toLocaleString('zh-CN') : '—');
+    return data;
+  }
+
+  ensureStyle(); ensureMirrorPanel(); ensureMirrorsNav(); ensureAdEdgePanel(); ensureAdsTableStructure(); document.querySelector('#open-ad-modal')?.addEventListener('click', () => openModal());
   window.loadAdminAds = loadAds;
   window.loadAdminMirrors = loadMirrors;
 })();

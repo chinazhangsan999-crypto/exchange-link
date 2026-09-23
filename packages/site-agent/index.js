@@ -97,6 +97,39 @@ function createControlCenterAgent(options) {
     return validateHeartbeatResult(payload.data);
   }
 
+  async function syncLocalAd(localAdId, data) {
+    const response = await request(`/api/agent/local-ads/${encodeURIComponent(localAdId)}`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data)
+    });
+    assertResponseProtocol(response);
+    if (!response.ok && data?.ad_type === 'code' && response.status === 404) {
+      const legacy = await request(`/api/agent/local-code-ads/${encodeURIComponent(localAdId)}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(data)
+      });
+      assertResponseProtocol(legacy);
+      if (!legacy.ok) await responseError(legacy, '本站广告同步失败');
+      return validateSuccessEnvelope(await legacy.json()).data;
+    }
+    if (!response.ok) await responseError(response, '本站广告同步失败');
+    return validateSuccessEnvelope(await response.json()).data;
+  }
+
+  async function deleteLocalAd(localAdId) {
+    const response = await request(`/api/agent/local-ads/${encodeURIComponent(localAdId)}`, { method: 'DELETE' });
+    assertResponseProtocol(response);
+    if (!response.ok && response.status === 404) {
+      const legacy = await request(`/api/agent/local-code-ads/${encodeURIComponent(localAdId)}`, { method: 'DELETE' });
+      assertResponseProtocol(legacy);
+      if (!legacy.ok) await responseError(legacy, '本站广告删除同步失败');
+      return validateSuccessEnvelope(await legacy.json()).data;
+    }
+    if (!response.ok) await responseError(response, '本站广告删除同步失败');
+    return validateSuccessEnvelope(await response.json()).data;
+  }
+
+  const syncLocalCodeAd = syncLocalAd;
+  const deleteLocalCodeAd = deleteLocalAd;
+
   async function syncConfig() {
     const headers = etag ? { 'if-none-match': etag } : {};
     const response = await request('/api/agent/config', { headers });
@@ -118,7 +151,10 @@ function createControlCenterAgent(options) {
 
   async function tick() {
     try {
-      const results = await Promise.allSettled([heartbeat(), syncConfig()]);
+      const results = await Promise.allSettled([
+        heartbeat().then(result => { options.onHeartbeat?.(result); return result; }),
+        syncConfig()
+      ]);
       for (const result of results) if (result.status === 'rejected') options.onError?.(result.reason);
     }
     finally { if (!stopped) timer = setTimeout(tick, options.intervalMs || 60_000); }
@@ -187,6 +223,10 @@ function createControlCenterAgent(options) {
     stop,
     heartbeat,
     syncConfig,
+    syncLocalCodeAd,
+    deleteLocalCodeAd,
+    syncLocalAd,
+    deleteLocalAd,
     destroy: () => { stop(); clearInterval(cleanup); exchanges.clear(); },
     getAppliedRevision: () => appliedRevision
   };

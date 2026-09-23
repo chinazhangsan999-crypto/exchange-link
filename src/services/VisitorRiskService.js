@@ -1,6 +1,7 @@
 'use strict';
 
 const { LRUCache } = require('lru-cache');
+const { isbot, isbotMatch } = require('isbot');
 
 const VISITOR_RISK_TTL_MS = 24 * 60 * 60 * 1000;
 const REPEAT_TRAP_WINDOW_MS = 60 * 1000;
@@ -95,8 +96,15 @@ function recordBootstrapSignals(visitorId, metadata = {}, now = Date.now()) {
     newSignals.push('known_ai_crawler');
     points += 100;
   }
+  const crawlerMatch = !aiCrawler && !SCRIPT_USER_AGENT.test(userAgent) && isbot(userAgent)
+    ? String(isbotMatch(userAgent) || 'crawler').slice(0, 120) : '';
+  if (crawlerMatch && !flags.has('known-crawler-ua')) {
+    flags.add('known-crawler-ua');
+    newSignals.push('known_crawler_ua');
+    points += 35;
+  }
 
-  record = addRiskScore({ ...record, signalFlags: [...flags], newSignals, aiCrawler }, points, now);
+  record = addRiskScore({ ...record, signalFlags: [...flags], newSignals, aiCrawler, crawlerMatch }, points, now);
   return saveRecord(key, record);
 }
 

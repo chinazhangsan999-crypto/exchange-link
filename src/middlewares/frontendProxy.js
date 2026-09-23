@@ -48,6 +48,7 @@ async function acceptTrustedFrontendProxy(req, res, next) {
     }
     req.verifiedClientIp = result.clientIp;
     req.trustedFrontendOrigin = result.origin;
+    req.edgeConfirmedBot = result.confirmedBot === true;
     return next();
   } catch (error) {
     console.error('[Frontend Proxy] 验签失败：', error.message);

@@ -1,6 +1,10 @@
 'use strict';
 
 (() => {
+  const runtimeConfig = (() => {
+    try { return JSON.parse(document.querySelector('#webring-runtime-config')?.textContent || '{}'); }
+    catch { return {}; }
+  })();
   const CODE_AD_SLOW_MS = 3000;
   const CODE_AD_TIMEOUT_MS = 8000;
   const DIAGNOSTIC_SUCCESS_SAMPLE_RATE = 0.05;
@@ -11,6 +15,16 @@
       return /^https?:$/.test(url.protocol) ? url.href : '';
     } catch { return ''; }
   };
+
+  async function verifyCodeIntegrity(code, expected) {
+    if (!/^sha256:[a-f0-9]{64}$/i.test(`sha256:${String(expected || '').replace(/^sha256:/i, '')}`)) {
+      throw new Error('广告代码完整性摘要无效');
+    }
+    if (!window.crypto?.subtle) throw new Error('当前浏览器无法校验广告代码完整性');
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(code));
+    const actual = [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('');
+    if (actual !== String(expected).replace(/^sha256:/i, '').toLowerCase()) throw new Error('广告代码完整性校验失败');
+  }
 
   const fallbackCover = title => {
     const text = String(title || '荐').trim().slice(0, 2).replace(/[&<>"']/g, '');
@@ -48,8 +62,20 @@
   function normalizeCode(source) {
     return (Array.isArray(source) ? source : []).map(item => ({
       id: Number(item.id),
-      markup: String(item.markup || item.ad_code || '')
-    })).filter(item => item.id > 0 && item.markup);
+      mode: item.render_mode === 'sandbox' ? 'sandbox' : 'direct',
+      loaderUrl: safeUrl(item.loader_url),
+      frameUrl: safeUrl(item.frame_url),
+      frameNonce: String(item.frame_nonce || ''),
+      sandboxOptions: item.sandbox_options && typeof item.sandbox_options === 'object'
+        ? item.sandbox_options : {}
+    })).filter(item => {
+      const url = item.mode === 'sandbox' ? item.frameUrl : item.loaderUrl;
+      let matchesApi = false;
+      try { matchesApi = !runtimeConfig.ad_api_origin || new URL(url).origin === new URL(runtimeConfig.ad_api_origin).origin; }
+      catch {}
+      return item.id > 0 && runtimeConfig.ad_api_enabled !== false && matchesApi
+        && (item.mode === 'sandbox' ? item.frameUrl && item.frameNonce : item.loaderUrl);
+    });
   }
 
   function providerHostFromMarkup(markup) {
@@ -62,7 +88,7 @@
     return {
       adId: item.id,
       phase,
-      providerHost: providerHostFromMarkup(item.markup),
+      providerHost: (() => { try { return new URL(item.loaderUrl || item.frameUrl).hostname; } catch { return ''; } })(),
       startedAt,
       deadlineAt: startedAt + CODE_AD_TIMEOUT_MS,
       bootstrapStatus: 'pending',
@@ -354,7 +380,11 @@
       console.info(`[Showcase] 联盟代码加载偏慢：ID ${item.id}，阶段 ${phase}`);
     }, CODE_AD_SLOW_MS);
     try {
-      await mountMarkup(document.body, item.markup, runtime);
+      const response = await fetch(item.loaderUrl, { mode: 'cors', credentials: 'omit', cache: 'no-store' });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || typeof payload?.code !== 'string' || !payload.code) throw new Error(payload?.message || `广告代码加载失败（${response.status}）`);
+      await verifyCodeIntegrity(payload.code, payload.integrity);
+      await mountMarkup(document.body, payload.code, runtime);
       await waitForExternalScripts(runtime);
       if (runtime.bootstrapStatus === 'pending') runtime.bootstrapStatus = 'success';
     } catch (error) {
@@ -367,11 +397,92 @@
     }
   }
 
+  function sandboxClass(phase) {
+    if (phase === 'top_float') return 'showcase-sandbox-stack showcase-sandbox-top';
+    if (phase === 'bottom_float') return 'showcase-sandbox-stack showcase-sandbox-bottom';
+    return 'showcase-sandbox-stack showcase-sandbox-icon';
+  }
+
+  function updateSandboxOffsets() {
+    const top = document.querySelector('[data-showcase-sandbox-slot="top_float"]');
+    const bottom = document.querySelector('[data-showcase-sandbox-slot="bottom_float"]');
+    const topHeight = top?.childElementCount ? Math.ceil(top.getBoundingClientRect().height) : 0;
+    const bottomHeight = bottom?.childElementCount ? Math.ceil(bottom.getBoundingClientRect().height) : 0;
+    document.documentElement.style.setProperty('--showcase-top-offset', `${topHeight}px`);
+    document.documentElement.style.setProperty('--showcase-bottom-offset', `${bottomHeight}px`);
+    document.body.classList.toggle('showcase-has-top-slot', topHeight > 0);
+    document.body.classList.toggle('showcase-has-bottom-slot', bottomHeight > 0);
+  }
+
+  function ensureSandboxSlot(phase) {
+    let slot = document.querySelector(`[data-showcase-sandbox-slot="${phase}"]`);
+    if (slot) return slot;
+    slot = document.createElement('div');
+    slot.className = sandboxClass(phase);
+    slot.dataset.showcaseSandboxSlot = phase;
+    slot.setAttribute('role', 'region');
+    slot.setAttribute('aria-label', phase === 'top_float' ? '顶部推广内容' : phase === 'bottom_float' ? '底部推广内容' : '侧边推广内容');
+    document.body.append(slot);
+    if (phase !== 'icon_float' && 'ResizeObserver' in window) new ResizeObserver(updateSandboxOffsets).observe(slot);
+    updateSandboxOffsets();
+    return slot;
+  }
+
+  function removeSandboxFrame(iframe, phase) {
+    const slot = iframe.parentElement;
+    iframe.remove();
+    if (slot && !slot.childElementCount) slot.remove();
+    if (phase !== 'icon_float') updateSandboxOffsets();
+  }
+
+  function runSandboxAd(item, phase) {
+    const options = item.sandboxOptions || {};
+    const iframe = document.createElement('iframe');
+    iframe.className = 'showcase-sandbox-frame';
+    iframe.dataset.showcaseId = String(item.id);
+    iframe.src = item.frameUrl;
+    iframe.loading = phase === 'icon_float' ? 'lazy' : 'eager';
+    iframe.referrerPolicy = 'no-referrer';
+    iframe.title = '推广内容';
+    iframe.setAttribute('sandbox', [
+      'allow-scripts',
+      options.allow_popups === false ? '' : 'allow-popups allow-popups-to-escape-sandbox',
+      options.allow_forms === true ? 'allow-forms' : ''
+    ].filter(Boolean).join(' '));
+    iframe.style.height = `${Math.min(800, Math.max(50, Number(options.initial_height) || 120))}px`;
+    const startedAt = Date.now();
+    const timeout = window.setTimeout(() => {
+      console.warn(`[Showcase] 沙箱广告加载超时：ID ${item.id}`);
+      removeSandboxFrame(iframe, phase);
+    }, Math.min(30000, Math.max(1000, Number(options.timeout_ms) || CODE_AD_TIMEOUT_MS)));
+    const onMessage = event => {
+      if (event.source !== iframe.contentWindow) return;
+      const data = event.data;
+      if (!data || data.nonce !== item.frameNonce || Number(data.ad_id) !== item.id) return;
+      if (data.type === 'ad-ready') clearTimeout(timeout);
+      if (data.type === 'ad-resize' && options.auto_height !== false) {
+        const height = Math.min(800, Math.max(50, Number(data.height) || 0));
+        if (height) iframe.style.height = `${height}px`;
+      }
+      if (data.type === 'ad-error') console.warn(`[Showcase] 沙箱广告运行失败：ID ${item.id}`);
+    };
+    window.addEventListener('message', onMessage);
+    iframe.addEventListener('load', () => clearTimeout(timeout), { once: true });
+    iframe.addEventListener('error', () => { clearTimeout(timeout); removeSandboxFrame(iframe, phase); }, { once: true });
+    ensureSandboxSlot(phase).append(iframe);
+    updateSandboxOffsets();
+    window.setTimeout(() => {
+      if (!iframe.isConnected) window.removeEventListener('message', onMessage);
+      if (Date.now() - startedAt > 60000) window.removeEventListener('message', onMessage);
+    }, 61000);
+  }
+
   async function renderCodeGroup(source, phase) {
     for (const item of normalizeCode(source)) {
       if (mountedCodeIds.has(item.id)) continue;
       mountedCodeIds.add(item.id);
-      await runCodeAd(item, phase);
+      if (item.mode === 'sandbox') runSandboxAd(item, phase);
+      else await runCodeAd(item, phase);
     }
   }
 

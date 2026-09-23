@@ -24,3 +24,4 @@
 #ad-form .field-disabled select { cursor: not-allowed; background: #f8fafc; }
 #ad-form .platform-note { display: block; margin-top: 2px; }
 @media(max-width:760px){.admin-ad-table{min-width:760px}}
+.ad-edge-panel{margin-bottom:18px}.ad-edge-status-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}.ad-edge-status-grid>div{display:flex;flex-direction:column;gap:7px;padding:15px;border:1px solid var(--line,#e4e9f3);border-radius:14px;background:var(--soft,#f8faff);min-width:0}.ad-edge-status-grid small{color:var(--muted,#768097)}.ad-edge-status-grid b{overflow-wrap:anywhere}.code-render-field.field-hidden{display:none}@media(max-width:900px){.ad-edge-status-grid{grid-template-columns:1fr 1fr}}@media(max-width:560px){.ad-edge-status-grid{grid-template-columns:1fr}}

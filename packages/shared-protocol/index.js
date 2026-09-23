@@ -24,6 +24,7 @@ const CAPABILITIES = Object.freeze({
   nodeSnapshot: 'nodes.snapshot.v1',
   centralAds: 'ads.central.v1',
   adPolicies: 'ads.policy.v1',
+  adEdge: 'ads.edge.v1',
   publishPage: 'publish-page.v1',
   oneTimeSso: 'sso.one-time.v1'
 });
@@ -180,10 +181,16 @@ function validateAd(ad) {
   if (!AD_POSITIONS.includes(ad.ad_position)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '广告位置不合法');
   if (!['all', 'pc', 'ios', 'non_ios', 'android', 'harmony'].includes(ad.platform)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '广告平台不合法');
   if (typeof ad.ad_code !== 'string') throw new ProtocolError(ERROR_CODES.invalidSnapshot, 'ad_code 必须是字符串');
-  if (ad.ad_type === 'code' && !ad.ad_code.trim()) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '代码广告内容不能为空');
+  const edgeDelivery = ad.ad_type === 'code' && ad.code_delivery === 'edge';
+  if (ad.ad_type === 'code' && !edgeDelivery && !ad.ad_code.trim()) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '代码广告内容不能为空');
+  if (ad.ad_type === 'code' && !['direct', 'sandbox'].includes(ad.render_mode || 'direct')) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '代码广告加载方式不合法');
+  if (edgeDelivery) {
+    if (ad.ad_code !== '') throw new ProtocolError(ERROR_CODES.invalidSnapshot, 'Edge 代码广告快照不得携带代码原文');
+    if (!isPlainObject(ad.ad_edge) || !/^\d+$/.test(String(ad.ad_edge.profile_id || '')) || !isHttpUrl(ad.ad_edge.origin)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '广告 Edge 信息不合法');
+  }
   if (ad.priority !== undefined && (!Number.isSafeInteger(ad.priority) || Math.abs(ad.priority) > 1_000_000)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '广告优先级不合法');
   if (!/^[a-f0-9]{64}$/i.test(String(ad.integrity_sha256 || ''))) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '广告完整性摘要不合法');
-  if (String(ad.integrity_sha256).toLowerCase() !== calculateAdIntegrity(ad)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '广告内容与完整性摘要不一致');
+  if (!edgeDelivery && String(ad.integrity_sha256).toLowerCase() !== calculateAdIntegrity(ad)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '广告内容与完整性摘要不一致');
   for (const field of ['image_url', 'target_url']) if (!isHttpUrl(ad[field], true)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, `${field} 地址不合法`);
   return ad;
 }
@@ -191,6 +198,21 @@ function validateAd(ad) {
 function validatePublishConfig(value) {
   if (!isPlainObject(value)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '发布页配置必须是对象');
   for (const field of ['permanent_url', 'github_pages_url']) if (!isHttpUrl(value[field], true)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, `${field} 地址不合法`);
+  if (value.pages !== undefined) {
+    if (!Array.isArray(value.pages) || value.pages.length > 30) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '永久发布页列表不合法');
+    const ids = new Set();
+    for (const page of value.pages) {
+      if (!isPlainObject(page) || !/^[a-z0-9][a-z0-9:._-]{0,79}$/i.test(String(page.id || '')) || ids.has(String(page.id))) {
+        throw new ProtocolError(ERROR_CODES.invalidSnapshot, '永久发布页标识不合法或重复');
+      }
+      ids.add(String(page.id));
+      assertText(page.label, '永久发布页名称', 80);
+      if (!isHttpUrl(page.url)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '永久发布页地址不合法');
+      if (page.enabled !== undefined && typeof page.enabled !== 'boolean') throw new ProtocolError(ERROR_CODES.invalidSnapshot, '永久发布页启用状态不合法');
+      if (page.sort_order !== undefined && (!Number.isSafeInteger(page.sort_order) || Math.abs(page.sort_order) > 1_000_000)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '永久发布页排序不合法');
+      if (page.sort_weight !== undefined && (!Number.isSafeInteger(page.sort_weight) || Math.abs(page.sort_weight) > 1_000_000)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '永久发布页排序权重不合法');
+    }
+  }
   return value;
 }
 
@@ -203,6 +225,10 @@ function validateConfigSnapshot(value) {
   if (!Array.isArray(value.nodes) || !Array.isArray(value.ads) || !Array.isArray(value.ad_policies)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '配置快照列表字段不完整');
   value.nodes.forEach(validateNode);
   value.ads.forEach(validateAd);
+  if (value.ad_edge !== undefined) {
+    if (!isPlainObject(value.ad_edge) || typeof value.ad_edge.enabled !== 'boolean') throw new ProtocolError(ERROR_CODES.invalidSnapshot, '广告 Edge 配置不合法');
+    if (value.ad_edge.enabled && (!/^\d+$/.test(String(value.ad_edge.profile_id || '')) || !isHttpUrl(value.ad_edge.origin) || !/^[A-Za-z0-9_-]{32,128}$/.test(String(value.ad_edge.ticket_key || '')))) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '广告 Edge 凭据不合法');
+  }
   const slots = new Set();
   for (const item of value.ad_policies) {
     if (!isPlainObject(item) || !AD_POSITIONS.includes(item.slot) || !AD_POLICIES.includes(item.policy) || slots.has(item.slot)) throw new ProtocolError(ERROR_CODES.invalidSnapshot, '广告位策略不合法或重复');

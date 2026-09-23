@@ -44,7 +44,14 @@ async function initializeAdsTable() {
     ['managed_by', "TEXT NOT NULL DEFAULT 'local'"],
     ['central_id', 'TEXT DEFAULT NULL'],
     ['namespace', "TEXT NOT NULL DEFAULT ''"],
-    ['integrity_sha256', "TEXT NOT NULL DEFAULT ''"]
+    ['integrity_sha256', "TEXT NOT NULL DEFAULT ''"],
+    ['render_mode', "TEXT NOT NULL DEFAULT 'direct'"],
+    ['sandbox_options', "TEXT NOT NULL DEFAULT '{}'"],
+    ['ad_edge_profile_id', "TEXT NOT NULL DEFAULT ''"],
+    ['ad_edge_origin', "TEXT NOT NULL DEFAULT ''"]
+    ,['edge_sync_status', "TEXT NOT NULL DEFAULT 'not_required'"]
+    ,['edge_last_synced_at', 'DATETIME DEFAULT NULL']
+    ,['edge_last_error', "TEXT NOT NULL DEFAULT ''"]
   ];
   for (const [name, definition] of additions) {
     if (!names.has(name)) await run(`ALTER TABLE ads ADD COLUMN ${name} ${definition}`);
@@ -77,6 +84,7 @@ async function initializeAdsTable() {
   await run('CREATE UNIQUE INDEX IF NOT EXISTS idx_ads_central_id ON ads(central_id) WHERE central_id IS NOT NULL');
   await run("UPDATE ads SET ad_code = '' WHERE ad_type = 'normal'");
   await run("UPDATE ads SET image_url = '', target_url = '' WHERE ad_type = 'code'");
+  await run("UPDATE ads SET render_mode = 'direct' WHERE render_mode IS NULL OR render_mode NOT IN ('direct', 'sandbox')");
   await run('CREATE INDEX IF NOT EXISTS idx_ads_active_position_sort ON ads(status, ad_position, sort_order DESC, id ASC)');
   await run(`CREATE TABLE IF NOT EXISTS ad_runtime_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,7 +114,8 @@ async function initializeAdsTable() {
 function selectColumns() {
   return `id, title, ad_type, ad_position, platform, ad_code, target_url, image_url,
     sort_order, status, description, managed_by, central_id, namespace, integrity_sha256,
-    created_at, updated_at`;
+    render_mode, sandbox_options, ad_edge_profile_id, ad_edge_origin,
+    edge_sync_status, edge_last_synced_at, edge_last_error, created_at, updated_at`;
 }
 
 function listAds() {
@@ -117,13 +126,20 @@ function listLocalAds() {
   return all(`SELECT ${selectColumns()} FROM ads WHERE managed_by <> 'central' ORDER BY sort_order DESC, id ASC`);
 }
 
+function listLocalCodeAds() {
+  return all(`SELECT ${selectColumns()} FROM ads
+    WHERE managed_by <> 'central' AND ad_type = 'code'
+    ORDER BY sort_order DESC, id ASC`);
+}
+
 function getAdById(id) {
   return get(`SELECT ${selectColumns()} FROM ads WHERE id = ?`, [id]);
 }
 
 async function getActiveAds() {
   const ads = await all(`SELECT id, title, ad_type, ad_position, platform, ad_code, target_url, image_url,
-      sort_order, description, managed_by
+      sort_order, description, managed_by, central_id, integrity_sha256, render_mode,
+      sandbox_options, ad_edge_profile_id, ad_edge_origin, edge_sync_status
     FROM ads
     WHERE status = 1
     ORDER BY sort_order DESC, id ASC`);
@@ -197,10 +213,11 @@ function legacyTypeFor(item) {
 function createAd(item) {
   return run(`INSERT INTO ads(
       type, title, description, ad_type, ad_position, platform, ad_code,
-      image_url, target_url, sort_order, status
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
+      image_url, target_url, sort_order, status, render_mode, sandbox_options, edge_sync_status
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [
     legacyTypeFor(item), item.title, item.description, item.adType, item.adPosition,
-    item.platform, item.adCode, item.imageUrl, item.targetUrl, item.sortOrder, item.status
+    item.platform, item.adCode, item.imageUrl, item.targetUrl, item.sortOrder, item.status,
+    item.renderMode, JSON.stringify(item.sandboxOptions || {}), item.edgeSyncStatus || 'not_required'
   ]);
 }
 
@@ -208,10 +225,12 @@ function updateAd(id, item) {
   return run(`UPDATE ads
     SET type = ?, title = ?, description = ?, ad_type = ?, ad_position = ?,
         platform = ?, ad_code = ?, image_url = ?, target_url = ?,
-        sort_order = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+        sort_order = ?, status = ?, render_mode = ?, sandbox_options = ?,
+        edge_sync_status = ?, edge_last_error = '', updated_at = CURRENT_TIMESTAMP
     WHERE id = ?`, [
     legacyTypeFor(item), item.title, item.description, item.adType, item.adPosition,
-    item.platform, item.adCode, item.imageUrl, item.targetUrl, item.sortOrder, item.status, id
+    item.platform, item.adCode, item.imageUrl, item.targetUrl, item.sortOrder, item.status,
+    item.renderMode, JSON.stringify(item.sandboxOptions || {}), item.edgeSyncStatus || 'not_required', id
   ]);
 }
 
@@ -257,6 +276,12 @@ function setAdStatus(id, status) {
   return run('UPDATE ads SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [status, id]);
 }
 
+function setEdgeSyncState(id, status, error = '') {
+  return run(`UPDATE ads SET edge_sync_status = ?, edge_last_error = ?,
+    edge_last_synced_at = CASE WHEN ? = 'synced' THEN CURRENT_TIMESTAMP ELSE edge_last_synced_at END,
+    updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [status, String(error || '').slice(0, 500), status, id]);
+}
+
 /** 广告 CSV 是完整事实源；校验在事务开启前完成，事务内全量替换。 */
 function replaceAdsFromCsv(items) {
   return withTransaction(async ({ run: txRun }) => {
@@ -292,6 +317,7 @@ module.exports = {
   initializeAdsTable,
   listAds,
   listLocalAds,
+  listLocalCodeAds,
   getAdById,
   getActiveAds,
   getActiveCodeAdsByIds,
@@ -304,4 +330,5 @@ module.exports = {
   listAdsForExport,
   deleteAd,
   setAdStatus
+  ,setEdgeSyncState
 };

@@ -18,6 +18,10 @@ function normalizeCentralAd(ad) {
     adPosition: ad.ad_position,
     platform: ad.platform || 'all',
     adCode: String(ad.ad_code || ''),
+    renderMode: ad.render_mode === 'sandbox' ? 'sandbox' : 'direct',
+    sandboxOptions: ad.sandbox_options && typeof ad.sandbox_options === 'object' ? ad.sandbox_options : {},
+    adEdgeProfileId: String(ad.ad_edge?.profile_id || ''),
+    adEdgeOrigin: String(ad.ad_edge?.origin || ''),
     imageUrl: String(ad.image_url || ''),
     targetUrl: String(ad.target_url || ''),
     sortOrder: Number(ad.priority || 0),
@@ -57,6 +61,27 @@ function createWebringConfigApplier({ run, all, withTransaction, onChanged = asy
   if (![run, all, withTransaction].every(value => typeof value === 'function')) throw new Error('缺少导航站数据库适配函数');
 
   async function initialize() {
+    await run(`CREATE TABLE IF NOT EXISTS publish_links (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      source TEXT NOT NULL CHECK(source IN ('local','control_center')),
+      external_id TEXT DEFAULT NULL,
+      label TEXT NOT NULL,
+      url TEXT NOT NULL,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      sort_weight INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    await ensureColumn(all, run, 'publish_links', 'sort_weight', 'INTEGER NOT NULL DEFAULT 0');
+    await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_publish_links_central_id ON publish_links(external_id) WHERE source='control_center' AND external_id IS NOT NULL");
+    const localPublishLinks = await all("SELECT id FROM publish_links WHERE source='local' LIMIT 1");
+    if (!localPublishLinks.length) {
+      const legacyPublishUrl = (await all("SELECT value FROM site_configs WHERE key='publish_url' LIMIT 1"))[0]?.value;
+      if (legacyPublishUrl) {
+        await run("INSERT INTO publish_links(source,label,url,enabled,sort_order,sort_weight) VALUES('local','本地永久发布页',?,1,0,0)", [legacyPublishUrl]);
+      }
+    }
     await ensureColumn(all, run, 'mirrors', 'managed_by', "TEXT NOT NULL DEFAULT 'local'");
     await ensureColumn(all, run, 'mirrors', 'central_id', 'TEXT DEFAULT NULL');
     await ensureColumn(all, run, 'mirrors', 'sort_order', 'INTEGER NOT NULL DEFAULT 0');
@@ -66,6 +91,10 @@ function createWebringConfigApplier({ run, all, withTransaction, onChanged = asy
     await ensureColumn(all, run, 'ads', 'central_id', 'TEXT DEFAULT NULL');
     await ensureColumn(all, run, 'ads', 'namespace', "TEXT NOT NULL DEFAULT ''");
     await ensureColumn(all, run, 'ads', 'integrity_sha256', "TEXT NOT NULL DEFAULT ''");
+    await ensureColumn(all, run, 'ads', 'render_mode', "TEXT NOT NULL DEFAULT 'direct'");
+    await ensureColumn(all, run, 'ads', 'sandbox_options', "TEXT NOT NULL DEFAULT '{}'");
+    await ensureColumn(all, run, 'ads', 'ad_edge_profile_id', "TEXT NOT NULL DEFAULT ''");
+    await ensureColumn(all, run, 'ads', 'ad_edge_origin', "TEXT NOT NULL DEFAULT ''");
     await run("UPDATE ads SET managed_by='local', namespace='local:' || id WHERE namespace='' OR namespace IS NULL");
     await run("CREATE UNIQUE INDEX IF NOT EXISTS idx_ads_central_id ON ads(central_id) WHERE central_id IS NOT NULL");
   }
@@ -73,12 +102,22 @@ function createWebringConfigApplier({ run, all, withTransaction, onChanged = asy
   async function applyConfig(config) {
     const nodes = Array.isArray(config?.nodes) ? config.nodes : [];
     const ads = Array.isArray(config?.ads) ? config.ads.map(normalizeCentralAd) : [];
+    const publishPages = Array.isArray(config?.publish?.pages) ? config.publish.pages : [
+      { id: 'cloudflare', label: 'Cloudflare 永久发布页', url: config?.publish?.permanent_url, sort_order: 10 },
+      { id: 'github', label: 'GitHub Pages', url: config?.publish?.github_pages_url, sort_order: 20 }
+    ].filter(item => item.url);
     const settings = [
       ...policyEntries(config?.ad_policies),
       ['control_center_nodes_managed', '1'],
       ['control_center_revision', String(config?.revision || '')],
+      ['control_center_site_id', String(config?.site_id || '')],
       ['publish_permanent_url', String(config?.publish?.permanent_url || '')],
-      ['publish_github_pages_url', String(config?.publish?.github_pages_url || '')]
+      ['publish_github_pages_url', String(config?.publish?.github_pages_url || '')],
+      ['ad_edge_profile_id', String(config?.ad_edge?.profile_id || '')],
+      ['ad_edge_origin', String(config?.ad_edge?.origin || '')],
+      ['ad_edge_worker_version', String(config?.ad_edge?.worker_version || '')],
+      ['ad_edge_ticket_key', String(config?.ad_edge?.ticket_key || '')],
+      ['ad_edge_enabled', config?.ad_edge?.enabled === true ? '1' : '0']
     ];
     await withTransaction(async ({ run: txRun, get: txGet }) => {
       await txRun("DELETE FROM mirrors WHERE managed_by='central'");
@@ -92,8 +131,14 @@ function createWebringConfigApplier({ run, all, withTransaction, onChanged = asy
 
       await txRun("DELETE FROM ads WHERE managed_by='central'");
       for (const ad of ads) {
-        await txRun(`INSERT INTO ads(type,title,description,ad_type,ad_position,platform,ad_code,image_url,target_url,sort_order,status,managed_by,central_id,namespace,integrity_sha256)
-          VALUES(?,?,?,?,?,?,?,?,?,?,1,'central',?,?,?)`, [ad.type,ad.title,ad.description,ad.adType,ad.adPosition,ad.platform,ad.adCode,ad.imageUrl,ad.targetUrl,ad.sortOrder,ad.centralId,ad.namespace,ad.integrity]);
+        await txRun(`INSERT INTO ads(type,title,description,ad_type,ad_position,platform,ad_code,image_url,target_url,sort_order,status,managed_by,central_id,namespace,integrity_sha256,render_mode,sandbox_options,ad_edge_profile_id,ad_edge_origin)
+          VALUES(?,?,?,?,?,?,?,?,?,?,1,'central',?,?,?,?,?,?,?)`, [ad.type,ad.title,ad.description,ad.adType,ad.adPosition,ad.platform,ad.adCode,ad.imageUrl,ad.targetUrl,ad.sortOrder,ad.centralId,ad.namespace,ad.integrity,ad.renderMode,JSON.stringify(ad.sandboxOptions),ad.adEdgeProfileId,ad.adEdgeOrigin]);
+      }
+
+      await txRun("DELETE FROM publish_links WHERE source='control_center'");
+      for (const [index, page] of publishPages.entries()) {
+        await txRun(`INSERT INTO publish_links(source,external_id,label,url,enabled,sort_order,sort_weight,updated_at)
+          VALUES('control_center',?,?,?,?,?,?,CURRENT_TIMESTAMP)`, [String(page.id), String(page.label || `永久发布页 ${index + 1}`), page.url, page.enabled === false ? 0 : 1, Number(page.sort_order ?? index), Number(page.sort_weight ?? 0)]);
       }
 
       for (const [key, value] of settings) {
@@ -102,7 +147,7 @@ function createWebringConfigApplier({ run, all, withTransaction, onChanged = asy
       }
     }, { priority: 'background', label: 'apply control center config', maxWaitMs: 120000, durability: 'full' });
     await onChanged(config);
-    return { nodes: nodes.length, centralAds: ads.length, revision: config?.revision || '' };
+    return { nodes: nodes.length, centralAds: ads.length, centralPublishPages: publishPages.length, revision: config?.revision || '' };
   }
 
   return { initialize, applyConfig };

@@ -45,7 +45,7 @@ function bodyHash(rawBody) {
   return crypto.createHash('sha256').update(source).digest('hex');
 }
 
-function canonicalProxyPayload({ timestamp, nonce, method, path, origin, clientIp, rawBody }) {
+function canonicalProxyPayload({ timestamp, nonce, method, path, origin, clientIp, confirmedBot, rawBody }) {
   return [
     String(timestamp || ''),
     String(nonce || ''),
@@ -53,8 +53,14 @@ function canonicalProxyPayload({ timestamp, nonce, method, path, origin, clientI
     String(path || '/'),
     String(origin || ''),
     String(clientIp || ''),
+    confirmedBot === '1' ? '1' : '0',
     bodyHash(rawBody)
   ].join('\n');
+}
+
+function canonicalProxyPayloadLegacy({ timestamp, nonce, method, path, origin, clientIp, rawBody }) {
+  return [String(timestamp || ''), String(nonce || ''), String(method || 'GET').toUpperCase(),
+    String(path || '/'), String(origin || ''), String(clientIp || ''), bodyHash(rawBody)].join('\n');
 }
 
 function signProxyRequest(input, secret = FRONTEND_PROXY_SECRET) {
@@ -76,6 +82,8 @@ async function verifyProxyRequest(req) {
   const timestamp = Number(req.get('x-proxy-timestamp'));
   const nonce = String(req.get('x-proxy-nonce') || '').trim();
   const signature = String(req.get('x-proxy-signature') || '').trim().toLowerCase();
+  const confirmedBotHeader = req.get('x-edge-confirmed-bot');
+  const confirmedBot = confirmedBotHeader === '1' ? '1' : '0';
 
   if (!FRONTEND_PROXY_SECRET) return { ok: false, reason: 'proxy_disabled' };
   if (!origin || !net.isIP(clientIp)) return { ok: false, reason: 'invalid_context' };
@@ -94,14 +102,21 @@ async function verifyProxyRequest(req) {
     path: req.originalUrl || req.url,
     origin,
     clientIp,
+    confirmedBot,
     rawBody: req.rawBody
   });
-  if (!safeEqualHex(signature, expected)) return { ok: false, reason: 'bad_signature' };
+  if (!safeEqualHex(signature, expected)) {
+    if (confirmedBotHeader !== undefined) return { ok: false, reason: 'bad_signature' };
+    const legacy = crypto.createHmac('sha256', FRONTEND_PROXY_SECRET)
+      .update(canonicalProxyPayloadLegacy({ timestamp, nonce, method: req.method, path: req.originalUrl || req.url, origin, clientIp, rawBody: req.rawBody }))
+      .digest('hex');
+    if (!safeEqualHex(signature, legacy)) return { ok: false, reason: 'bad_signature' };
+  }
 
   // 放在最后一次 await 之后同步检查并占位，避免两个同 Nonce 请求并发穿透。
   if (usedNonces.has(nonceKey)) return { ok: false, reason: 'replayed' };
   usedNonces.set(nonceKey, true);
-  return { ok: true, origin, clientIp };
+  return { ok: true, origin, clientIp, confirmedBot: confirmedBot === '1' };
 }
 
 module.exports = {

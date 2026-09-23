@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const VisitorRiskService = require('../src/services/VisitorRiskService');
+const SearchBotVerifier = require('../src/services/SearchBotVerifier');
 
 test('蜜罐只形成短期访客风险且限制到期后自动解除', () => {
   const visitorId = `risk-test-${Date.now()}`;
@@ -60,4 +61,28 @@ test('脚本客户端特征与缺失 Fetch Metadata 组合计入风险但不连�
   assert.equal(record.score, 65);
   assert.equal(VisitorRiskService.getReadRestriction(visitorId, now), null);
   assert.equal(VisitorRiskService.getReadRestriction('same-nat-normal-browser', now), null);
+});
+
+test('isbot 通用爬虫规则只形成观察信号，不与脚本 UA 重复计分', () => {
+  const now = 1_800_000_500_000;
+  const crawler = VisitorRiskService.recordBootstrapSignals(`crawler-${Date.now()}`, {
+    userAgent: 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+    fetchSite: 'none', fetchMode: 'navigate', fetchDest: 'document'
+  }, now);
+  assert.equal(crawler.score, 35);
+  assert.deepEqual(crawler.newSignals, ['known_crawler_ua']);
+  assert.ok(crawler.crawlerMatch);
+
+  const script = VisitorRiskService.recordBootstrapSignals(`script-${Date.now()}`, {
+    userAgent: 'curl/8.7.1', fetchSite: 'none', fetchMode: 'navigate', fetchDest: 'document'
+  }, now);
+  assert.equal(script.score, 50);
+  assert.deepEqual(script.newSignals, ['script_user_agent']);
+});
+
+test('搜索蜘蛛校验器只对明确供应商 UA 启动双向 DNS 检查', async () => {
+  assert.equal(SearchBotVerifier.providerFor('Mozilla/5.0 Chrome/122'), null);
+  assert.equal(SearchBotVerifier.providerFor('Googlebot/2.1').name, 'Googlebot');
+  const result = await SearchBotVerifier.verify('Googlebot/2.1', 'not-an-ip');
+  assert.deepEqual(result, { candidate: true, verified: false, provider: 'Googlebot', reason: 'invalid_ip' });
 });

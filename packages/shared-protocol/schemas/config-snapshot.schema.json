@@ -20,12 +20,24 @@
     "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
     "ads": { "type": "array", "items": { "$ref": "#/$defs/ad" } },
     "ad_policies": { "type": "array", "items": { "$ref": "#/$defs/adPolicy" } },
+    "ad_edge": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "profile_id": { "type": "string", "pattern": "^[1-9][0-9]*$" },
+        "origin": { "type": "string", "format": "uri" },
+        "ticket_key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{32,128}$" },
+        "worker_version": { "type": "string" }
+      }
+    },
     "publish": {
       "type": "object",
       "required": ["permanent_url", "github_pages_url"],
       "properties": {
         "permanent_url": { "type": "string" },
-        "github_pages_url": { "type": "string" }
+        "github_pages_url": { "type": "string" },
+        "pages": { "type": "array", "maxItems": 30, "items": { "$ref": "#/$defs/publishPage" } }
       }
     }
   },
@@ -51,7 +63,8 @@
         "partner_name": { "type": "string", "minLength": 1, "maxLength": 80 },
         "url": { "type": "string", "format": "uri" },
         "enabled": { "type": "boolean" },
-        "sort_order": { "type": "integer", "minimum": -1000000, "maximum": 1000000 }
+        "sort_order": { "type": "integer", "minimum": -1000000, "maximum": 1000000 },
+        "sort_weight": { "type": "integer", "minimum": -1000000, "maximum": 1000000 }
       }
     },
     "ad": {
@@ -65,6 +78,16 @@
         "ad_position": { "enum": ["banner", "icon", "top_float", "bottom_float", "icon_float"] },
         "platform": { "enum": ["all", "pc", "ios", "non_ios", "android", "harmony"] },
         "ad_code": { "type": "string" },
+        "render_mode": { "enum": ["direct", "sandbox"] },
+        "code_delivery": { "enum": ["edge"] },
+        "sandbox_options": { "type": "object" },
+        "ad_edge": {
+          "type": "object",
+          "properties": {
+            "profile_id": { "$ref": "#/$defs/id" },
+            "origin": { "type": "string", "format": "uri" }
+          }
+        },
         "image_url": { "type": "string" },
         "target_url": { "type": "string" },
         "priority": { "type": "integer", "minimum": -1000000, "maximum": 1000000 },
@@ -77,6 +100,17 @@
       "properties": {
         "slot": { "enum": ["banner", "icon", "top_float", "bottom_float", "icon_float"] },
         "policy": { "enum": ["central_only", "central_first", "mixed", "local_only"] }
+      }
+    },
+    "publishPage": {
+      "type": "object",
+      "required": ["id", "label", "url"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9:._-]{0,79}$" },
+        "label": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "url": { "type": "string", "format": "uri" },
+        "enabled": { "type": "boolean" },
+        "sort_order": { "type": "integer", "minimum": -1000000, "maximum": 1000000 }
       }
     }
   }

@@ -81,8 +81,10 @@ const FRONTEND_PROXY_MAX_SKEW_MS = Math.max(5_000, Math.min(5 * 60_000,
 const ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
 const ADMIN_SESSION_COOKIE = 'webring_admin';
 const ADMIN_CSRF_COOKIE = 'webring_admin_csrf';
-// 主站默认不执行第三方联盟脚本。若确有业务需要，应先迁移到独立受限域名后再显式开启。
-const PUBLIC_CODE_ADS_ENABLED = process.env.PUBLIC_CODE_ADS_ENABLED === '1';
+// 代码广告只有在总后台已下发广告 Edge 配置时才会出现；可用环境变量紧急总开关关闭。
+const PUBLIC_CODE_ADS_ENABLED = process.env.PUBLIC_CODE_ADS_ENABLED !== '0';
+const DIRECT_CODE_ADS_ENABLED = process.env.DIRECT_CODE_ADS_ENABLED !== '0';
+const SANDBOX_CODE_ADS_ENABLED = process.env.SANDBOX_CODE_ADS_ENABLED !== '0';
 const BOT_GATE_MODES = new Set(['off', 'observe', 'enforce']);
 const BOT_GATE_MODE = String(process.env.BOT_GATE_MODE || 'off').trim().toLowerCase();
 if (!BOT_GATE_MODES.has(BOT_GATE_MODE)) {
@@ -183,6 +185,8 @@ module.exports = {
   ADMIN_SESSION_COOKIE,
   ADMIN_CSRF_COOKIE,
   PUBLIC_CODE_ADS_ENABLED,
+  DIRECT_CODE_ADS_ENABLED,
+  SANDBOX_CODE_ADS_ENABLED,
   BOT_GATE_MODE,
   BOT_RISK_CENTER_ENABLED,
   BOT_RISK_ALLOW_PRIVATE_HTTP,

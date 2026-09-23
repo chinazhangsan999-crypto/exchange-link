@@ -17,6 +17,7 @@ const LogModel = require('../models/LogModel');
 const SystemModel = require('../models/SystemModel');
 const AdModel = require('../models/AdsModel');
 const MirrorModel = require('../models/MirrorModel');
+const PublishLinkModel = require('../models/PublishLinkModel');
 const FrontendOriginModel = require('../models/FrontendOriginModel');
 const SourceTokenModel = require('../models/SourceTokenModel');
 const CloudflareFrontendModel = require('../models/CloudflareFrontendModel');
@@ -405,6 +406,21 @@ async function getSettings(req, res) {
     return ok(res, settings);
   }
   catch { return fail(res, '获取系统设置失败', 500); }
+}
+
+async function getPublishLinks(req, res) {
+  try { return ok(res, { links: await PublishLinkModel.listAll() }); }
+  catch (error) { return fail(res, safeApiErrorMessage(error, '获取永久发布页失败'), 500); }
+}
+
+async function saveLocalPublishLinks(req, res) {
+  try {
+    const links = await PublishLinkModel.replaceLocal(req.body?.links);
+    CacheService.clearPublicCache();
+    return ok(res, { links }, '本地永久发布页已保存');
+  } catch (error) {
+    return fail(res, safeApiErrorMessage(error, '保存永久发布页失败'), 400);
+  }
 }
 
 async function getRiskControlSettings(req, res) {
@@ -1658,7 +1674,12 @@ function parseAdPayload(body = {}) {
   const status = body.status === undefined ? 1 : Number(body.status);
   if (![0, 1].includes(status)) throw new Error('广告状态不合法');
   const platform = adType === 'code' ? 'all' : requestedPlatform;
-  return { title, description, adType, adPosition, platform, adCode, imageUrl, targetUrl, sortOrder, status };
+  const renderMode = adType === 'code' && body.render_mode === 'sandbox' ? 'sandbox' : 'direct';
+  const sandboxOptions = renderMode === 'sandbox'
+    ? { initial_height: 120, auto_height: true, allow_popups: true, allow_forms: false, timeout_ms: 10000 }
+    : {};
+  const edgeSyncStatus = adType === 'code' && IntegrationState.isControlCenterEnrolled() ? 'pending' : 'not_required';
+  return { title, description, adType, adPosition, platform, adCode, imageUrl, targetUrl, sortOrder, status, renderMode, sandboxOptions, edgeSyncStatus };
 }
 
 function parseCsvRows(source) {
@@ -1722,15 +1743,45 @@ function csvStatus(value) {
 }
 
 async function getAds(req, res) {
-  try { return ok(res, await (IntegrationState.isControlCenterEnrolled() ? AdModel.listLocalAds() : AdModel.listAds())); }
+  try { return ok(res, await AdModel.listAds()); }
   catch (error) { console.error('获取广告列表失败：', error); return fail(res, '获取广告列表失败', 500); }
+}
+
+async function syncLocalAds(req, res) {
+  try {
+    if (!IntegrationState.isControlCenterEnrolled()) return fail(res, '本站尚未接入总后台', 400);
+    const summary = await ControlCenterAgentService.syncAllLocalAds();
+    const message = summary.failed
+      ? `已同步 ${summary.synced} 条，${summary.failed} 条失败`
+      : `已同步 ${summary.synced} 条本站广告`;
+    return ok(res, summary, message);
+  } catch (error) {
+    console.error('同步本站广告失败：', error);
+    return fail(res, safeApiErrorMessage(error, '同步本站广告失败'), 502);
+  }
 }
 
 async function createAd(req, res) {
   try {
-    const result = await AdModel.createAd(parseAdPayload(req.body));
+    const item = parseAdPayload(req.body);
+    const desiredStatus = item.status;
+    if (item.adType === 'code' && IntegrationState.isControlCenterEnrolled()) item.status = 0;
+    const result = await AdModel.createAd(item);
+    let syncWarning = '';
+    if (IntegrationState.isControlCenterEnrolled()) {
+      try {
+        await ControlCenterAgentService.syncLocalAd({ ...(await AdModel.getAdById(result.id)), status: desiredStatus });
+        await AdModel.setEdgeSyncState(result.id, 'synced');
+        if (item.adType === 'code') await AdModel.setAdStatus(result.id, desiredStatus);
+      } catch (error) {
+        syncWarning = item.adType === 'code'
+          ? '；代码已保存为停用草稿，广告 API 同步失败'
+          : '；图文广告仍在本站显示，但同步到总后台失败';
+        await AdModel.setEdgeSyncState(result.id, 'error', error.message);
+      }
+    }
     CacheService.clearPublicCache();
-    return ok(res, { id: result.id }, '广告已新增');
+    return ok(res, { id: result.id, syncWarning: Boolean(syncWarning) }, `广告已新增${syncWarning}`);
   } catch (error) {
     console.error('新增广告失败：', error);
     return fail(res, safeApiErrorMessage(error, '新增广告失败'), 400);
@@ -1744,9 +1795,25 @@ async function updateAd(req, res) {
     const existing = await AdModel.getAdById(id);
     if (!existing) return fail(res, '广告不存在', 404);
     if (IntegrationState.isControlCenterEnrolled() && existing.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
-    const result = await AdModel.updateAd(id, parseAdPayload({ ...existing, ...req.body }));
+    const item = parseAdPayload({ ...existing, ...req.body });
+    const desiredStatus = item.status;
+    if (item.adType === 'code' && IntegrationState.isControlCenterEnrolled()) item.status = 0;
+    const result = await AdModel.updateAd(id, item);
+    let syncWarning = '';
+    if (IntegrationState.isControlCenterEnrolled()) {
+      try {
+        await ControlCenterAgentService.syncLocalAd({ ...(await AdModel.getAdById(id)), status: desiredStatus });
+        await AdModel.setEdgeSyncState(id, 'synced');
+        if (item.adType === 'code') await AdModel.setAdStatus(id, desiredStatus);
+      } catch (error) {
+        syncWarning = item.adType === 'code'
+          ? '；代码已保存为停用草稿，广告 API 同步失败'
+          : '；图文广告仍在本站显示，但同步到总后台失败';
+        await AdModel.setEdgeSyncState(id, 'error', error.message);
+      }
+    }
     CacheService.clearPublicCache();
-    return ok(res, { changes: result.changes }, '广告已更新');
+    return ok(res, { changes: result.changes, syncWarning: Boolean(syncWarning) }, `广告已更新${syncWarning}`);
   } catch (error) {
     console.error('更新广告失败：', error);
     return fail(res, safeApiErrorMessage(error, '更新广告失败'), 400);
@@ -1759,10 +1826,21 @@ async function updateAdStatus(req, res) {
     if (!Number.isSafeInteger(id) || id <= 0 || ![0, 1].includes(status)) return fail(res, '参数不合法');
     const existing = await AdModel.getAdById(id);
     if (IntegrationState.isControlCenterEnrolled() && existing?.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
+    let syncWarning = false;
+    if (existing && IntegrationState.isControlCenterEnrolled()) {
+      try {
+        await ControlCenterAgentService.syncLocalAd({ ...existing, status });
+        await AdModel.setEdgeSyncState(id, 'synced');
+      } catch (error) {
+        await AdModel.setEdgeSyncState(id, 'error', error.message);
+        if (existing.ad_type === 'code') return fail(res, '广告 API 同步失败，状态未改变', 502);
+        syncWarning = true;
+      }
+    }
     const result = await AdModel.setAdStatus(id, status);
     if (!result.changes) return fail(res, '广告不存在', 404);
     CacheService.clearPublicCache();
-    return ok(res, null, status ? '广告已启用' : '广告已停用');
+    return ok(res, { syncWarning }, `${status ? '广告已启用' : '广告已停用'}${syncWarning ? '；同步到总后台失败' : ''}`);
   } catch (error) {
     console.error('更新广告状态失败：', error);
     return fail(res, '更新广告状态失败', 500);
@@ -1774,6 +1852,10 @@ async function deleteAd(req, res) {
     const id = Number(req.params.id);
     const existing = await AdModel.getAdById(id);
     if (IntegrationState.isControlCenterEnrolled() && existing?.managed_by === 'central') return fail(res, '中央广告请在总后台修改', 403);
+    if (existing && IntegrationState.isControlCenterEnrolled()) {
+      try { await ControlCenterAgentService.deleteLocalAd(id); }
+      catch { return fail(res, '总后台删除同步失败，未删除本地记录', 502); }
+    }
     const result = await AdModel.deleteAd(id);
     if (!result.changes) return fail(res, '广告不存在', 404);
     CacheService.clearPublicCache();
@@ -1782,6 +1864,33 @@ async function deleteAd(req, res) {
     console.error('删除广告失败：', error);
     return fail(res, '删除广告失败', 500);
   }
+}
+
+async function getAdEdgeStatus(req, res) {
+  try {
+    const config = await SystemModel.getConfigValues(['ad_edge_enabled', 'ad_edge_origin', 'ad_edge_profile_id', 'ad_edge_worker_version']);
+    const agentStatus = ControlCenterAgentService.publicStatus();
+    return ok(res, {
+      configured: config.ad_edge_enabled === '1' && Boolean(config.ad_edge_origin),
+      origin: String(config.ad_edge_origin || ''),
+      profileId: String(config.ad_edge_profile_id || ''),
+      workerVersion: String(config.ad_edge_worker_version || ''),
+      lastSyncedAt: agentStatus.lastConfigAppliedAt,
+      revision: agentStatus.lastAppliedRevision,
+      connected: agentStatus.connected,
+      lastError: agentStatus.lastError
+    });
+  } catch (error) { return fail(res, safeApiErrorMessage(error, '获取广告 API 状态失败'), 500); }
+}
+
+async function checkAdEdgeHealth(req, res) {
+  try {
+    const origin = String(await SystemModel.configValue('ad_edge_origin') || '').replace(/\/$/, '');
+    if (!/^https:\/\/[^/]+$/i.test(origin)) return fail(res, '广告 API 尚未配置', 400);
+    const response = await fetch(`${origin}/health`, { signal: AbortSignal.timeout(8000) });
+    if (!response.ok) return fail(res, `广告 API 健康检查返回 ${response.status}`, 502);
+    return ok(res, { healthy: true }, '广告 API 连接正常');
+  } catch { return fail(res, '广告 API 暂时不可用', 502); }
 }
 
 async function syncAdsCsv(req, res) {
@@ -2228,6 +2337,8 @@ module.exports = {
   getAnalyticsConfig,
   saveAnalyticsConfig,
   getSettings,
+  getPublishLinks,
+  saveLocalPublishLinks,
   getRiskControlSettings,
   getFrontendOrigins,
   saveFrontendOrigins,
@@ -2292,6 +2403,10 @@ module.exports = {
   saveCategoryOrder,
   deleteCategory,
   getAds,
+  getAdEdgeStatus,
+  syncLocalAds,
+  syncLocalCodeAds: syncLocalAds,
+  checkAdEdgeHealth,
   createAd,
   updateAd,
   updateAdStatus,

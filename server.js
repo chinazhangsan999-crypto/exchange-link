@@ -15,7 +15,8 @@ const { initializeSiteTrafficTable } = require('./src/models/SiteTrafficModel');
 const { initializePartnerPageViewTable } = require('./src/models/PartnerPageViewModel');
 const { initializeIpProfileTable } = require('./src/models/IpProfileModel');
 const { initializeFrontendOriginTable } = require('./src/models/FrontendOriginModel');
-const { initializeCloudflareFrontendTables } = require('./src/models/CloudflareFrontendModel');
+const CloudflareFrontendModel = require('./src/models/CloudflareFrontendModel');
+const { initializeCloudflareFrontendTables } = CloudflareFrontendModel;
 const { initializeRecoveryTables } = require('./src/models/RecoveryModel');
 const SiteTrafficService = require('./src/services/SiteTrafficService');
 const PartnerPageViewService = require('./src/services/PartnerPageViewService');
@@ -33,6 +34,20 @@ let shuttingDown = false;
 let shutdownExitCode = 0;
 
 const FATAL_SHUTDOWN_SIGNALS = new Set(['UNCAUGHT_EXCEPTION', 'UNHANDLED_REJECTION']);
+
+async function redeployPublicFrontendsAtStartup() {
+  const workers = (await CloudflareFrontendModel.listWorkers()).filter(worker => worker.hostname);
+  const results = [];
+  for (const worker of workers) {
+    try {
+      const deployed = await CloudflarePublicFrontendService.redeployWorker(Number(worker.id));
+      results.push({ hostname: worker.hostname, ok: true, health: deployed.health });
+    } catch (error) {
+      results.push({ hostname: worker.hostname, ok: false, error: String(error.message || error) });
+    }
+  }
+  console.log(`PUBLIC_FRONTEND_REDEPLOY_RESULT ${JSON.stringify(results)}`);
+}
 
 process.on('uncaughtException', error => {
   console.error('未捕获异常（uncaughtException）：', error?.stack || error);
@@ -71,6 +86,12 @@ initializeDatabase()
       ControlCenterAgentService.start();
       BotRiskClient.start();
       startJobs();
+      if (process.env.REDEPLOY_PUBLIC_FRONTENDS_ON_START === '1') {
+        setImmediate(() => {
+          void redeployPublicFrontendsAtStartup()
+            .catch(error => console.error('PUBLIC_FRONTEND_REDEPLOY_FAILED', error));
+        });
+      }
     });
   })
   .catch(error => {

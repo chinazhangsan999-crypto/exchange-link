@@ -35,7 +35,7 @@
   <link rel="stylesheet" href="/mobile-nav.css">
   <link rel="stylesheet" href="/enhance.css?v=20260914-curated-cards">
   <link rel="stylesheet" href="/pwa.css">
-  <link rel="stylesheet" href="/showcase.css">
+  <link rel="stylesheet" href="/showcase.css?v=20260923-all-slots">
   <script src="/recovery-crypto.js?v=20260922-recovery-shards-1" defer></script>
   <script src="/recovery-client.js?v=20260921-recovery-1" defer></script>
   <script src="/analytics.js?v=20260910-remove-clarity" defer></script>
@@ -144,9 +144,7 @@
         <h3 id="modalSiteTitle">✨ 欢迎访问星环导航 · 防失联指南</h3>
       </div>
       <div class="publish-info-box">
-        <div class="info-row" id="rowPublishUrl" style="display: none;"><span class="info-label">📢 永久发布页：</span><a
-            id="modalPublishLink" href="#" target="_blank" rel="noopener" class="info-link"></a><button class="btn-copy"
-            type="button" onclick="copyFromEl('modalPublishLink', this)">复制</button></div>
+        <div id="modalPublishPages"></div>
         <div class="info-row mt-2" id="rowContactEmail" style="display: none;"><span class="info-label">📬
             防失联邮箱：</span><span id="modalContactEmail" class="info-text"></span><button class="btn-copy" type="button"
             onclick="copyFromEl('modalContactEmail', this)">复制</button></div>
@@ -156,10 +154,6 @@
       </div>
       <div class="publish-primary-action"><button class="btn-enter" type="button" onclick="closePublishModal()">⚡
           立即进入本站（今日不再提示）</button></div>
-      <div id="modalMirrorsSection" class="publish-site-list" style="display: none;">
-        <div class="site-list-title"><span>🔗 最新备用镜像</span><span class="sub-tip">向下滑动查看</span></div>
-        <div id="modalMirrorsContainer" class="mirrors-container"></div>
-      </div>
       <div class="publish-footer">
         <p class="footer-tip">💡 建议按 <b>Ctrl + D</b> 收藏本站或发布页，网址失效不迷路。</p>
       </div>
@@ -173,8 +167,8 @@
   <a href="/api/sys-trap/trapdoor" hidden aria-hidden="true" tabindex="-1">系统状态检查</a>
   <script src="/read-client.js?v=20260915-read-proof3" defer></script>
   <script src="/common.js?v=20260915-clean-detail-path" defer></script>
-  <script src="/script.js?v=20260914-post-entry-page-view-all-pages" defer></script>
-  <script src="/showcase.js?v=20260914-read-access" defer></script>
+  <script src="/script.js?v=20260923-publish-pages-sync" defer></script>
+  <script src="/showcase.js?v=20260923-all-slots" defer></script>
 
 </body>
 

@@ -1,6 +1,6 @@
 name = "webring-public-qiantai1"
 main = "worker.js"
-compatibility_date = "2026-09-14"
+compatibility_date = "2024-12-01"
 
 routes = [
   { pattern = "qiantai1.chinazhangsan.ccwu.cc", custom_domain = true }
@@ -9,7 +9,7 @@ routes = [
 [assets]
 directory = "../../dist/public-frontend"
 binding = "ASSETS"
-run_worker_first = ["/", "/index.html", "/r/*", "/api/*", "/go", "/favicon.ico", "/.well-known/route-health.gif", "/uploads/logo/*"]
+run_worker_first = ["/", "/index.html", "/site-detail", "/site-detail.html", "/r/*", "/api/*", "/go", "/favicon.ico", "/.well-known/route-health.gif", "/uploads/logo/*"]
 
 [vars]
 API_ORIGIN = "https://api-link.chinazhangsan.ccwu.cc"

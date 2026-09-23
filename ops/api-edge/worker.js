@@ -6,6 +6,8 @@ const PROXY_HEADERS = [
   'x-proxy-signature'
 ];
 
+const EDGE_BOT_HEADER = 'x-edge-confirmed-bot';
+
 const ALLOWED_PATH_PREFIXES = [
   '/api/',
   '/uploads/logo/'
@@ -60,6 +62,11 @@ async function verifyFrontendSignature(request, env, rawBody) {
   if (PROXY_HEADERS.some(name => !values[name])) return false;
   if (!env.FRONTEND_PROXY_SECRET || env.FRONTEND_PROXY_SECRET.length < 32) return false;
 
+  // 新版公共前台把 Cloudflare 已确认机器人结论纳入签名；未带该字段的
+  // 旧前台继续按旧格式验签，便于多个前台 Worker 分批滚动升级。
+  const confirmedBotHeader = request.headers.get(EDGE_BOT_HEADER);
+  if (confirmedBotHeader !== null && !['0', '1'].includes(confirmedBotHeader)) return false;
+
   const timestamp = Number(values['x-proxy-timestamp']);
   const maxSkewMs = Math.max(5_000, Math.min(300_000, Number(env.MAX_SKEW_MS) || 30_000));
   if (!Number.isSafeInteger(timestamp) || Math.abs(Date.now() - timestamp) > maxSkewMs) return false;
@@ -69,15 +76,17 @@ async function verifyFrontendSignature(request, env, rawBody) {
   if (!allowedOrigins(env).has(origin)) return false;
 
   const url = new URL(request.url);
-  const canonical = [
+  const canonicalParts = [
     String(timestamp),
     values['x-proxy-nonce'],
     request.method.toUpperCase(),
     `${url.pathname}${url.search}`,
     origin,
-    values['x-verified-client-ip'],
-    await sha256Hex(rawBody)
-  ].join('\n');
+    values['x-verified-client-ip']
+  ];
+  if (confirmedBotHeader !== null) canonicalParts.push(confirmedBotHeader);
+  canonicalParts.push(await sha256Hex(rawBody));
+  const canonical = canonicalParts.join('\n');
 
   const signature = fromHex(values['x-proxy-signature']);
   if (!signature) return false;

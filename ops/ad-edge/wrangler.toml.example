@@ -1,7 +1,13 @@
-name = "webring-ad-isolation"
+name = "webring-ad-edge-main"
 main = "worker.js"
-compatibility_date = "2026-09-14"
+compatibility_date = "2026-09-23"
+
+[vars]
+BACKEND_ORIGIN = "https://control.example.com"
+PROFILE_ID = "1"
 
 routes = [
-  { pattern = "ad.chinazhangsan.ccwu.cc", custom_domain = true }
+  { pattern = "ad.example.com", custom_domain = true }
 ]
+
+# BACKEND_SECRET 必须使用 `wrangler secret put BACKEND_SECRET` 设置，不能写入本文件。

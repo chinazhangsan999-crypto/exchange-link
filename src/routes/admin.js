@@ -33,6 +33,7 @@ router.put('/api/admin/integrations/bot-risk-center', AdminController.saveBotRis
 router.get('/api/admin/analytics/config', AdminController.getAnalyticsConfig);
 router.post('/api/admin/analytics/config', AdminController.saveAnalyticsConfig);
 router.get(['/api/admin/config', '/api/admin/settings'], AdminController.getSettings);
+router.get('/api/admin/publish-links', AdminController.getPublishLinks);
 router.get('/api/admin/settings/risk-control', AdminController.getRiskControlSettings);
 router.get('/api/admin/backups/status', BackupController.getStatus);
 router.put('/api/admin/backups/settings', BackupController.saveSettings);
@@ -96,6 +97,7 @@ router.post('/api/admin/cloudflare/migrations/:id/rollback', AdminController.rol
 router.post('/api/admin/cloudflare/migrations/:id/complete', AdminController.completeCloudflareMigration);
 router.delete('/api/admin/cloudflare/frontends/:id/remote', AdminController.deleteCloudflareRemoteFrontend);
 router.post(['/api/admin/config', '/api/admin/settings'], AdminController.saveSettings);
+router.put('/api/admin/publish-links/local', AdminController.saveLocalPublishLinks);
 router.post('/api/admin/settings/logo', siteLogoUpload, AdminController.uploadSiteLogo);
 router.post('/api/admin/settings/test-webhook', AdminController.testWebhook);
 router.post('/api/admin/settings/test-bark', AdminController.testBark);
@@ -131,6 +133,9 @@ router.post('/api/admin/categories', AdminController.createCategory);
 router.put('/api/admin/categories/order', AdminController.saveCategoryOrder);
 router.delete('/api/admin/categories/:id', AdminController.deleteCategory);
 router.get('/api/admin/ads', AdminController.getAds);
+router.get('/api/admin/ads/edge-status', AdminController.getAdEdgeStatus);
+router.post('/api/admin/ads/edge-status/check', AdminController.checkAdEdgeHealth);
+router.post('/api/admin/ads/edge-status/sync', AdminController.syncLocalAds);
 router.post('/api/admin/ads', AdminController.createAd);
 router.put('/api/admin/ads/:id', AdminController.updateAd);
 router.patch('/api/admin/ads/:id/status', AdminController.updateAdStatus);

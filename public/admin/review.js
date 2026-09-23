@@ -6,6 +6,32 @@
   const api = async (url, options = {}) => { const response = await fetch(url, { ...options, credentials: 'same-origin', headers: { 'Content-Type': 'application/json', ...(options.headers || {}) } }); const result = await response.json(); if (result.code !== 200) throw Error(result.msg || '请求失败'); return result.data; };
   const time = value => window.formatAdminTime?.(value) || '—';
 
+  function localPublishLinkRow(item = {}) {
+    const row = document.createElement('div'); row.className = 'local-publish-link-row';
+    row.innerHTML = `<label>名称<input data-publish-label maxlength="80" value="${esc(item.label || '')}" placeholder="例如：备用网址"></label><label>地址<input data-publish-url type="url" value="${esc(item.url || '')}" placeholder="https://publish.example.com"></label><label>排序权重<input data-publish-weight type="number" min="-1000000" max="1000000" step="1" value="${Number(item.sort_weight || 0)}"></label><label class="publish-link-enabled"><input data-publish-enabled type="checkbox" ${item.enabled === 0 ? '' : 'checked'}>启用</label><button class="button ghost" type="button" data-remove-publish-link>删除</button>`;
+    row.querySelector('[data-remove-publish-link]').onclick = () => row.remove();
+    return row;
+  }
+
+  function renderPublishLinks(links = []) {
+    const central = document.querySelector('#central-publish-links'), local = document.querySelector('#local-publish-links');
+    if (!central || !local) return;
+    const centralLinks = links.filter(item => item.source === 'control_center');
+    central.innerHTML = centralLinks.length ? centralLinks.map(item => `<div class="central-publish-link"><strong>${esc(item.label)}</strong><a href="${esc(item.url)}" target="_blank" rel="noopener">${esc(item.url)}</a><span>权重 ${Number(item.sort_weight || 0)} · 总后台同步</span></div>`).join('') : '<p class="hint">总后台暂未下发永久发布页。</p>';
+    local.innerHTML = '';
+    links.filter(item => item.source === 'local').forEach(item => local.append(localPublishLinkRow(item)));
+  }
+
+  function collectLocalPublishLinks() {
+    return [...document.querySelectorAll('#local-publish-links .local-publish-link-row')].map((row, index) => ({
+      label: row.querySelector('[data-publish-label]').value.trim() || `自定义发布页 ${index + 1}`,
+      url: row.querySelector('[data-publish-url]').value.trim(),
+      enabled: row.querySelector('[data-publish-enabled]').checked,
+      sort_weight: Number(row.querySelector('[data-publish-weight]').value || 0),
+      sort_order: index
+    })).filter(item => item.url);
+  }
+
   function switchTo(id, button) { document.querySelectorAll('.tabs button,.panel').forEach(el => el.classList.remove('active')); button.classList.add('active'); document.querySelector('#' + id)?.classList.add('active'); }
   function installRiskControlFields() {
     const form = document.querySelector('#settings-form');
@@ -80,6 +106,14 @@
       finally { button.disabled = false; button.textContent = '上传并使用 Logo'; }
     };
   }
+  function installPublishLinkSettings() {
+    const legacyInput = document.querySelector('#settings-form input[name="publish_url"]');
+    if (!legacyInput) return;
+    const fieldset = document.createElement('fieldset'); fieldset.id = 'publish-links-settings';
+    fieldset.innerHTML = `<legend>永久发布页</legend><small>总后台发布页自动同步且只能在总后台修改；本站仍可添加自己的发布页。所有记录按权重从大到小显示，同权重时本站记录优先。</small><div id="central-publish-links"><p class="hint">正在读取总后台发布页…</p></div><div id="local-publish-links"></div><button id="add-local-publish-link" class="button ghost" type="button">＋ 新增本站发布页</button>`;
+    legacyInput.closest('label').replaceWith(fieldset);
+    fieldset.querySelector('#add-local-publish-link').onclick = () => fieldset.querySelector('#local-publish-links').append(localPublishLinkRow());
+  }
   function install() {
     if (document.querySelector('#review-tab')) return;
     const tabs = document.querySelector('.tabs');
@@ -100,7 +134,7 @@
     settings.append(analytics, matrix); cloudflare.append(apiEdge, inventory, frontendOrigins); document.querySelector('.shell').append(review, cloudflare, settings);
     const frontendRecoveryLabel = document.createElement('label'); frontendRecoveryLabel.className = 'frontend-recovery-profile'; frontendRecoveryLabel.innerHTML = `随站发布的恢复方案<select name="recoveryProfileId" required><option value="">正在读取恢复方案…</option></select><small>每个独立前台必须绑定一套已启用且已发布的恢复方案；发布后该前台只接收该方案的备用域名和 DNS/TXT 查询线路。</small>`;
     document.querySelector('#create-public-frontend-form fieldset')?.insertBefore(frontendRecoveryLabel, document.querySelector('#create-public-frontend-form .settings-actions'));
-    installLogoSettings(); installRiskControlFields();
+    installLogoSettings(); installRiskControlFields(); installPublishLinkSettings();
     reviewButton.onclick = () => { switchTo('review', reviewButton); loadReview(); }; cloudflareButton.onclick = () => { switchTo('cloudflare', cloudflareButton); loadCloudflareSettings(); }; settingsButton.onclick = () => { switchTo('settings', settingsButton); loadAllSettings(); };
     document.querySelector('#refresh-review').onclick = loadReview; document.querySelector('#settings-form').onsubmit = saveSettings; document.querySelector('#analytics-settings-form').addEventListener('submit', saveAnalyticsConfig); document.querySelector('#frontend-origin-form').addEventListener('submit', saveFrontendOrigins); document.querySelector('#cloudflare-central-access-form').addEventListener('submit', saveCloudflareCentralAccess); document.querySelector('#public-frontend-profile-form').addEventListener('submit', savePublicFrontendProfile); document.querySelector('#public-frontend-profile-form').elements.reuseCentralCredential.addEventListener('change', syncCentralCredentialChoice); document.querySelector('#create-public-frontend-form').addEventListener('submit', createPublicFrontend); document.querySelector('#cloudflare-migration-form').addEventListener('submit', prepareCloudflareMigration); document.querySelector('#cloudflare-delete-form').addEventListener('submit', deleteCloudflareRemote); document.querySelector('[data-close-cf-dialog]').onclick = () => document.querySelector('#cloudflare-delete-dialog').close(); document.querySelector('#refresh-cloudflare').onclick = loadCloudflareSettings; document.querySelector('#cloudflare').addEventListener('click', handleCloudflareAction); document.querySelector('#test-webhook').onclick = testWebhook; document.querySelector('#test-bark').onclick = testBark; document.querySelector('#refresh-webhook-health').onclick = loadWebhookHealth;
   }
@@ -131,7 +165,8 @@
   }
   async function reviewAction(id, status) { if (status === 2 && !confirm('确定拒绝该申请吗？')) return; try { await api('/api/admin/partners/' + id, { method: 'PATCH', body: JSON.stringify({ is_approved: status }) }); toast(status === 1 ? '已手动审核通过' : '已拒绝申请'); loadReview(); window.loadPartners?.(); } catch (error) { toast(error.message); } }
   async function loadSettings() { try { const data = await api('/api/admin/settings'), form = document.querySelector('#settings-form'); Object.entries(data).forEach(([key, value]) => { if (!form.elements[key]) return; if (form.elements[key].type === 'checkbox') form.elements[key].checked = String(value) === '1'; else form.elements[key].value = value; }); setLogoPreview(form.elements.site_logo_url?.value); } catch (error) { toast(error.message); } }
-  async function saveSettings(event) { event.preventDefault(); try { const form = event.currentTarget, payload = Object.fromEntries(new FormData(form)); payload.publish_modal_enabled = form.elements.publish_modal_enabled.checked ? '1' : '0'; await api('/api/admin/settings', { method: 'POST', body: JSON.stringify(payload) }); await window.loadAdminBrand?.(); await loadSettings(); toast('系统设置已保存'); } catch (error) { toast(error.message); } }
+  async function loadPublishLinks() { try { const data = await api('/api/admin/publish-links'); renderPublishLinks(data.links || []); } catch (error) { toast(error.message); } }
+  async function saveSettings(event) { event.preventDefault(); try { const form = event.currentTarget, payload = Object.fromEntries(new FormData(form)); payload.publish_modal_enabled = form.elements.publish_modal_enabled.checked ? '1' : '0'; await api('/api/admin/publish-links/local', { method: 'PUT', body: JSON.stringify({ links: collectLocalPublishLinks() }) }); await api('/api/admin/settings', { method: 'POST', body: JSON.stringify(payload) }); await window.loadAdminBrand?.(); await Promise.all([loadSettings(), loadPublishLinks()]); toast('系统设置已保存'); } catch (error) { toast(error.message); } }
   async function loadAnalyticsConfig() { try { const data = await api('/api/admin/analytics/config'), form = document.querySelector('#analytics-settings-form'); Object.entries(data).forEach(([key, value]) => { if (!form.elements[key]) return; if (form.elements[key].type === 'checkbox') form.elements[key].checked = String(value) === '1'; else form.elements[key].value = value; }); } catch (error) { toast(error.message); } }
   async function loadFrontendOrigins() { try { const data = await api('/api/admin/frontend-origins'), form = document.querySelector('#frontend-origin-form'), state = document.querySelector('#frontend-origin-state'); if (!form) return; form.elements.origins.value = (data.origins || []).map(item => [item.origin, item.enabled ? '1' : '0', item.expiresAt || ''].join(' | ').replace(/\s+\|\s*$/, '')).join('\n'); if (state) state.textContent = `代理签名：${data.frontendProxyConfigured ? '已配置' : '未配置'}；API Edge：${data.edgeSync?.configured ? '自动同步已配置' : '尚未配置自动同步'}`; } catch (error) { toast(error.message); } }
   async function loadCloudflareCentralAccess() {
@@ -266,12 +301,12 @@
     finally { button.disabled = false; button.textContent = '确认删除远端资源'; }
   }
   async function loadCloudflareSettings() { return Promise.all([loadFrontendOrigins(), loadCloudflareCentralAccess(), loadPublicFrontendProfiles(), loadCloudflareOverview()]); }
-  async function loadAllSettings() { return Promise.all([loadSettings(), loadAnalyticsConfig(), window.loadMatrixSettings?.()]); }
+  async function loadAllSettings() { return Promise.all([loadSettings(), loadPublishLinks(), loadAnalyticsConfig(), window.loadMatrixSettings?.()]); }
   async function saveAnalyticsConfig(event) { event.preventDefault(); const form = event.currentTarget, button = form.querySelector('#save-analytics-settings'); try { const payload = Object.fromEntries(new FormData(form)); ['umami_enabled', 'cf_analytics_enabled', 'generic_analytics_enabled'].forEach(key => { payload[key] = form.elements[key].checked ? '1' : '0'; }); if (payload.umami_enabled === '1' && !String(payload.umami_website_id || '').trim()) throw Error('启用 Umami 前请填写 Website ID'); if (payload.cf_analytics_enabled === '1' && !String(payload.cf_beacon_token || '').trim()) throw Error('启用 Cloudflare Web Analytics 前请填写 Beacon Token'); if (payload.generic_analytics_enabled === '1' && !String(payload.generic_analytics_code || '').trim()) throw Error('启用自定义统计代码前请粘贴完整的 <script> 代码'); if (button) { button.disabled = true; button.textContent = '保存中…'; } const data = await api('/api/admin/analytics/config', { method: 'POST', body: JSON.stringify(payload) }); Object.entries(data || {}).forEach(([key, value]) => { if (!form.elements[key]) return; if (form.elements[key].type === 'checkbox') form.elements[key].checked = String(value) === '1'; else form.elements[key].value = value; }); toast('第三方统计设置已保存，公开页面将在下次加载时生效'); } catch (error) { toast(error.message || '保存第三方统计设置失败'); } finally { if (button) { button.disabled = false; button.textContent = '保存第三方统计设置'; } } }
   function healthLabel(status) { return ({ healthy: '🟢 正常', degraded: '🟡 不稳定', offline: '🔴 故障', auth_error: '🔴 鉴权异常', unconfigured: '⚪ 未配置', untested: '⚪ 尚未投递' })[status] || '⚪ 未知'; }
   async function loadWebhookDeliveries() { const area = document.querySelector('#webhook-delivery-list'); if (!area) return; area.hidden = false; area.textContent = '正在读取最近投递记录…'; try { const data = await api('/api/admin/webhook/deliveries?limit=30'); const rows = data.deliveries || []; area.innerHTML = `<div class="webhook-delivery-table"><table><thead><tr><th>北京时间</th><th>事件</th><th>通道</th><th>结果</th><th>次数</th><th>耗时</th><th>原因</th></tr></thead><tbody>${rows.map(item => `<tr><td>${esc(time(item.created_at))}</td><td>${esc(item.event_type)}</td><td>${esc(item.provider)}${Number(item.is_fallback) ? '（备用）' : ''}</td><td>${Number(item.success) ? '🟢 成功' : '🔴 失败'}</td><td>${Number(item.attempt_count || 0)}</td><td>${item.duration_ms == null ? '—' : `${Number(item.duration_ms)}ms`}</td><td>${esc(item.error_message || (item.status_code ? `HTTP ${item.status_code}` : '—'))}</td></tr>`).join('') || '<tr><td colspan="7">暂无投递记录</td></tr>'}</tbody></table></div>`; } catch (error) { area.textContent = `读取失败：${error.message}`; } }
   async function loadWebhookHealth() { const card = document.querySelector('#webhook-health-card'); if (!card) return; try { const data = await api('/api/admin/webhook/health'); const primary = data.primary || {}, backup = data.backup || {}; card.innerHTML = `<div class="webhook-health-head"><strong>告警投递健康</strong><span><button id="refresh-webhook-health" type="button" class="button ghost">↻ 刷新状态</button><button id="show-webhook-deliveries" type="button" class="button ghost">查看最近投递</button></span></div><div class="webhook-health-grid"><p>主通道：${esc(primary.provider || 'none')} <b>${healthLabel(primary.status)}</b></p><p>备用通道：Bark <b>${healthLabel(backup.status)}</b></p><p>主通道连续失败：<b>${Number(primary.consecutiveFailures || 0)} 次</b></p><p>主通道近24h：成功 ${Number(primary.success24h || 0)} / 失败 ${Number(primary.failed24h || 0)} / ${Number(primary.successRate24h || 0).toFixed(1)}%</p><p>最近主通道成功：${esc(time(primary.lastSuccessAt))}</p><p>最近失败原因：${esc(primary.lastFailureReason || '—')}</p><p>最近 Bark 成功：${esc(time(backup.lastSuccessAt))}</p><p>最近故障转移：${esc(time(data.lastFallbackAt))}</p></div><div id="webhook-delivery-list" hidden></div>`; card.querySelector('#refresh-webhook-health')?.addEventListener('click', loadWebhookHealth); card.querySelector('#show-webhook-deliveries')?.addEventListener('click', loadWebhookDeliveries); } catch (error) { card.innerHTML = `<p class="webhook-health-empty">状态读取失败：${esc(error.message)}</p>`; } }
   async function testWebhook() { const button = document.querySelector('#test-webhook'); try { button.disabled = true; button.textContent = '发送中…'; const data = await api('/api/admin/settings/test-webhook', { method: 'POST' }); await loadWebhookHealth(); toast(data.result?.provider ? `主通道测试消息已通过 ${data.result.provider} 发送` : '主通道测试消息已发送'); } catch (error) { await loadWebhookHealth(); toast(error.message); } finally { button.disabled = false; button.textContent = '🔔 测试主通道'; } }
   async function testBark() { const button = document.querySelector('#test-bark'); try { button.disabled = true; button.textContent = '发送中…'; await api('/api/admin/settings/test-bark', { method: 'POST' }); await loadWebhookHealth(); toast('Bark 测试消息已发送'); } catch (error) { await loadWebhookHealth(); toast(error.message); } finally { button.disabled = false; button.textContent = '📱 测试 Bark'; } }
-  const style = document.createElement('link'); style.rel = 'stylesheet'; style.href = '/admin/review.css?v=20260922-recovery-layout-1'; document.head.append(style); const logoStyle = document.createElement('link'); logoStyle.rel = 'stylesheet'; logoStyle.href = '/admin/logo-settings.css?v=20260908-1'; document.head.append(logoStyle); install(); window.fetchPendingCount = loadReview; window.refreshReviewCount = refreshReviewCount; window.loadCloudflareSettings = loadCloudflareSettings; window.loadAdminSettings = loadAllSettings;
+  const style = document.createElement('link'); style.rel = 'stylesheet'; style.href = '/admin/review.css?v=20260923-publish-pages-sync'; document.head.append(style); const logoStyle = document.createElement('link'); logoStyle.rel = 'stylesheet'; logoStyle.href = '/admin/logo-settings.css?v=20260908-1'; document.head.append(logoStyle); install(); window.fetchPendingCount = loadReview; window.refreshReviewCount = refreshReviewCount; window.loadCloudflareSettings = loadCloudflareSettings; window.loadAdminSettings = loadAllSettings;
 })();

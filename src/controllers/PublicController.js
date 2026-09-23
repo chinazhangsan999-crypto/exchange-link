@@ -12,6 +12,8 @@ const {
   GUEST_JWT_SECRET,
   TRAFFIC_DEBUG,
   PUBLIC_CODE_ADS_ENABLED,
+  DIRECT_CODE_ADS_ENABLED,
+  SANDBOX_CODE_ADS_ENABLED,
   BROWSER_ACCESS_TTL_MS
 } = require('../config/env');
 const { getClientIp, parseHostname, normalizePartnerUrl, normalizeRegisteredDomain } = require('../utils/network');
@@ -40,11 +42,13 @@ const LogModel = require('../models/LogModel');
 const SystemModel = require('../models/SystemModel');
 const AdModel = require('../models/AdsModel');
 const MirrorModel = require('../models/MirrorModel');
+const PublishLinkModel = require('../models/PublishLinkModel');
 const CacheService = require('../services/CacheService');
 const SiteTrafficService = require('../services/SiteTrafficService');
 const PartnerPageViewService = require('../services/PartnerPageViewService');
 const InflowAttributionService = require('../services/InflowAttributionService');
 const VisitorRiskService = require('../services/VisitorRiskService');
+const SearchBotVerifier = require('../services/SearchBotVerifier');
 const ReadProofService = require('../services/ReadProofService');
 const BotRiskClient = require('../services/BotRiskClient');
 const BrowserChallengeService = require('../services/BrowserChallengeService');
@@ -430,7 +434,7 @@ function initVerification(req, res) {
   return res.json({ code: 200, msg: '验证令牌已生成', data: { token, expiresIn: 60 }, success: true, token });
 }
 
-function getReadBootstrap(req, res) {
+async function getReadBootstrap(req, res) {
   const visitorId = ensureVisitorIdentity(req, res);
   const localRisk = VisitorRiskService.recordBootstrapSignals(visitorId, {
     fetchSite: req.get('sec-fetch-site'),
@@ -441,15 +445,26 @@ function getReadBootstrap(req, res) {
     userAgent: req.get('user-agent'),
     expectedOrigin: req.trustedFrontendOrigin || `${req.protocol}://${req.get('host')}`
   });
+  if (req.edgeConfirmedBot === true) {
+    BotRiskClient.enqueue(visitorId, 'cloudflare_confirmed_bot', { source: 'cloudflare_bot_management' });
+  }
   for (const signal of localRisk?.newSignals || []) {
     BotRiskClient.enqueue(visitorId, signal, {
       path: '/api/read/bootstrap',
       userAgent: String(req.get('user-agent') || '').slice(0, 240),
       botName: signal === 'known_ai_crawler' ? localRisk.aiCrawler : '',
+      botKind: signal === 'known_crawler_ua' ? localRisk.crawlerMatch : '',
       secFetchSite: String(req.get('sec-fetch-site') || ''),
       secFetchMode: String(req.get('sec-fetch-mode') || ''),
       secFetchDest: String(req.get('sec-fetch-dest') || '')
     });
+  }
+  if (localRisk?.newSignals?.includes('known_crawler_ua')) {
+    const identity = await SearchBotVerifier.verify(req.get('user-agent'), getClientIp(req));
+    if (identity.candidate) BotRiskClient.enqueue(visitorId,
+      identity.verified ? 'verified_search_bot' : 'search_bot_spoofed', {
+        botName: identity.provider, hostname: identity.hostname || '', verificationReason: identity.reason
+      });
   }
   const centralDecision = BotRiskClient.getDecision(visitorId);
   if (centralDecision?.enforce && centralDecision.decision === 'deny') {
@@ -472,7 +487,7 @@ function getReadBootstrap(req, res) {
       }
     });
   }
-  return ok(res, issueReadAccessToken(req, res), '读取凭证已生成');
+  return ok(res, await issueReadAccessToken(req, res), '读取凭证已生成');
 }
 
 function getBrowserChallenge(req, res) {
@@ -777,6 +792,7 @@ async function getPublicConfig(req, res) {
     if (cached) return res.json(cached);
     const contactInfo = await SystemModel.configValue('contact_info');
     const contactEmail = await SystemModel.configValue('contact_email') || await SystemModel.configValue('lost_prevention_email');
+    const adEdge = await SystemModel.getConfigValues(['ad_edge_enabled', 'ad_edge_origin', 'ad_edge_worker_version']);
     const payload = {
       code: 200,
       msg: '操作成功',
@@ -787,9 +803,13 @@ async function getPublicConfig(req, res) {
         admin_contact: contactInfo || await SystemModel.configValue('admin_contact'),
         contact_info: contactInfo,
         publish_url: await SystemModel.configValue('publish_url'),
+        publish_pages: await PublishLinkModel.listPublic(),
         contact_email: contactEmail,
         lost_prevention_email: contactEmail,
-        publish_modal_enabled: await SystemModel.configValue('publish_modal_enabled')
+        publish_modal_enabled: await SystemModel.configValue('publish_modal_enabled'),
+        ad_api_enabled: adEdge.ad_edge_enabled === '1',
+        ad_api_origin: adEdge.ad_edge_enabled === '1' ? String(adEdge.ad_edge_origin || '') : '',
+        ad_api_worker_version: String(adEdge.ad_edge_worker_version || '')
       }
     };
     CacheService.setCachedData('public_config_data', payload);
@@ -1018,11 +1038,44 @@ function matchesShowcasePlatform(platform, device) {
   return platform === device;
 }
 
+function parseSandboxOptions(value) {
+  try {
+    const parsed = typeof value === 'string' ? JSON.parse(value) : value;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    return {
+      initial_height: Math.min(800, Math.max(50, Number.parseInt(parsed.initial_height, 10) || 120)),
+      auto_height: parsed.auto_height !== false,
+      allow_popups: parsed.allow_popups !== false,
+      allow_forms: parsed.allow_forms === true,
+      timeout_ms: Math.min(30000, Math.max(1000, Number.parseInt(parsed.timeout_ms, 10) || 10000))
+    };
+  } catch { return {}; }
+}
+
+function createAdEdgeTicket({ row, origin, profileId, siteId, ticketKey }) {
+  const now = Math.floor(Date.now() / 1000);
+  const nonce = crypto.randomBytes(16).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({
+    site_id: String(siteId || ''),
+    ad_id: String(row.managed_by === 'central' ? row.central_id : row.id),
+    ad_source: row.managed_by === 'central' ? 'central' : 'local',
+    client_ad_id: Number(row.id),
+    render_mode: row.render_mode === 'sandbox' ? 'sandbox' : 'direct',
+    profile_id: String(profileId || ''),
+    frontend_origin: origin,
+    issued_at: now,
+    expires_at: now + 180,
+    nonce
+  })).toString('base64url');
+  const signature = crypto.createHmac('sha256', Buffer.from(ticketKey, 'base64url')).update(payload).digest('base64url');
+  return { token: `${payload}.${signature}`, nonce };
+}
+
 async function getAds(req, res) {
   try {
     const device = detectShowcaseDevice(req);
     const cacheKey = `public_showcase_data_${device}`;
-    const cached = CacheService.getCachedData(cacheKey);
+    const cached = PUBLIC_CODE_ADS_ENABLED ? null : CacheService.getCachedData(cacheKey);
     if (cached) return res.json(cached);
     const rows = await AdModel.getActiveAds();
     const regularItems = rows
@@ -1040,20 +1093,43 @@ async function getAds(req, res) {
         description: row.description || '',
         sort_order: Number(row.sort_order || 0)
       }));
-    // 任意第三方 JavaScript 不能与主站会话处于同一 Origin。默认不下发，
-    // 仅在完成独立受限广告域部署后由环境变量显式恢复。
-    const codeItems = position => !PUBLIC_CODE_ADS_ENABLED ? [] : rows
-      .filter(row => row.ad_type === 'code' && row.ad_position === position)
-      .map(row => ({
-        id: row.id,
-        title: row.title,
-        ad_type: 'code',
-        ad_position: row.ad_position,
-        platform: 'all',
-        ad_code: row.ad_code || '',
-        markup: row.ad_code || '',
-        sort_order: Number(row.sort_order || 0)
-      }));
+    const edgeConfig = await SystemModel.getConfigValues([
+      'control_center_site_id', 'ad_edge_profile_id', 'ad_edge_origin', 'ad_edge_ticket_key', 'ad_edge_enabled'
+    ]);
+    const edgeOrigin = String(edgeConfig.ad_edge_origin || '').replace(/\/$/, '');
+    const profileId = String(edgeConfig.ad_edge_profile_id || '');
+    const siteId = String(edgeConfig.control_center_site_id || '');
+    const ticketKey = String(edgeConfig.ad_edge_ticket_key || '');
+    const frontendOrigin = String(req.trustedFrontendOrigin || '').replace(/\/$/, '');
+    const edgeReady = edgeConfig.ad_edge_enabled === '1'
+      && /^https:\/\/[^/]+$/i.test(edgeOrigin)
+      && /^https?:\/\/[^/]+$/i.test(frontendOrigin)
+      && profileId
+      && /^\d+$/.test(siteId)
+      && ticketKey.length >= 32;
+    // 代码原文不再由 /api/showcase 下发。中央代码广告与已同步成功的本站代码广告
+    // 都只签发短期 Edge 票据，浏览器源码中不会出现联盟代码或内部密钥。
+    const codeItems = position => !PUBLIC_CODE_ADS_ENABLED || !edgeReady ? [] : rows
+      .filter(row => row.ad_type === 'code'
+        && row.ad_position === position
+        && ((row.managed_by === 'central' && row.central_id)
+          || (row.managed_by !== 'central' && row.edge_sync_status === 'synced'))
+        && (row.render_mode === 'sandbox' ? SANDBOX_CODE_ADS_ENABLED : DIRECT_CODE_ADS_ENABLED))
+      .map(row => {
+        const ticket = createAdEdgeTicket({ row, origin: frontendOrigin, profileId, siteId, ticketKey });
+        return {
+          id: row.id,
+          title: row.title,
+          ad_type: 'code',
+          ad_position: row.ad_position,
+          platform: 'all',
+          render_mode: row.render_mode === 'sandbox' ? 'sandbox' : 'direct',
+          ...(row.render_mode === 'sandbox'
+            ? { frame_url: `${edgeOrigin}/frame/${ticket.token}`, frame_nonce: ticket.nonce, sandbox_options: parseSandboxOptions(row.sandbox_options) }
+            : { loader_url: `${edgeOrigin}/direct/${ticket.token}` }),
+          sort_order: Number(row.sort_order || 0)
+        };
+      });
     const payload = {
       code: 200,
       msg: '操作成功',
@@ -1065,7 +1141,7 @@ async function getAds(req, res) {
         iconFloatItems: codeItems('icon_float')
       }
     };
-    CacheService.setCachedData(cacheKey, payload);
+    if (!PUBLIC_CODE_ADS_ENABLED) CacheService.setCachedData(cacheKey, payload);
     return res.json(payload);
   } catch (error) {
     console.error('获取公开广告失败：', error);

@@ -12,12 +12,13 @@ const API_BASE = 'https://api.cloudflare.com/client/v4';
 const PROJECT_ROOT = path.resolve(__dirname, '..', '..');
 const PUBLIC_DIRECTORY = path.join(PROJECT_ROOT, 'public');
 const PUBLIC_WORKER_SOURCE = path.join(PROJECT_ROOT, 'ops', 'public-edge', 'worker.js');
+const PUBLIC_WORKER_COMPATIBILITY_DATE = '2024-12-01';
 const PUBLIC_API_ORIGIN = String(process.env.PUBLIC_API_ORIGIN || '').trim().replace(/\/$/, '');
 const HOSTNAME_PATTERN = /^(?=.{3,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const PROFILE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 const WORKER_PREFIX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,54}$/;
 const MIME_TYPES = { '.css': 'text/css', '.gif': 'image/gif', '.html': 'text/html', '.ico': 'image/x-icon', '.jpeg': 'image/jpeg', '.jpg': 'image/jpeg', '.js': 'application/javascript', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.txt': 'text/plain', '.webp': 'image/webp', '.woff': 'font/woff', '.woff2': 'font/woff2' };
-const RUN_WORKER_FIRST = ['/', '/index.html', '/r/*', '/api/*', '/go', '/favicon.ico', '/.well-known/route-health.gif', '/uploads/logo/*'];
+const RUN_WORKER_FIRST = ['/', '/index.html', '/site-detail', '/site-detail.html', '/r/*', '/api/*', '/go', '/favicon.ico', '/.well-known/route-health.gif', '/uploads/logo/*'];
 const ZONE_SECURITY_SETTINGS = [
   ['tls_1_3', 'on'],
   ['min_tls_version', '1.2'],
@@ -395,7 +396,7 @@ async function uploadAndDeploy(profile, workerName) {
   if (!completionJwt) throw new Error('Cloudflare 已接收静态资源，但未返回最终部署凭据');
   const metadata = {
     main_module: 'worker.js',
-    compatibility_date: '2026-09-14',
+    compatibility_date: PUBLIC_WORKER_COMPATIBILITY_DATE,
     bindings: [
       { name: 'ASSETS', type: 'assets' },
       { name: 'API_ORIGIN', type: 'plain_text', text: resolveApiOrigin() },
