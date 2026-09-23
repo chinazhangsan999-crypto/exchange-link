@@ -11,7 +11,8 @@ const {
   IS_PRODUCTION,
   CLIENTS,
   INTERNAL_API_URL,
-  PUBLIC_API_URL
+  PUBLIC_API_URL,
+  GITHUB_API_TOKEN
 } = require('../config/env');
 const DecisionService = require('./DecisionService');
 const CredentialService = require('./CredentialService');
@@ -73,7 +74,7 @@ async function initialize() {
   if (ready) return;
   if (DATABASE_URL) {
     pool = new Pool({ connectionString: DATABASE_URL, max: 10, idleTimeoutMillis: 30_000 });
-    for (const filename of ['001_initial.sql', '002_alerting.sql', '003_maintenance.sql', '004_agent_maintenance.sql', '005_analysis_drive.sql', '006_personal_drive_oauth.sql', '007_rule_telegram_backup.sql', '008_detection_security.sql', '009_identity_controls.sql', '010_maintenance_component_inventory.sql']) {
+    for (const filename of ['001_initial.sql', '002_alerting.sql', '003_maintenance.sql', '004_agent_maintenance.sql', '005_analysis_drive.sql', '006_personal_drive_oauth.sql', '007_rule_telegram_backup.sql', '008_detection_security.sql', '009_identity_controls.sql', '010_maintenance_component_inventory.sql', '011_github_api_settings.sql']) {
       const migration = fs.readFileSync(path.join(__dirname, '..', '..', 'migrations', filename), 'utf8');
       await pool.query(migration);
     }
@@ -1486,6 +1487,42 @@ function encryptedColumns(prefix, encrypted) {
   };
 }
 
+async function getGitHubApiSettings({ includeToken = false } = {}) {
+  if (!pool) return { configured: Boolean(GITHUB_API_TOKEN), source: GITHUB_API_TOKEN ? 'environment' : 'none', updatedAt: null, token: includeToken ? GITHUB_API_TOKEN : '' };
+  const result = await pool.query('SELECT * FROM github_api_settings WHERE id=1');
+  const row = result.rows[0];
+  const token = row ? CredentialService.decrypt({
+    secret_ciphertext: row.token_ciphertext,
+    secret_iv: row.token_iv,
+    secret_tag: row.token_tag
+  }) : '';
+  return {
+    configured: Boolean(token || GITHUB_API_TOKEN),
+    source: token ? 'admin' : (GITHUB_API_TOKEN ? 'environment' : 'none'),
+    updatedAt: row?.updated_at || null,
+    token: includeToken ? (token || GITHUB_API_TOKEN || '') : ''
+  };
+}
+
+async function saveGitHubApiToken(tokenInput, context = {}) {
+  if (!pool) throw Object.assign(new Error('数据库不可用，无法保存 GitHub Token'), { statusCode: 503 });
+  const token = String(tokenInput || '').trim();
+  if (token.length < 20 || token.length > 500 || /\s/.test(token)) {
+    throw Object.assign(new Error('GitHub Token 格式无效'), { statusCode: 400 });
+  }
+  const encrypted = CredentialService.encrypt(token);
+  await pool.query(
+    `UPDATE github_api_settings
+        SET token_ciphertext=$1,token_iv=$2,token_tag=$3,updated_at=NOW()
+      WHERE id=1`,
+    [encrypted.ciphertext, encrypted.iv, encrypted.tag]
+  );
+  await recordAdminAudit(context.actor || 'risk-admin', 'save_github_api_token', 'github-api', {
+    configured: true
+  }, context.sourceIp || null, context.userAgent || null);
+  return getGitHubApiSettings();
+}
+
 async function getAlertSettings({ includeSecrets = false } = {}) {
   if (!pool) return null;
   const result = await pool.query('SELECT * FROM alert_settings WHERE id = 1');
@@ -2658,6 +2695,8 @@ module.exports = {
   toggleIdentityEntry,
   deleteIdentityEntry,
   getAlertSettings,
+  getGitHubApiSettings,
+  saveGitHubApiToken,
   saveAlertSettings,
   listAlertCandidates,
   claimAlertNotifications,

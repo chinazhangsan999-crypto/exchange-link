@@ -369,9 +369,10 @@ td.version-stack small { color: var(--muted); }
 .metric-list > div { display: flex; justify-content: space-between; gap: 12px; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .metric-list dt { color: var(--muted); }
 .metric-list dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
-.security-grid { grid-template-columns: minmax(280px, .7fr) minmax(0, 1.8fr); }
+.security-grid { grid-template-columns: repeat(2, minmax(280px, 1fr)); }
 .security-card { display: grid; align-content: start; gap: 12px; }
 .security-card label { margin: 0; }
+.session-card { grid-column: 1 / -1; }
 .session-card { background: var(--surface); }
 .session-card .table-wrap { margin: 0; }
 td code { display: block; margin-top: 4px; color: var(--primary); font-size: 12px; overflow-wrap: anywhere; }

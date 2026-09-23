@@ -413,6 +413,12 @@
     const result = await request('/admin/api/security'); const data = result.data;
     $('security-username').value = data.account.username || '';
     $('security-account-meta').textContent = `当前账号：${data.account.username || '—'} · 最近修改：${formatDate(data.account.passwordChangedAt)}`;
+    const githubToken = $('github-token');
+    githubToken.value = '';
+    githubToken.required = !data.githubApi?.configured;
+    $('github-token-status').textContent = data.githubApi?.configured
+      ? `${data.githubApi.source === 'admin' ? '后台已配置' : '服务器环境已配置'} · 最近更新：${formatDate(data.githubApi.updatedAt)}`
+      : '未配置 · 当前检查会受 GitHub 匿名限额限制';
     const body = $('security-sessions-body'); body.replaceChildren();
     if (!data.sessions.length) return emptyRow(body, '没有有效会话。', 5);
     for (const item of data.sessions) {
@@ -740,6 +746,20 @@
       }) });
       toast(result.message); setTimeout(() => { setAuthenticated(false); }, 600);
     } catch (error) { toast(error.message); }
+  });
+  $('github-token-form').addEventListener('submit', async event => {
+    event.preventDefault();
+    const token = $('github-token').value.trim();
+    if (!token) return toast('请填入 GitHub API Token');
+    const button = event.currentTarget.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+      const result = await request('/admin/api/security/github-token', { method: 'PUT', body: JSON.stringify({ token }) });
+      $('github-token').value = '';
+      toast(result.message);
+      await loadSecurity();
+    } catch (error) { toast(error.message); }
+    finally { button.disabled = false; }
   });
   $('security-sessions-body').addEventListener('click', async event => {
     const button = event.target.closest('[data-action="revoke-session"]'); const row = button?.closest('tr'); if (!row) return;

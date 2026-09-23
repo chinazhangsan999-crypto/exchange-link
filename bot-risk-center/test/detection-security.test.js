@@ -22,6 +22,8 @@ test('识别质量与链路健康合并到导航站接入，名单合并到人�
   assert.match(html, /quality-pass-rate/);
   assert.match(html, /policies-body/);
   assert.match(html, /security-sessions-body/);
+  assert.match(html, /github-token-form/);
+  assert.match(html, /GitHub API Token/);
   assert.match(html, /revoke-all-sessions/);
   assert.match(script, /loadDetection/);
   assert.match(script, /loadQuality/);
@@ -29,8 +31,21 @@ test('识别质量与链路健康合并到导航站接入，名单合并到人�
   assert.match(script, /loadSecurity/);
   assert.match(routes, /detection\/capabilities/);
   assert.match(routes, /security\/credentials/);
+  assert.match(routes, /security\/github-token/);
   assert.match(routes, /sessions\/revoke-others/);
   assert.match(routes, /sessions\/revoke-all/);
+});
+
+test('GitHub API Token 只以加密凭据保存且维护检查按后台凭据优先', () => {
+  const migration = fs.readFileSync(path.join(root, 'migrations', '011_github_api_settings.sql'), 'utf8');
+  const storage = fs.readFileSync(path.join(root, 'src', 'services', 'StorageService.js'), 'utf8');
+  const maintenance = fs.readFileSync(path.join(root, 'src', 'services', 'MaintenanceService.js'), 'utf8');
+  assert.match(migration, /github_api_settings/);
+  assert.match(migration, /token_ciphertext/);
+  assert.match(storage, /CredentialService\.encrypt\(token\)/);
+  assert.match(storage, /save_github_api_token/);
+  assert.match(maintenance, /getGitHubApiSettings\(\{ includeToken: true \}\)/);
+  assert.match(maintenance, /githubSettings\.token \|\| GITHUB_API_TOKEN/);
 });
 
 test('数据库迁移持久化后台账号、会话、规则修订和新增参考组件', () => {

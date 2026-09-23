@@ -11,25 +11,25 @@ let timer = null;
 let initialTimer = null;
 let running = false;
 
-function githubHeaders() {
+function githubHeaders(token = '') {
   return {
     Accept: 'application/vnd.github+json',
     'User-Agent': 'webring-bot-risk-center',
     'X-GitHub-Api-Version': '2022-11-28',
-    ...(GITHUB_API_TOKEN ? { Authorization: `Bearer ${GITHUB_API_TOKEN}` } : {})
+    ...(token ? { Authorization: `Bearer ${token}` } : {})
   };
 }
 
-async function githubJson(url) {
-  const response = await fetch(url, { headers: githubHeaders(), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
+async function githubJson(url, token = '') {
+  const response = await fetch(url, { headers: githubHeaders(token), signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   if (!response.ok) throw new Error(`GitHub API ${response.status}`);
   return response.json();
 }
 
-async function fetchLatestRelease(repository) {
+async function fetchLatestRelease(repository, token = '') {
   const encoded = repository.split('/').map(encodeURIComponent).join('/');
   try {
-    const release = await githubJson(`https://api.github.com/repos/${encoded}/releases/latest`);
+    const release = await githubJson(`https://api.github.com/repos/${encoded}/releases/latest`, token);
     return {
       version: String(release.tag_name || release.name || '').slice(0, 120),
       releasedAt: release.published_at || release.created_at || null,
@@ -37,12 +37,12 @@ async function fetchLatestRelease(repository) {
     };
   } catch (releaseError) {
     try {
-      const tags = await githubJson(`https://api.github.com/repos/${encoded}/tags?per_page=1`);
+      const tags = await githubJson(`https://api.github.com/repos/${encoded}/tags?per_page=1`, token);
       const tag = Array.isArray(tags) ? tags[0] : null;
       if (tag?.name) {
         return { version: String(tag.name).slice(0, 120), releasedAt: null, url: `https://github.com/${repository}/tags` };
       }
-      const commits = await githubJson(`https://api.github.com/repos/${encoded}/commits?per_page=1`);
+      const commits = await githubJson(`https://api.github.com/repos/${encoded}/commits?per_page=1`, token);
       const commit = Array.isArray(commits) ? commits[0] : null;
       if (!commit?.sha) throw releaseError;
       return {
@@ -61,6 +61,8 @@ async function checkUpstreams({ force = false } = {}) {
   running = true;
   try {
     const settings = await StorageService.getAlertSettings();
+    const githubSettings = await StorageService.getGitHubApiSettings({ includeToken: true });
+    const githubToken = githubSettings.token || GITHUB_API_TOKEN;
     const before = await StorageService.listMaintenanceProjects();
     if (!force) {
       const interval = Math.max(1, settings?.upstreamCheckIntervalHours || 6) * 3600000;
@@ -70,7 +72,7 @@ async function checkUpstreams({ force = false } = {}) {
     for (let offset = 0; offset < before.length; offset += CHECK_BATCH_SIZE) {
       const batch = before.slice(offset, offset + CHECK_BATCH_SIZE);
       await Promise.all(batch.map(async project => {
-        const release = await fetchLatestRelease(project.repository);
+        const release = await fetchLatestRelease(project.repository, githubToken);
         await StorageService.updateMaintenanceProject(project.projectKey, release);
       }));
     }

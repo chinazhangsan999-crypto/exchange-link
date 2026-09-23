@@ -65,6 +65,7 @@ router.put('/admin/api/detection/identity-lists/:listType/:id', requireCsrf, Adm
 router.post('/admin/api/detection/identity-lists/:listType/:id/toggle', requireCsrf, AdminController.toggleIdentityEntry);
 router.delete('/admin/api/detection/identity-lists/:listType/:id', requireCsrf, AdminController.deleteIdentityEntry);
 router.get('/admin/api/security', AdminController.securityOverview);
+router.put('/admin/api/security/github-token', requireCsrf, AdminController.saveGitHubApiToken);
 router.put('/admin/api/security/credentials', requireCsrf, AdminController.changeCredentials);
 router.delete('/admin/api/security/sessions/:id', requireCsrf, AdminController.revokeSession);
 router.post('/admin/api/security/sessions/revoke-others', requireCsrf, AdminController.revokeOtherSessions);

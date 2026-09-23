@@ -366,13 +366,23 @@ async function activatePolicy(req, res) {
 }
 
 async function securityOverview(req, res) {
-  const [credential, sessions] = await Promise.all([
-    StorageService.getAdminCredential(), AdminAuthService.listSessions(req.riskAdmin)
+  const [credential, sessions, githubApi] = await Promise.all([
+    StorageService.getAdminCredential(), AdminAuthService.listSessions(req.riskAdmin), StorageService.getGitHubApiSettings()
   ]);
   return res.json({ code: 200, data: {
     account: { username: credential?.username || req.riskAdmin.username, passwordChangedAt: credential?.passwordChangedAt || null },
+    githubApi,
     sessions
   } });
+}
+
+async function saveGitHubApiToken(req, res) {
+  try {
+    const settings = await StorageService.saveGitHubApiToken(req.body?.token, adminRequestContext(req));
+    return res.json({ code: 200, data: settings, message: 'GitHub API Token 已加密保存，组件检查将使用新凭据' });
+  } catch (error) {
+    return res.status(error.statusCode || 400).json({ code: error.statusCode || 400, message: error.message || '保存 GitHub Token 失败' });
+  }
 }
 
 async function changeCredentials(req, res) {
@@ -577,7 +587,7 @@ module.exports = {
   riskSummary, suspects, suspectDetail, setSuspectAction, clearSuspectAction,
   rules, previewRule, createRule, setRuleStatus, deleteRule, ruleRevisions, policies, createPolicy, activatePolicy, audits,
   detectionCapabilities, detectionQuality, pipelineHealth, identityEntries, saveIdentityEntry, updateIdentityEntry, toggleIdentityEntry, deleteIdentityEntry,
-  securityOverview, changeCredentials, revokeSession, revokeOtherSessions, revokeAllSessions,
+  securityOverview, saveGitHubApiToken, changeCredentials, revokeSession, revokeOtherSessions, revokeAllSessions,
   alertSettings, saveAlertSettings, alertActivity, testAlert,
   ruleBackupSettings, saveRuleBackupSettings, ruleBackupStatus, testRuleBackup, runRuleBackup, retryRuleBackup,
   maintenanceProjects, maintenanceSites, checkMaintenanceProjects, setMaintenanceProjectStatus,
