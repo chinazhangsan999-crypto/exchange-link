@@ -147,6 +147,33 @@ function botdAssetVersion() {
   } catch { return ''; }
 }
 
+const MAINTENANCE_PACKAGES = Object.freeze([
+  ['alicloud-dns-sdk', '@alicloud/alidns20150109'],
+  ['alicloud-openapi-client', '@alicloud/openapi-client'],
+  ['aws-route53-sdk', '@aws-sdk/client-route-53'],
+  ['archiver', 'archiver'],
+  ['async-mutex', 'async-mutex'],
+  ['axios', 'axios'],
+  ['bcryptjs', 'bcryptjs'],
+  ['botd', '@fingerprintjs/botd'],
+  ['cheerio', 'cheerio'],
+  ['connect-sqlite3', 'connect-sqlite3'],
+  ['csv-parse', 'csv-parse'],
+  ['express', 'express'],
+  ['express-session', 'express-session'],
+  ['isbot', 'isbot'],
+  ['jsonwebtoken', 'jsonwebtoken'],
+  ['lru-cache', 'lru-cache'],
+  ['multer', 'multer'],
+  ['node-cron', 'node-cron'],
+  ['node-redis', 'redis'],
+  ['sqlite3', 'sqlite3'],
+  ['svg-captcha', 'svg-captcha'],
+  ['tencentcloud-dnspod-sdk', 'tencentcloud-sdk-nodejs-dnspod'],
+  ['tldts', 'tldts'],
+  ['ua-parser-js', 'ua-parser-js']
+]);
+
 function gitCommit() {
   const explicit = String(process.env.APP_GIT_COMMIT || process.env.GIT_COMMIT || '').trim();
   if (explicit) return explicit.slice(0, 80);
@@ -163,7 +190,16 @@ function gitCommit() {
 
 function buildRuntimeInventory() {
   const app = require('../../package.json');
-  const botdVersion = packageVersion('@fingerprintjs/botd');
+  const components = MAINTENANCE_PACKAGES.map(([key, packageName]) => ({
+    key,
+    packageVersion: packageVersion(packageName)
+  }));
+  const botd = components.find(item => item.key === 'botd');
+  if (botd) {
+    botd.assetVersion = botdAssetVersion();
+    botd.assetSha256 = fileSha256('public/vendor/botd.esm.js');
+  }
+  components.unshift({ key: 'nodejs', packageVersion: process.version.replace(/^v/, '') });
   return {
     schemaVersion: 'inventory-v1',
     appVersion: String(app.version || ''),
@@ -171,13 +207,8 @@ function buildRuntimeInventory() {
     nodeVersion: process.version,
     riskProtocolVersion: 'risk-agent-v1',
     deployedAt: String(process.env.APP_DEPLOYED_AT || PROCESS_STARTED_AT),
-    components: [{
-      key: 'botd',
-      packageVersion: botdVersion,
-      assetVersion: botdAssetVersion(),
-      assetSha256: fileSha256('public/vendor/botd.esm.js')
-    }],
-    capabilities: ['botd', 'browser_pow', 'read_token', 'risk_decision_sync']
+    components,
+    capabilities: ['botd', 'crawler_ua', 'browser_pow', 'read_token', 'token_replay_v2', 'risk_decision_sync']
   };
 }
 

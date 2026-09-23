@@ -1,13 +1,14 @@
 'use strict';
 (() => {
   const $ = id => document.getElementById(id);
-  const validTabs = new Set(['connections', 'suspects', 'detection', 'quality', 'rules', 'alerts', 'maintenance', 'security', 'audits']);
+  const validTabs = new Set(['connections', 'suspects', 'detection', 'rules', 'alerts', 'maintenance', 'security', 'audits']);
   const requestedTab = window.location.hash.replace(/^#/, '');
-  const initialTab = validTabs.has(requestedTab) ? requestedTab : 'connections';
-  const state = { csrf: '', sites: [], suspectPage: 1, suspectTotal: 0, suspectItems: [], selectedSuspects: new Set(), currentSuspect: null, activeTab: initialTab, riskRange: '24h' };
+  const initialTab = requestedTab === 'quality' ? 'connections' : (validTabs.has(requestedTab) ? requestedTab : 'connections');
+  const state = { csrf: '', sites: [], suspectPage: 1, suspectTotal: 0, suspectItems: [], selectedSuspects: new Set(), currentSuspect: null, activeTab: initialTab, riskRange: '24h', identityPage: 1, identityTotal: 0, identityItems: [], editingIdentity: null, maintenanceItems: [], maintenanceScope: 'all' };
   const signalLabels = Object.freeze({
-    cloudflare_confirmed_bot: 'Cloudflare 已确认机器人', verified_search_bot: '已验证搜索引擎蜘蛛',
+    cloudflare_confirmed_bot: 'Cloudflare 已确认机器人', verified_search_bot: '已验证搜索引擎蜘蛛', search_bot_spoofed: '搜索蜘蛛身份不一致',
     known_ai_crawler: '已知 AI 爬虫', token_replay: '读取凭证重放', sequential_detail_scan: '连续枚举详情页',
+    known_crawler_ua: '已知通用爬虫 UA',
     high_concurrency: '异常并发读取', botd_detected: '浏览器自动化特征', webdriver_detected: 'WebDriver 特征',
     browser_automation_confirmed: '多项自动化证据确认', script_user_agent: '脚本型 User-Agent',
     trapdoor_hit: '访问隐藏探针', repeated_trapdoor: '重复访问隐藏探针', challenge_failed: '浏览器验证失败',
@@ -18,7 +19,9 @@
   const signalExplanations = Object.freeze({
     cloudflare_confirmed_bot: 'Cloudflare 已明确将该请求识别为自动程序。这是边缘平台给出的强证据，普通真人浏览器通常不会命中。',
     verified_search_bot: '请求来源与已验证的搜索引擎蜘蛛一致。它可能是正规蜘蛛，但仍属于自动抓取程序，不是普通访客。',
+    search_bot_spoofed: '客户端声称自己是搜索引擎蜘蛛，但其 IP 未通过反向域名与正向地址的双向校验，可能是伪造 User-Agent 的自动程序。',
     known_ai_crawler: 'User-Agent 或风险情报命中了已知 AI 抓取工具特征。这类客户端通常以程序方式批量读取页面。',
+    known_crawler_ua: '请求标识命中了持续维护的通用爬虫规则库。由于 User-Agent 可以伪造，该信号只增加观察分，需结合并发、遍历或验证失败等证据判断。',
     token_replay: '同一短效读取凭证被重复或异常使用。正常页面会按流程获取和消费凭证，重复使用更像脚本复制请求。',
     sequential_detail_scan: '短时间内连续访问多个详情编号，呈现按 ID 枚举页面的规律；真人浏览通常不会如此连续、机械地遍历。',
     high_concurrency: '同一访客同时发起的核心数据读取超过正常页面并发上限。人类操作通常有点击间隔，高并发更像批量抓取。',
@@ -42,7 +45,8 @@
     concurrency: '并发数', count: '次数', detailCount: '详情数量', detailId: '详情编号', ids: '访问编号', windowMs: '统计窗口',
     reason: '检测依据', source: '信号来源', botName: '程序名称', botKind: '自动化类型', method: '请求方法', test: '测试标记',
     elapsedMs: '验证耗时(ms)', difficultyBits: '验证难度', webdriver: 'WebDriver', botDetected: 'BotD 结果',
-    secFetchSite: 'Sec-Fetch-Site', secFetchMode: 'Sec-Fetch-Mode', secFetchDest: 'Sec-Fetch-Dest'
+    secFetchSite: 'Sec-Fetch-Site', secFetchMode: 'Sec-Fetch-Mode', secFetchDest: 'Sec-Fetch-Dest',
+    hostname: '反向域名', verificationReason: '身份校验结果'
   });
   let toastTimer;
 
@@ -85,6 +89,39 @@
     });
     input.before(row);
     row.append(input, button);
+  }
+  function installIdentityControls() {
+    const form = $('identity-form'); const section = form.closest('.panel-subsection');
+    section.classList.add('identity-section'); form.classList.remove('inline-form'); form.classList.add('identity-editor');
+    section.querySelector('.subtle').textContent = '单站规则优先于全站规则；同一范围的同一对象不能同时允许和阻止。UA、ASN、JA4 等弱身份不建议单独永久拒绝。';
+    const subject = $('identity-subject'); const help = node('small', '填写风险中心显示的访客摘要，区分大小写。'); help.id = 'identity-subject-help'; subject.after(help);
+    const duration = $('identity-duration'); const durationLabel = duration.closest('label'); durationLabel.classList.add('identity-duration-field');
+    const validity = document.createElement('select'); validity.id = 'identity-validity';
+    for (const [value, label] of [['60','60 分钟'],['1440','24 小时'],['10080','7 天'],['custom','自定义'],['0','永久']]) { const option = node('option', label); option.value = value; validity.append(option); }
+    durationLabel.firstChild.textContent = '有效期'; duration.before(validity); duration.hidden = true;
+    $('identity-permanent').closest('label').hidden = true;
+    const error = node('p', '', 'form-note identity-error'); error.id = 'identity-form-error'; error.setAttribute('role', 'alert');
+    const actions = form.querySelector('.form-actions'); actions.before(error);
+    const submit = actions.querySelector('button[type="submit"]'); submit.id = 'identity-submit';
+    const cancel = actionButton('取消编辑', 'cancel-identity'); cancel.id = 'identity-cancel-edit'; cancel.hidden = true; actions.prepend(cancel);
+    const filters = node('div', '', 'identity-filters');
+    const filterDefs = [['identity-filter-list','名单',[['','全部'],['allow','允许'],['block','阻止']]],['identity-filter-site','站点',[['','全部站点'],['*','所有站点规则']]],['identity-filter-subject','对象',[['','全部类型'],['visitor','访客摘要'],['bot_identity','机器人身份'],['ua','User-Agent'],['ja4','JA4'],['asn','ASN']]],['identity-filter-status','状态',[['','全部'],['enabled','启用'],['disabled','停用']]]];
+    for (const [id,labelText,options] of filterDefs) { const label=node('label', labelText); const select=document.createElement('select'); select.id=id; for(const [value,text] of options){const option=node('option',text); option.value=value; select.append(option);} label.append(select); filters.append(label); }
+    const keywordLabel=node('label','搜索','identity-keyword'); const keyword=document.createElement('input'); keyword.id='identity-filter-keyword'; keyword.maxLength=120; keyword.placeholder='对象值或原因'; keywordLabel.append(keyword); filters.append(keywordLabel);
+    const tableWrap = section.querySelector('.table-wrap'); tableWrap.classList.add('identity-table-wrap'); tableWrap.before(filters);
+    const table=tableWrap.querySelector('table'); table.classList.add('identity-table'); table.querySelector('thead tr').replaceChildren(...['名单 / 状态','范围','对象','有效期','原因','命中','操作'].map(text=>node('th',text)));
+    const pagination=node('div','','identity-pagination'); const summary=node('span','共 0 条'); summary.id='identity-page-summary'; const buttons=node('div','','button-row');
+    const prev=actionButton('上一页','identity-prev'); prev.id='identity-prev'; const page=node('span','1 / 1'); page.id='identity-page'; const next=actionButton('下一页','identity-next'); next.id='identity-next'; buttons.append(prev,page,next); pagination.append(summary,buttons); tableWrap.after(pagination);
+  }
+  function installMaintenanceScopeFilter() {
+    const legend = document.querySelector('#panel-maintenance .maintenance-legend');
+    const label = node('label', '显示范围', 'maintenance-scope-filter');
+    const select = document.createElement('select'); select.id = 'maintenance-scope-filter';
+    for (const [value, text] of [['all','全部项目'],['risk_center','风险中心'],['navigation','导航站'],['reference','仅参考项目']]) {
+      const option = node('option', text); option.value = value; select.append(option);
+    }
+    select.addEventListener('change', event => { state.maintenanceScope = event.currentTarget.value; renderMaintenance(state.maintenanceItems); });
+    label.append(select); legend.prepend(label);
   }
   function actionButton(text, action, extra = '', id = '') { const button = node('button', text, `button small ${extra || 'secondary'}`); button.type = 'button'; button.dataset.action = action; if (id) button.dataset.id = id; return button; }
   function signalLabel(signal) { return signalLabels[signal] || signal; }
@@ -154,6 +191,14 @@
       const all = node('option', '所有站点'); all.value = '*';
       identitySite.replaceChildren(all, ...state.sites.map(site => { const option = node('option', site.name || site.siteKey); option.value = site.siteKey; return option; }));
       identitySite.value = current;
+    }
+    const identityFilterSite = $('identity-filter-site');
+    if (identityFilterSite) {
+      const current = identityFilterSite.value;
+      const all = node('option', '全部站点'); all.value = '';
+      const global = node('option', '所有站点规则'); global.value = '*';
+      identityFilterSite.replaceChildren(all, global, ...state.sites.map(site => { const option = node('option', site.name || site.siteKey); option.value = site.siteKey; return option; }));
+      identityFilterSite.value = current;
     }
     const driveSites = $('drive-sites');
     if (driveSites) {
@@ -284,12 +329,24 @@
     }
   }
 
+  function identityQuery() {
+    const params = new URLSearchParams({ page: state.identityPage, pageSize: 100 });
+    for (const [key, id] of [['listType', 'identity-filter-list'], ['siteKey', 'identity-filter-site'], ['subjectType', 'identity-filter-subject'], ['status', 'identity-filter-status'], ['keyword', 'identity-filter-keyword']]) {
+      if ($(id)?.value.trim()) params.set(key, $(id).value.trim());
+    }
+    return params.toString();
+  }
+
+  function resetIdentityEditor() {
+    state.editingIdentity = null; $('identity-form').reset(); $('identity-duration').value = '60';
+    $('identity-list-type').disabled = false; $('identity-validity').value = '60'; $('identity-duration').hidden = true;
+    $('identity-permanent').checked = false; $('identity-duration').disabled = false;
+    $('identity-form-error').textContent = ''; $('identity-submit').textContent = '保存名单项'; $('identity-cancel-edit').hidden = true;
+  }
+
   async function loadDetection() {
     const range = $('detection-range').value;
-    const [capabilities, identities] = await Promise.all([
-      request(`/admin/api/detection/capabilities?range=${encodeURIComponent(range)}`),
-      request('/admin/api/detection/identity-lists')
-    ]);
+    const capabilities = await request(`/admin/api/detection/capabilities?range=${encodeURIComponent(range)}`);
     const body = $('detection-body'); body.replaceChildren();
     const statusLabels = { connected: '已接入', partial: '部分接入', not_connected: '尚未接入' };
     const confidenceLabels = { high: '强', medium: '中', low: '弱' };
@@ -302,13 +359,29 @@
         node('td', `${item.events} 次 / ${item.visitors} 人`, 'numeric'), node('td', formatDate(item.lastSeen)), node('td', item.implementationNote));
       body.append(tr);
     }
+  }
+
+  async function loadIdentityLists() {
+    const identities = await request(`/admin/api/detection/identity-lists?${identityQuery()}`);
+    const identityData = identities.data || { items: [], total: 0, page: 1, pageSize: 100 };
+    state.identityItems = identityData.items || []; state.identityTotal = identityData.total || 0; state.identityPage = identityData.page || 1;
+    const totalPages = Math.max(1, Math.ceil(state.identityTotal / (identityData.pageSize || 100)));
+    $('identity-page-summary').textContent = `共 ${state.identityTotal} 条 · 每页最多 100 条`;
+    $('identity-page').textContent = `${state.identityPage} / ${totalPages}`;
+    $('identity-prev').disabled = state.identityPage <= 1; $('identity-next').disabled = state.identityPage >= totalPages;
     const identityBody = $('identity-body'); identityBody.replaceChildren();
-    if (!identities.data.length) emptyRow(identityBody, '尚无人工允许或阻止名单。', 6);
-    for (const item of identities.data) {
+    if (!state.identityItems.length) emptyRow(identityBody, '当前筛选条件下没有名单项。', 7);
+    for (const item of state.identityItems) {
       const tr = node('tr'); tr.dataset.id = item.id; tr.dataset.listType = item.listType;
-      const action = node('td', '', 'action-column'); action.append(actionButton('删除', 'delete-identity', 'danger'));
-      tr.append(node('td', item.listType === 'allow' ? '允许' : '阻止'), node('td', item.siteKey === '*' ? '所有站点' : item.siteKey),
-        node('td', `${item.subjectType}\n${item.subjectHash}`), node('td', item.reason || '—'), node('td', item.expiresAt ? formatDate(item.expiresAt) : '永久'), action);
+      const action = node('td', '', 'action-column'); action.dataset.label = '操作';
+      action.append(actionButton('编辑', 'edit-identity'), actionButton(item.enabled ? '停用' : '启用', 'toggle-identity'), actionButton('删除', 'delete-identity', 'danger'));
+      const status = node('td'); status.dataset.label = '名单 / 状态'; status.append(chip(`${item.listType === 'allow' ? '允许' : '阻止'} · ${item.enabled ? '启用' : '停用'}`, item.enabled));
+      const range = node('td', item.siteKey === '*' ? '所有站点' : item.siteKey); range.dataset.label = '范围';
+      const subject = node('td', `${item.subjectType}\n${item.subjectHash}`); subject.dataset.label = '对象';
+      const expiry = node('td', item.expiresAt ? formatDate(item.expiresAt) : '永久'); expiry.dataset.label = '有效期';
+      const reason = node('td', item.reason || '—'); reason.dataset.label = '原因';
+      const hits = node('td', `${item.hitCount || 0} 次\n${item.lastHitAt ? formatDate(item.lastHitAt) : '尚未命中'}`); hits.dataset.label = '命中';
+      tr.append(status, range, subject, expiry, reason, hits, action);
       identityBody.append(tr);
     }
   }
@@ -326,7 +399,7 @@
     $('pipeline-summary').replaceChildren(
       chip(`PostgreSQL ${pipeline.database ? '正常' : '异常'}`, pipeline.database),
       chip(`Redis ${pipeline.redis ? '正常' : '异常'}`, pipeline.redis),
-      node('span', `5分钟：事件 ${pipeline.events5m} · 决策 ${pipeline.decisions5m} · 验证 ${pipeline.challenges5m}`, 'signal-chip')
+      node('span', `5分钟：事件 ${pipeline.events5m || 0} · 决策 ${pipeline.decisions5m || 0} · 验证 ${pipeline.challenges5m || 0}`, 'signal-chip')
     );
     const pipelineBody = $('pipeline-body'); pipelineBody.replaceChildren();
     if (!pipeline.sites.length) emptyRow(pipelineBody, '没有启用的导航站。', 5);
@@ -415,7 +488,7 @@
       tr.append(
         node('td', formatDate(run.createdAt)),
         node('td', triggerLabels[run.triggerType] || run.triggerType),
-        node('td', `${run.ruleCount}（启用 ${run.enabledCount}）`),
+        node('td', `信号规则 ${run.ruleCount}（启用 ${run.enabledCount}）\n允许 ${run.allowCount || 0} · 阻止 ${run.blockCount || 0}\n策略 ${run.policyCount || 0} · 修订 ${run.revisionCount || 0}`),
         node('td', `${uploaded}/${run.partsTotal}`),
         node('td', run.lastError ? `${statusLabels[run.status] || run.status}：${run.lastError}` : (statusLabels[run.status] || run.status)),
         node('td', run.contentSha256 ? `${run.contentSha256.slice(0, 16)}…` : '—')
@@ -434,23 +507,35 @@
     }[item.followStatus] || { label: item.followStatus || '未知', className: '' };
   }
   function renderMaintenance(items) {
+    state.maintenanceItems = Array.isArray(items) ? items : [];
+    const visible = state.maintenanceItems.filter(item => {
+      if (state.maintenanceScope === 'all') return true;
+      if (state.maintenanceScope === 'reference') return item.integrationMode === 'reference';
+      return Array.isArray(item.usedBy) && item.usedBy.includes(state.maintenanceScope);
+    });
     const body = $('maintenance-body'); body.replaceChildren();
-    if (!items.length) return emptyRow(body, '尚未登记上游项目。', 7);
+    if (!visible.length) return emptyRow(body, state.maintenanceItems.length ? '当前范围没有项目。' : '尚未登记上游项目。', 7);
     const modeLabels = { direct: '直接集成', signal_source: '信号来源', reference: '仅参考' };
-    for (const item of items) {
+    const scopeLabels = { risk_center: '风险中心', navigation: '导航站', reference: '参考' };
+    for (const item of visible) {
       const tr = node('tr'); tr.dataset.projectKey = item.projectKey;
       const project = node('td', '', 'maintenance-project');
       project.append(node('strong', item.name), node('span', item.projectKey, 'site-key'));
       const link = node('a', item.repository); link.href = `https://github.com/${item.repository}`; link.target = '_blank'; link.rel = 'noopener'; project.append(link);
-      const versions = node('td', '', 'version-stack'); versions.append(node('span', item.installedVersion || '未直接安装'), node('small', item.followedVersion ? `已跟进：${item.followedVersion}` : '尚无跟进记录'));
+      const versions = node('td', '', 'version-stack'); versions.append(node('span', item.installedVersion || (item.integrationMode === 'reference' ? '未直接安装' : '版本待上报')), node('small', item.followedVersion ? `已跟进：${item.followedVersion}` : '尚无跟进记录'));
       const latest = node('td', '', 'version-stack'); latest.append(node('span', item.latestVersion || '尚未获取'));
       if (item.releaseUrl) { const release = node('a', '查看发布说明'); release.href = item.releaseUrl; release.target = '_blank'; release.rel = 'noopener'; latest.append(release); }
       const times = node('td', '', 'version-stack'); times.append(node('span', `发布：${formatDate(item.latestReleaseAt)}`), node('small', `检查：${formatDate(item.lastCheckedAt)}`), node('small', `跟进：${formatDate(item.followedAt)}`));
       const statusData = maintenanceStatus(item); const statusCell = node('td'); statusCell.append(node('span', statusData.label, `update-status ${statusData.className}`)); if (item.lastError) statusCell.append(node('small', item.lastError));
+      const access = node('td', '', 'component-access'); access.append(node('strong', modeLabels[item.integrationMode] || item.integrationMode));
+      const scopeList = node('div', '', 'component-scope-list');
+      for (const scope of item.usedBy || []) scopeList.append(node('span', scopeLabels[scope] || scope, 'component-scope-chip'));
+      if (item.componentKind) scopeList.append(node('span', item.componentKind, 'component-scope-chip muted'));
+      access.append(scopeList);
       const actions = node('td', '', 'action-column'); const group = node('div', '', 'inline-actions');
       if (item.latestVersion && item.followStatus === 'update_available') group.append(actionButton('标记已跟进', 'follow-project', 'success'), actionButton('忽略此版本', 'ignore-project'));
       if (['followed', 'ignored'].includes(item.followStatus)) group.append(actionButton('重置状态', 'reset-project'));
-      actions.append(group); tr.append(project, node('td', modeLabels[item.integrationMode] || item.integrationMode), versions, latest, times, statusCell, actions); body.append(tr);
+      actions.append(group); tr.append(project, access, versions, latest, times, statusCell, actions); body.append(tr);
     }
   }
   function renderMaintenanceSites(items) {
@@ -522,10 +607,10 @@
     $('drive-last-status').textContent = data.lastError ? `最近错误：${data.lastError}` : (data.lastBackupAt ? `最近成功备份：${formatDate(data.lastBackupAt)} · 文件 ID ${data.lastFileId || '—'}` : '尚无备份记录。');
   }
   async function loadActiveTab() {
-    if (state.activeTab === 'suspects') { await loadSuspects(); if ($('analysis-backup-details').open) await loadDriveSettings(); }
+    if (state.activeTab === 'connections') await loadQuality();
+    else if (state.activeTab === 'suspects') { await loadSuspects(); if ($('analysis-backup-details').open) await loadDriveSettings(); }
     else if (state.activeTab === 'detection') await loadDetection();
-    else if (state.activeTab === 'quality') await loadQuality();
-    else if (state.activeTab === 'rules') await loadRules();
+    else if (state.activeTab === 'rules') await Promise.all([loadRules(), loadIdentityLists()]);
     else if (state.activeTab === 'alerts') await loadAlerts();
     else if (state.activeTab === 'maintenance') await loadMaintenance();
     else if (state.activeTab === 'security') await loadSecurity();
@@ -538,6 +623,7 @@
     state.activeTab = name;
     document.querySelectorAll('.tab').forEach(item => item.classList.toggle('active', item === tab));
     document.querySelectorAll('.tab-panel').forEach(panel => { panel.hidden = panel.id !== `panel-${name}`; });
+    $('identity-rules-section').hidden = name !== 'rules';
     if (load) loadActiveTab().catch(error => toast(error.message));
   }
 
@@ -595,27 +681,52 @@
     catch (error) { toast(error.message); }
   });
 
+  installIdentityControls();
+  installMaintenanceScopeFilter();
   $('detection-range').addEventListener('change', () => loadDetection().catch(error => toast(error.message)));
   $('quality-range').addEventListener('change', () => loadQuality().catch(error => toast(error.message)));
-  $('identity-permanent').addEventListener('change', event => { $('identity-duration').disabled = event.currentTarget.checked; });
+  $('identity-validity').addEventListener('change', event => {
+    const custom = event.currentTarget.value === 'custom'; $('identity-duration').hidden = !custom;
+    $('identity-permanent').checked = event.currentTarget.value === '0';
+    if (!custom && event.currentTarget.value !== '0') $('identity-duration').value = event.currentTarget.value;
+  });
+  $('identity-subject-type').addEventListener('change', event => {
+    const help = { visitor: '填写风险中心显示的访客摘要，区分大小写。', bot_identity: '例如 Googlebot、GPTBot；保存时会转为小写。', ua: '填写稳定且尽量具体的 User-Agent 片段。', ja4: '填写完整 JA4 指纹。', asn: '只填写数字，例如 15169。' };
+    $('identity-subject-help').textContent = help[event.currentTarget.value] || '';
+  });
   $('identity-form').addEventListener('submit', async event => {
     event.preventDefault();
     try {
-      const result = await request('/admin/api/detection/identity-lists', { method: 'POST', body: JSON.stringify({
+      $('identity-form-error').textContent = '';
+      const subjectHash = $('identity-subject').value.trim(); const reason = $('identity-reason').value.trim();
+      if (!subjectHash || reason.length < 2) { $('identity-form-error').textContent = '请填写有效对象值和至少 2 个字的处置原因。'; return; }
+      const path = state.editingIdentity ? `/admin/api/detection/identity-lists/${state.editingIdentity.listType}/${state.editingIdentity.id}` : '/admin/api/detection/identity-lists';
+      const result = await request(path, { method: state.editingIdentity ? 'PUT' : 'POST', body: JSON.stringify({
         listType: $('identity-list-type').value, siteKey: $('identity-site').value,
-        subjectType: $('identity-subject-type').value, subjectHash: $('identity-subject').value.trim(),
-        reason: $('identity-reason').value.trim(), permanent: $('identity-permanent').checked,
+        subjectType: $('identity-subject-type').value, subjectHash,
+        reason, permanent: $('identity-permanent').checked,
         durationMinutes: Number($('identity-duration').value)
       }) });
-      toast(result.message); $('identity-subject').value = ''; $('identity-reason').value = ''; await loadDetection();
-    } catch (error) { toast(error.message); }
+      toast(result.message); resetIdentityEditor(); await loadIdentityLists();
+    } catch (error) { $('identity-form-error').textContent = error.message; toast(error.message); }
   });
   $('identity-body').addEventListener('click', async event => {
-    const button = event.target.closest('[data-action="delete-identity"]'); const row = button?.closest('tr');
-    if (!row || !confirm('确定删除该名单项吗？')) return;
-    try { await request(`/admin/api/detection/identity-lists/${row.dataset.listType}/${row.dataset.id}`, { method: 'DELETE' }); toast('名单项已删除'); await loadDetection(); }
+    const button = event.target.closest('[data-action]'); const row = button?.closest('tr'); if (!row) return;
+    const item = state.identityItems.find(entry => String(entry.id) === row.dataset.id && entry.listType === row.dataset.listType); if (!item) return;
+    if (button.dataset.action === 'edit-identity') {
+      state.editingIdentity = item; $('identity-list-type').value=item.listType; $('identity-list-type').disabled=true; $('identity-site').value=item.siteKey; $('identity-subject-type').value=item.subjectType; $('identity-subject').value=item.subjectHash; $('identity-reason').value=item.reason || '';
+      $('identity-validity').value = item.expiresAt ? 'custom' : '0'; $('identity-permanent').checked=!item.expiresAt; $('identity-duration').hidden=!item.expiresAt; $('identity-duration').value=item.expiresAt ? String(Math.max(1,Math.ceil((new Date(item.expiresAt).getTime()-Date.now())/60000))) : '60'; $('identity-submit').textContent='保存修改'; $('identity-cancel-edit').hidden=false; $('identity-subject').focus(); return;
+    }
+    if (button.dataset.action === 'toggle-identity') { try { const result=await request(`/admin/api/detection/identity-lists/${item.listType}/${item.id}/toggle`,{method:'POST'}); toast(result.message); await loadIdentityLists(); } catch(error){toast(error.message);} return; }
+    if (button.dataset.action !== 'delete-identity' || !confirm('确定删除该名单项吗？该操作会写入审计日志。')) return;
+    try { await request(`/admin/api/detection/identity-lists/${row.dataset.listType}/${row.dataset.id}`, { method: 'DELETE' }); toast('名单项已删除'); await loadIdentityLists(); }
     catch (error) { toast(error.message); }
   });
+  $('identity-cancel-edit').addEventListener('click', resetIdentityEditor);
+  for (const id of ['identity-filter-list','identity-filter-site','identity-filter-subject','identity-filter-status']) $(id).addEventListener('change', () => { state.identityPage=1; loadIdentityLists().catch(error=>toast(error.message)); });
+  let identitySearchTimer; $('identity-filter-keyword').addEventListener('input', () => { clearTimeout(identitySearchTimer); identitySearchTimer=setTimeout(()=>{state.identityPage=1; loadIdentityLists().catch(error=>toast(error.message));},250); });
+  $('identity-prev').addEventListener('click',()=>{if(state.identityPage>1){state.identityPage-=1;loadIdentityLists().catch(error=>toast(error.message));}});
+  $('identity-next').addEventListener('click',()=>{state.identityPage+=1;loadIdentityLists().catch(error=>toast(error.message));});
 
   $('credential-form').addEventListener('submit', async event => {
     event.preventDefault();

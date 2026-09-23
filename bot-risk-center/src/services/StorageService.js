@@ -41,14 +41,43 @@ function redisKey(siteKey, visitorHash) {
   return `risk:decision:${siteKey}:${visitorHash}`;
 }
 
+function localPackageVersions() {
+  try {
+    const lock = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package-lock.json'), 'utf8'));
+    const version = name => String(lock.packages?.[`node_modules/${name}`]?.version || lock.dependencies?.[name]?.version || '');
+    return {
+      nodejs: process.version.replace(/^v/, ''),
+      express: version('express'),
+      'lru-cache': version('lru-cache'),
+      'node-postgres': version('pg'),
+      pino: version('pino'),
+      'node-redis': version('redis')
+    };
+  } catch {
+    return { nodejs: process.version.replace(/^v/, '') };
+  }
+}
+
+async function syncLocalMaintenanceVersions() {
+  if (!pool) return;
+  for (const [projectKey, installedVersion] of Object.entries(localPackageVersions())) {
+    if (!installedVersion) continue;
+    await pool.query(
+      'UPDATE maintenance_projects SET installed_version=$2,updated_at=NOW() WHERE project_key=$1',
+      [projectKey, installedVersion]
+    );
+  }
+}
+
 async function initialize() {
   if (ready) return;
   if (DATABASE_URL) {
     pool = new Pool({ connectionString: DATABASE_URL, max: 10, idleTimeoutMillis: 30_000 });
-    for (const filename of ['001_initial.sql', '002_alerting.sql', '003_maintenance.sql', '004_agent_maintenance.sql', '005_analysis_drive.sql', '006_personal_drive_oauth.sql', '007_rule_telegram_backup.sql', '008_detection_security.sql']) {
+    for (const filename of ['001_initial.sql', '002_alerting.sql', '003_maintenance.sql', '004_agent_maintenance.sql', '005_analysis_drive.sql', '006_personal_drive_oauth.sql', '007_rule_telegram_backup.sql', '008_detection_security.sql', '009_identity_controls.sql', '010_maintenance_component_inventory.sql']) {
       const migration = fs.readFileSync(path.join(__dirname, '..', '..', 'migrations', filename), 'utf8');
       await pool.query(migration);
     }
+    await syncLocalMaintenanceVersions();
     const { ADMIN_USERNAME, ADMIN_PASSWORD_HASH } = require('../config/env');
     await pool.query(
       `INSERT INTO admin_credentials (id, username, password_hash)
@@ -166,15 +195,17 @@ async function applyManualControls(siteKey, events, decisions) {
       [siteKey]
     ),
     pool.query(
-      `SELECT site_key,subject_type,subject_hash,reason FROM allowlists
+      `SELECT id,site_key,subject_type,subject_hash,reason FROM allowlists
         WHERE (site_key=$1 OR site_key='*')
+          AND enabled=TRUE
           AND (subject_type<>'visitor' OR subject_hash=ANY($2::text[]))
           AND (expires_at IS NULL OR expires_at>NOW())
         ORDER BY CASE WHEN site_key=$1 THEN 0 ELSE 1 END`, [siteKey, visitors]
     ),
     pool.query(
-      `SELECT site_key,subject_type,subject_hash,reason FROM blocklists
+      `SELECT id,site_key,subject_type,subject_hash,reason FROM blocklists
         WHERE (site_key=$1 OR site_key='*')
+          AND enabled=TRUE
           AND (subject_type<>'visitor' OR subject_hash=ANY($2::text[]))
           AND (expires_at IS NULL OR expires_at>NOW())
         ORDER BY CASE WHEN site_key=$1 THEN 0 ELSE 1 END`, [siteKey, visitors]
@@ -205,14 +236,19 @@ async function applyManualControls(siteKey, events, decisions) {
     signalsByVisitor.set(event.visitorHash, set);
   }
   const now = Date.now();
-  return decisions.map(item => {
-    const allowEntry = allowEntries.rows.find(row => identityMatch(row, item.subjectHash));
-    if (allowEntry) {
-      return { ...item, score: 0, decision: 'allow', reasons: [`allowlist:${allowEntry.reason || 'manual'}`] };
-    }
-    const blockEntry = blockEntries.rows.find(row => identityMatch(row, item.subjectHash));
-    if (blockEntry) {
-      return { ...item, score: 100, decision: 'deny', reasons: [`blocklist:${blockEntry.reason || 'manual'}`] };
+  const matchedEntries = [];
+  const controlled = decisions.map(item => {
+    const candidates = [
+      ...allowEntries.rows.filter(row => identityMatch(row, item.subjectHash)).map(row => ({ ...row, listType: 'allow' })),
+      ...blockEntries.rows.filter(row => identityMatch(row, item.subjectHash)).map(row => ({ ...row, listType: 'block' }))
+    ].sort((a, b) => Number(b.site_key === siteKey) - Number(a.site_key === siteKey)
+      || Number(a.listType === 'allow') - Number(b.listType === 'allow'));
+    const identityEntry = candidates[0];
+    if (identityEntry) {
+      matchedEntries.push(identityEntry);
+      return identityEntry.listType === 'allow'
+        ? { ...item, score: 0, decision: 'allow', reasons: [`allowlist:${identityEntry.reason || 'manual'}`] }
+        : { ...item, score: 100, decision: 'deny', reasons: [`blocklist:${identityEntry.reason || 'manual'}`] };
     }
     const manual = overrideByVisitor.get(item.subjectHash);
     if (manual && ACTIONS.has(manual.action)) {
@@ -242,6 +278,10 @@ async function applyManualControls(siteKey, events, decisions) {
       expiresAt: Math.min(item.expiresAt, ruleExpiresAt)
     };
   });
+  await Promise.all([...new Map(matchedEntries.map(item => [`${item.listType}:${item.id}`, item])).values()]
+    .map(item => pool.query(`UPDATE ${item.listType === 'block' ? 'blocklists' : 'allowlists'}
+      SET hit_count=hit_count+1,last_hit_at=NOW() WHERE id=$1`, [item.id])));
+  return controlled;
 }
 
 function normalizeDecisionRow(row) {
@@ -942,6 +982,45 @@ async function listSignalRules() {
   }));
 }
 
+async function getUnifiedRuleBackupData() {
+  if (!pool) return { signalRules: [], allowlist: [], blocklist: [], policies: [], revisions: [] };
+  const [signalRules, identities, policies, revisions] = await Promise.all([
+    listSignalRules(),
+    pool.query(`SELECT 'allow' AS list_type,id,site_key,subject_type,subject_hash,reason,
+                       expires_at,created_at,updated_at,enabled,hit_count,last_hit_at FROM allowlists
+                UNION ALL
+                SELECT 'block' AS list_type,id,site_key,subject_type,subject_hash,reason,
+                       expires_at,created_at,updated_at,enabled,hit_count,last_hit_at FROM blocklists
+                ORDER BY list_type,id`),
+    pool.query('SELECT id,name,version,configuration,active,created_at,updated_at FROM policies ORDER BY id'),
+    pool.query(`SELECT id,rule_id,operation,snapshot,created_by,created_at
+                  FROM signal_rule_revisions ORDER BY id`)
+  ]);
+  const mapIdentity = row => ({
+    id: Number(row.id), listType: row.list_type, siteKey: row.site_key,
+    subjectType: row.subject_type, subjectHash: row.subject_hash, reason: row.reason,
+    enabled: Boolean(row.enabled), hitCount: Number(row.hit_count) || 0,
+    lastHitAt: row.last_hit_at, expiresAt: row.expires_at,
+    createdAt: row.created_at, updatedAt: row.updated_at
+  });
+  const identityItems = identities.rows.map(mapIdentity);
+  return {
+    signalRules,
+    allowlist: identityItems.filter(item => item.listType === 'allow'),
+    blocklist: identityItems.filter(item => item.listType === 'block'),
+    policies: policies.rows.map(row => ({
+      id: Number(row.id), name: row.name, version: row.version,
+      configuration: row.configuration || {}, active: Boolean(row.active),
+      createdAt: row.created_at, updatedAt: row.updated_at
+    })),
+    revisions: revisions.rows.map(row => ({
+      id: Number(row.id), ruleId: row.rule_id == null ? null : Number(row.rule_id),
+      operation: row.operation, snapshot: row.snapshot || {}, createdBy: row.created_by,
+      createdAt: row.created_at
+    }))
+  };
+}
+
 async function previewSignalRule(siteKey, signal) {
   if (!pool) return { events24h: 0, visitors24h: 0 };
   const anySite = siteKey === '*';
@@ -1292,7 +1371,7 @@ async function getDetectionQuality(range = '24h') {
 }
 
 async function getPipelineHealth() {
-  if (!pool) return { database: false, redis: Boolean(redis?.isReady), events5m: 0, decisions5m: 0, sites: [] };
+  if (!pool) return { database: false, redis: Boolean(redis?.isReady), events5m: 0, decisions5m: 0, challenges5m: 0, sites: [] };
   const [summary, sites] = await Promise.all([
     pool.query(`SELECT
       (SELECT COUNT(*)::int FROM risk_events WHERE created_at>=NOW()-INTERVAL '5 minutes') AS events_5m,
@@ -1314,26 +1393,41 @@ async function getPipelineHealth() {
   };
 }
 
-async function listIdentityEntries() {
-  if (!pool) return [];
-  const result = await pool.query(
-    `SELECT 'allow' AS list_type,id,site_key,subject_type,subject_hash,reason,expires_at,created_at FROM allowlists
-     UNION ALL
-     SELECT 'block' AS list_type,id,site_key,subject_type,subject_hash,reason,expires_at,created_at FROM blocklists
-     ORDER BY created_at DESC LIMIT 500`
-  );
-  return result.rows.map(row => ({ listType: row.list_type, id: Number(row.id), siteKey: row.site_key,
-    subjectType: row.subject_type, subjectHash: row.subject_hash, reason: row.reason,
-    expiresAt: row.expires_at, createdAt: row.created_at }));
+async function listIdentityEntries(filters = {}) {
+  if (!pool) return { items: [], total: 0, page: 1, pageSize: 100 };
+  const page = Math.max(1, Number(filters.page) || 1);
+  const pageSize = Math.max(1, Math.min(100, Number(filters.pageSize) || 100));
+  const params = [];
+  const clauses = [];
+  const add = value => { params.push(value); return `$${params.length}`; };
+  if (['allow', 'block'].includes(filters.listType)) clauses.push(`list_type=${add(filters.listType)}`);
+  if (filters.siteKey) clauses.push(`site_key=${add(filters.siteKey)}`);
+  if (filters.subjectType) clauses.push(`subject_type=${add(filters.subjectType)}`);
+  if (filters.status === 'enabled') clauses.push('enabled=TRUE');
+  if (filters.status === 'disabled') clauses.push('enabled=FALSE');
+  if (filters.keyword) { const p = add(`%${String(filters.keyword).slice(0, 120)}%`); clauses.push(`(subject_hash ILIKE ${p} OR reason ILIKE ${p})`); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const union = `SELECT 'allow' AS list_type,id,site_key,subject_type,subject_hash,reason,expires_at,created_at,updated_at,enabled,hit_count,last_hit_at FROM allowlists
+    UNION ALL SELECT 'block' AS list_type,id,site_key,subject_type,subject_hash,reason,expires_at,created_at,updated_at,enabled,hit_count,last_hit_at FROM blocklists`;
+  const count = await pool.query(`SELECT COUNT(*)::int AS total FROM (${union}) entries ${where}`, params);
+  const result = await pool.query(`SELECT * FROM (${union}) entries ${where} ORDER BY created_at DESC LIMIT ${add(pageSize)} OFFSET ${add((page - 1) * pageSize)}`, params);
+  return { items: result.rows.map(row => ({ listType: row.list_type, id: Number(row.id), siteKey: row.site_key,
+    subjectType: row.subject_type, subjectHash: row.subject_hash, reason: row.reason, enabled: Boolean(row.enabled),
+    hitCount: Number(row.hit_count) || 0, lastHitAt: row.last_hit_at, expiresAt: row.expires_at,
+    createdAt: row.created_at, updatedAt: row.updated_at })), total: Number(count.rows[0]?.total) || 0, page, pageSize };
 }
 
 async function saveIdentityEntry(input, actor) {
   if (!pool) return null;
   const table = input.listType === 'block' ? 'blocklists' : 'allowlists';
+  const otherTable = input.listType === 'block' ? 'allowlists' : 'blocklists';
+  const conflict = await pool.query(`SELECT id FROM ${otherTable} WHERE site_key=$1 AND subject_type=$2 AND subject_hash=$3`,
+    [input.siteKey, input.subjectType, input.subjectHash]);
+  if (conflict.rowCount) { const error = new Error('同一作用范围和对象已存在于相反名单，请先编辑或删除冲突项'); error.code = 'IDENTITY_CONFLICT'; throw error; }
   const result = await pool.query(
-    `INSERT INTO ${table} (site_key,subject_type,subject_hash,reason,expires_at)
-     VALUES ($1,$2,$3,$4,CASE WHEN $5::int>0 THEN NOW()+($5*INTERVAL '1 minute') ELSE NULL END)
-     ON CONFLICT(site_key,subject_type,subject_hash) DO UPDATE SET reason=EXCLUDED.reason,expires_at=EXCLUDED.expires_at
+    `INSERT INTO ${table} (site_key,subject_type,subject_hash,reason,expires_at,enabled,updated_at)
+     VALUES ($1,$2,$3,$4,CASE WHEN $5::int>0 THEN NOW()+($5*INTERVAL '1 minute') ELSE NULL END,TRUE,NOW())
+     ON CONFLICT(site_key,subject_type,subject_hash) DO UPDATE SET reason=EXCLUDED.reason,expires_at=EXCLUDED.expires_at,enabled=TRUE,updated_at=NOW()
      RETURNING id`,
     [input.siteKey, input.subjectType, input.subjectHash, input.reason || '', Number(input.durationMinutes) || 0]
   );
@@ -1341,6 +1435,28 @@ async function saveIdentityEntry(input, actor) {
     subjectType: input.subjectType, durationMinutes: Number(input.durationMinutes) || null
   });
   return Number(result.rows[0].id);
+}
+
+async function updateIdentityEntry(listType, id, input, actor) {
+  if (!pool) return false;
+  const table = listType === 'block' ? 'blocklists' : 'allowlists';
+  const otherTable = listType === 'block' ? 'allowlists' : 'blocklists';
+  const conflict = await pool.query(`SELECT id FROM ${otherTable} WHERE site_key=$1 AND subject_type=$2 AND subject_hash=$3`, [input.siteKey, input.subjectType, input.subjectHash]);
+  if (conflict.rowCount) { const error = new Error('修改后会与相反名单冲突'); error.code = 'IDENTITY_CONFLICT'; throw error; }
+  const result = await pool.query(`UPDATE ${table} SET site_key=$2,subject_type=$3,subject_hash=$4,reason=$5,
+    expires_at=CASE WHEN $6::int>0 THEN NOW()+($6*INTERVAL '1 minute') ELSE NULL END,updated_at=NOW() WHERE id=$1`,
+  [id, input.siteKey, input.subjectType, input.subjectHash, input.reason, Number(input.durationMinutes) || 0]);
+  if (result.rowCount) await recordAdminAudit(actor, `update_${listType}_entry`, String(id), input);
+  return result.rowCount > 0;
+}
+
+async function toggleIdentityEntry(listType, id, actor) {
+  if (!pool) return null;
+  const table = listType === 'block' ? 'blocklists' : 'allowlists';
+  const result = await pool.query(`UPDATE ${table} SET enabled=NOT enabled,updated_at=NOW() WHERE id=$1 RETURNING enabled`, [id]);
+  if (!result.rowCount) return null;
+  await recordAdminAudit(actor, `${result.rows[0].enabled ? 'enable' : 'disable'}_${listType}_entry`, String(id));
+  return Boolean(result.rows[0].enabled);
 }
 
 async function deleteIdentityEntry(listType, id, actor) {
@@ -1610,7 +1726,7 @@ async function listAlertActivity(limit = 100) {
 async function listMaintenanceProjects() {
   if (!pool) return [];
   const result = await pool.query(
-    `SELECT project_key,name,repository,integration_mode,installed_version,
+    `SELECT project_key,name,repository,integration_mode,installed_version,used_by,component_kind,
             latest_version,latest_release_at,release_url,last_checked_at,
             follow_status,followed_version,followed_at,ignored_version,
             alerted_version,last_error,updated_at
@@ -1621,6 +1737,7 @@ async function listMaintenanceProjects() {
   return result.rows.map(row => ({
     projectKey: row.project_key, name: row.name, repository: row.repository,
     integrationMode: row.integration_mode, installedVersion: row.installed_version,
+    usedBy: Array.isArray(row.used_by) ? row.used_by : [], componentKind: row.component_kind || 'library',
     latestVersion: row.latest_version, latestReleaseAt: row.latest_release_at,
     releaseUrl: row.release_url, lastCheckedAt: row.last_checked_at,
     followStatus: row.follow_status, followedVersion: row.followed_version,
@@ -2373,12 +2490,15 @@ async function createRuleBackupRun(input) {
   const result = await pool.query(
     `INSERT INTO rule_backup_runs
        (backup_id,trigger_type,status,rule_count,enabled_count,disabled_count,global_count,
-        site_specific_count,content_sha256,parts_total,encrypted_payload,
+        site_specific_count,allow_count,block_count,policy_count,revision_count,
+        content_sha256,parts_total,encrypted_payload,
         backup_key_ciphertext,backup_key_iv,backup_key_tag,created_by)
-     VALUES ($1,$2,'uploading',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+     VALUES ($1,$2,'uploading',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
      RETURNING id,created_at`,
     [input.backupId, input.triggerType, input.summary.ruleCount, input.summary.enabledCount,
       input.summary.disabledCount, input.summary.globalCount, input.summary.siteSpecificCount,
+      input.summary.allowCount || 0, input.summary.blockCount || 0,
+      input.summary.policyCount || 0, input.summary.revisionCount || 0,
       input.contentSha256, input.partsTotal, input.encryptedPayload,
       encryptedKey.ciphertext, encryptedKey.iv, encryptedKey.tag, input.createdBy || 'system']
   );
@@ -2445,7 +2565,9 @@ async function getRuleBackupRunForRetry() {
       secret_iv: row.backup_key_iv, secret_tag: row.backup_key_tag }),
     summary: { ruleCount: Number(row.rule_count), enabledCount: Number(row.enabled_count),
       disabledCount: Number(row.disabled_count), globalCount: Number(row.global_count),
-      siteSpecificCount: Number(row.site_specific_count) }
+      siteSpecificCount: Number(row.site_specific_count), allowCount: Number(row.allow_count),
+      blockCount: Number(row.block_count), policyCount: Number(row.policy_count),
+      revisionCount: Number(row.revision_count) }
   };
 }
 
@@ -2453,7 +2575,8 @@ async function listRuleBackupRuns(limit = 20) {
   if (!pool) return [];
   const result = await pool.query(
     `SELECT backup_id,trigger_type,status,rule_count,enabled_count,disabled_count,global_count,
-            site_specific_count,content_sha256,parts_total,uploaded_parts,summary_sent,last_error,
+            site_specific_count,allow_count,block_count,policy_count,revision_count,
+            content_sha256,parts_total,uploaded_parts,summary_sent,last_error,
             created_by,created_at,completed_at,next_retry_at
        FROM rule_backup_runs ORDER BY created_at DESC LIMIT $1`,
     [Math.max(1, Math.min(100, Number(limit) || 20))]
@@ -2462,7 +2585,9 @@ async function listRuleBackupRuns(limit = 20) {
     backupId: row.backup_id, triggerType: row.trigger_type, status: row.status,
     ruleCount: Number(row.rule_count), enabledCount: Number(row.enabled_count),
     disabledCount: Number(row.disabled_count), globalCount: Number(row.global_count),
-    siteSpecificCount: Number(row.site_specific_count), contentSha256: row.content_sha256,
+    siteSpecificCount: Number(row.site_specific_count), allowCount: Number(row.allow_count),
+    blockCount: Number(row.block_count), policyCount: Number(row.policy_count),
+    revisionCount: Number(row.revision_count), contentSha256: row.content_sha256,
     partsTotal: Number(row.parts_total), uploadedParts: (row.uploaded_parts || []).map(Number),
     summarySent: Boolean(row.summary_sent), lastError: row.last_error || '', createdBy: row.created_by,
     createdAt: row.created_at, completedAt: row.completed_at, nextRetryAt: row.next_retry_at
@@ -2503,6 +2628,7 @@ module.exports = {
   applyManualDecision,
   clearManualDecision,
   listSignalRules,
+  getUnifiedRuleBackupData,
   previewSignalRule,
   createSignalRule,
   setSignalRuleEnabled,
@@ -2528,6 +2654,8 @@ module.exports = {
   activatePolicy,
   listIdentityEntries,
   saveIdentityEntry,
+  updateIdentityEntry,
+  toggleIdentityEntry,
   deleteIdentityEntry,
   getAlertSettings,
   saveAlertSettings,

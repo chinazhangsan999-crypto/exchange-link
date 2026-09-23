@@ -142,6 +142,10 @@ async function signedHeaders(request, env, path, rawBody) {
   const requestNonce = nonce();
   const origin = requestUrl.origin.toLowerCase();
   const clientIp = verifiedClientIp(request);
+  const botManagement = request.cf?.botManagement;
+  // 这两个结论都由 Cloudflare 在边缘持续维护。signedAgent 是 Web Bot Auth
+  // 的官方确认结果；只在任一官方强信号为真时向源站传递“已确认”。
+  const confirmedBot = botManagement?.verifiedBot === true || botManagement?.signedAgent === true ? '1' : '0';
   const canonical = [
     timestamp,
     requestNonce,
@@ -149,6 +153,7 @@ async function signedHeaders(request, env, path, rawBody) {
     path,
     origin,
     clientIp,
+    confirmedBot,
     await sha256Hex(rawBody)
   ].join('\n');
 
@@ -160,12 +165,14 @@ async function signedHeaders(request, env, path, rawBody) {
     'x-real-ip',
     'x-frontend-origin',
     'x-verified-client-ip',
+    'x-edge-confirmed-bot',
     'x-proxy-timestamp',
     'x-proxy-nonce',
     'x-proxy-signature'
   ]) headers.delete(name);
   headers.set('X-Frontend-Origin', origin);
   headers.set('X-Verified-Client-IP', clientIp);
+  headers.set('X-Edge-Confirmed-Bot', confirmedBot);
   headers.set('X-Proxy-Timestamp', timestamp);
   headers.set('X-Proxy-Nonce', requestNonce);
   headers.set('X-Proxy-Signature', await sign(env.FRONTEND_PROXY_SECRET, canonical));
@@ -215,6 +222,36 @@ async function prepareLanding(request, env) {
   });
 }
 
+async function publicRuntimeConfig(request, env) {
+  const path = '/api/config/public';
+  const headers = await signedHeaders(new Request(request.url, { method: 'GET', headers: request.headers }), env, path, new Uint8Array());
+  const response = await fetch(new URL(path, env.API_ORIGIN), { headers, redirect: 'manual' });
+  if (!response.ok) return {};
+  const payload = await response.json().catch(() => null);
+  return payload?.data && typeof payload.data === 'object' ? payload.data : {};
+}
+
+async function servePublicHtml(request, env, landingResponse = null) {
+  const asset = await env.ASSETS.fetch(request);
+  if (!asset.ok || !(asset.headers.get('content-type') || '').includes('text/html')) {
+    return withPublicSecurityHeaders(asset);
+  }
+  const config = await publicRuntimeConfig(request, env).catch(() => ({}));
+  const publicConfig = {
+    ad_api_enabled: config.ad_api_enabled === true,
+    ad_api_origin: /^https:\/\/[^/]+$/i.test(String(config.ad_api_origin || '')) ? config.ad_api_origin : '',
+    ad_api_worker_version: String(config.ad_api_worker_version || '')
+  };
+  const marker = `<script id="webring-runtime-config" type="application/json">${JSON.stringify(publicConfig).replace(/</g, '\\u003c')}</script>`;
+  const html = (await asset.text()).replace('</head>', `${marker}</head>`);
+  const headers = new Headers(asset.headers);
+  headers.delete('content-length');
+  headers.set('content-type', 'text/html; charset=utf-8');
+  if (landingResponse) copySetCookies(landingResponse.headers, headers);
+  if (headers.has('Set-Cookie')) headers.set('Cache-Control', 'private, no-store');
+  return withPublicSecurityHeaders(new Response(html, { status: asset.status, statusText: asset.statusText, headers }));
+}
+
 async function serveLanding(request, env) {
   const url = new URL(request.url);
   const sid = sourceSid(url);
@@ -232,16 +269,7 @@ async function serveLanding(request, env) {
     return new Response(null, { status: 302, headers });
   }
 
-  const assetResponse = withPublicSecurityHeaders(await env.ASSETS.fetch(request));
-  if (!landingResponse) return assetResponse;
-  const headers = new Headers(assetResponse.headers);
-  copySetCookies(landingResponse.headers, headers);
-  if (headers.has('Set-Cookie')) headers.set('Cache-Control', 'private, no-store');
-  return new Response(assetResponse.body, {
-    status: assetResponse.status,
-    statusText: assetResponse.statusText,
-    headers
-  });
+  return servePublicHtml(request, env, landingResponse);
 }
 
 export default {
@@ -262,6 +290,9 @@ export default {
       if (request.method === 'GET'
         && (url.pathname === '/' || url.pathname === '/index.html' || url.pathname.startsWith('/r/'))) {
         return await serveLanding(request, env);
+      }
+      if (request.method === 'GET' && ['/site-detail', '/site-detail.html'].includes(url.pathname)) {
+        return await servePublicHtml(request, env);
       }
       return withPublicSecurityHeaders(await env.ASSETS.fetch(request));
     } catch (error) {

@@ -5,7 +5,9 @@ const StorageService = require('./StorageService');
 const SIGNAL_META = Object.freeze({
   cloudflare_confirmed_bot: ['Cloudflare 已确认机器人', '边缘平台已明确识别为自动程序。'],
   verified_search_bot: ['已验证搜索引擎蜘蛛', '来源与已验证搜索引擎蜘蛛一致。'],
+  search_bot_spoofed: ['搜索蜘蛛身份不一致', '客户端声称为搜索蜘蛛，但来源 IP 未通过反向域名和正向地址的双向确认。'],
   known_ai_crawler: ['已知 AI 爬虫', '客户端特征与已登记的 AI 抓取程序相符。'],
+  known_crawler_ua: ['已知通用爬虫 UA', '客户端标识命中了持续维护的通用爬虫规则；UA 可伪造，需结合其它行为证据。'],
   token_replay: ['读取凭证重放', '短效读取凭证被重复或异常使用。'],
   sequential_detail_scan: ['连续枚举详情页', '短时间内按编号连续读取多个详情页面。'],
   high_concurrency: ['异常并发读取', '核心数据读取并发量超过正常页面行为。'],
@@ -30,7 +32,7 @@ const ALLOWED_EVIDENCE = new Set([
   'path', 'requestPath', 'method', 'userAgent', 'ua', 'concurrency', 'count',
   'detailCount', 'detailId', 'ids', 'windowMs', 'reason', 'source', 'botName',
   'botKind', 'elapsedMs', 'difficultyBits', 'webdriver', 'botDetected',
-  'secFetchSite', 'secFetchMode', 'secFetchDest', 'test'
+  'secFetchSite', 'secFetchMode', 'secFetchDest', 'hostname', 'verificationReason', 'test'
 ]);
 
 function cleanPath(value) {

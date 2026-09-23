@@ -3,10 +3,12 @@
 const { SIGNAL_WEIGHTS, HARD_DENY_SIGNALS } = require('./RiskScoringService');
 
 const DEFINITIONS = Object.freeze({
-  cloudflare_confirmed_bot: ['边缘确认机器人', 'edge', 'not_connected', 'high', '等待可信 Cloudflare 机器人字段接入'],
-  verified_search_bot: ['已验证搜索蜘蛛', 'identity', 'not_connected', 'high', '等待反向 DNS、正向 DNS 或签名验证器'],
+  cloudflare_confirmed_bot: ['边缘确认机器人', 'edge', 'partial', 'high', 'Worker 已签名传递 Cloudflare verifiedBot / signedAgent；名单与 Web Bot Auth 结论由 Cloudflare 自动维护，实际可用性取决于 Bot Management 套餐'],
+  verified_search_bot: ['已验证搜索蜘蛛', 'identity', 'connected', 'high', '由反向 DNS 域名后缀与正向 DNS 回查双向确认'],
+  search_bot_spoofed: ['搜索蜘蛛身份不一致', 'identity', 'connected', 'high', 'UA 声称为搜索蜘蛛，但双向 DNS 未能确认来源身份'],
   known_ai_crawler: ['已知 AI 爬虫', 'identity', 'connected', 'medium', '根据维护的 AI 爬虫 UA 目录识别；UA 可伪造'],
-  token_replay: ['读取凭证重放', 'credential', 'partial', 'high', '令牌已有次数和访客绑定，重放事件仍需补齐更多失败类型'],
+  known_crawler_ua: ['已知通用爬虫 UA', 'identity', 'connected', 'medium', '由持续维护的 omrilotan/isbot 规则集识别；单独命中仅观察，不直接拒绝'],
+  token_replay: ['读取凭证重放', 'credential', 'connected', 'high', '识别次数超限、访客或来源不匹配及 scope 异常；支持 Redis 原子计数回退'],
   sequential_detail_scan: ['连续枚举详情', 'behavior', 'connected', 'high', '短时间读取大量不同或连续详情 ID'],
   high_concurrency: ['异常并发读取', 'behavior', 'connected', 'medium', '单访客同时读取超过服务端并发上限'],
   botd_detected: ['BotD 自动化特征', 'browser', 'connected', 'medium', '开源 BotD 基础自动化检测结果'],

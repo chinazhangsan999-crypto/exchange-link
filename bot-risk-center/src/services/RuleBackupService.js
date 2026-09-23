@@ -35,14 +35,34 @@ function summarizeRules(rules) {
   };
 }
 
-function createSnapshot(rules, generatedAt = new Date()) {
-  const sorted = [...rules].sort((a, b) => Number(a.id) - Number(b.id));
+function summarizeUnifiedRules(data = {}) {
+  const signalSummary = summarizeRules(data.signalRules || []);
   return {
-    schemaVersion: 1,
-    kind: 'bot-risk-center-signal-rules',
+    ...signalSummary,
+    allowCount: (data.allowlist || []).length,
+    blockCount: (data.blocklist || []).length,
+    policyCount: (data.policies || []).length,
+    revisionCount: (data.revisions || []).length,
+    totalManagedItems: signalSummary.ruleCount + (data.allowlist || []).length + (data.blocklist || []).length
+  };
+}
+
+function createSnapshot(data, generatedAt = new Date()) {
+  const normalized = Array.isArray(data) ? { signalRules: data, allowlist: [], blocklist: [], policies: [], revisions: [] } : (data || {});
+  const sortById = items => [...(items || [])].sort((a, b) => Number(a.id) - Number(b.id));
+  const content = {
+    signalRules: sortById(normalized.signalRules),
+    allowlist: sortById(normalized.allowlist),
+    blocklist: sortById(normalized.blocklist),
+    policies: sortById(normalized.policies),
+    revisions: sortById(normalized.revisions)
+  };
+  return {
+    schemaVersion: 2,
+    kind: 'bot-risk-center-unified-rules',
     generatedAt: generatedAt.toISOString(),
-    summary: summarizeRules(sorted),
-    rules: sorted
+    summary: summarizeUnifiedRules(content),
+    ...content
   };
 }
 
@@ -101,6 +121,8 @@ function completionText(run) {
     '✅ 风险中心人工规则备份完成',
     `备份编号：${run.backupId}`,
     `规则：${run.summary.ruleCount}（启用 ${run.summary.enabledCount} / 停用 ${run.summary.disabledCount}）`,
+    `名单：允许 ${run.summary.allowCount || 0} / 阻止 ${run.summary.blockCount || 0}`,
+    `策略与历史：策略 ${run.summary.policyCount || 0} / 修订 ${run.summary.revisionCount || 0}`,
     `范围：全站 ${run.summary.globalCount} / 单站 ${run.summary.siteSpecificCount}`,
     `分片：${run.partsTotal}`,
     `SHA-256：${run.contentSha256}`,
@@ -139,8 +161,8 @@ async function runBackup({ triggerType = 'manual', createdBy = 'system', force =
   try {
     const settings = await StorageService.getRuleBackupSettings({ includeSecrets: true });
     assertConfigured(settings, force);
-    const rules = await StorageService.listSignalRules();
-    const snapshot = createSnapshot(rules);
+    const data = await StorageService.getUnifiedRuleBackupData();
+    const snapshot = createSnapshot(data);
     const encrypted = encryptSnapshot(snapshot);
     const id = backupId();
     const parts = splitPayload(encrypted.payload, settings.partSizeMiB);
@@ -238,5 +260,5 @@ function stop() {
 
 module.exports = {
   start, stop, runBackup, retryFailed, testConnection, status, scheduleChangedBackup,
-  createSnapshot, summarizeRules, encryptSnapshot, splitPayload, completionText
+  createSnapshot, summarizeRules, summarizeUnifiedRules, encryptSnapshot, splitPayload, completionText
 };

@@ -61,6 +61,8 @@ router.get('/admin/api/detection/quality', AdminController.detectionQuality);
 router.get('/admin/api/detection/pipeline', AdminController.pipelineHealth);
 router.get('/admin/api/detection/identity-lists', AdminController.identityEntries);
 router.post('/admin/api/detection/identity-lists', requireCsrf, AdminController.saveIdentityEntry);
+router.put('/admin/api/detection/identity-lists/:listType/:id', requireCsrf, AdminController.updateIdentityEntry);
+router.post('/admin/api/detection/identity-lists/:listType/:id/toggle', requireCsrf, AdminController.toggleIdentityEntry);
 router.delete('/admin/api/detection/identity-lists/:listType/:id', requireCsrf, AdminController.deleteIdentityEntry);
 router.get('/admin/api/security', AdminController.securityOverview);
 router.put('/admin/api/security/credentials', requireCsrf, AdminController.changeCredentials);

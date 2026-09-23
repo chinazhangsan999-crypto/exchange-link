@@ -272,29 +272,65 @@ async function pipelineHealth(req, res) {
 }
 
 async function identityEntries(req, res) {
-  return res.json({ code: 200, data: await StorageService.listIdentityEntries() });
+  return res.json({ code: 200, data: await StorageService.listIdentityEntries({
+    page: req.query.page, pageSize: req.query.pageSize, listType: req.query.listType,
+    siteKey: req.query.siteKey, subjectType: req.query.subjectType,
+    status: req.query.status, keyword: String(req.query.keyword || '').trim()
+  }) });
+}
+
+function normalizeIdentityInput(input = {}) {
+  const listType = String(input.listType || '');
+  const siteKey = String(input.siteKey || '');
+  const subjectType = String(input.subjectType || '');
+  let subjectHash = String(input.subjectHash || '').trim();
+  const reason = String(input.reason || '').trim();
+  if (['ua', 'ja4', 'bot_identity'].includes(subjectType)) subjectHash = subjectHash.toLowerCase();
+  if (subjectType === 'asn') subjectHash = subjectHash.replace(/^as/i, '');
+  const patterns = {
+    visitor: /^[A-Za-z0-9_-]{8,128}$/,
+    bot_identity: /^[a-z0-9_.:/-]{2,128}$/,
+    ua: /^.{2,240}$/,
+    ja4: /^[a-z0-9_:-]{8,160}$/,
+    asn: /^\d{1,12}$/
+  };
+  if (!['allow', 'block'].includes(listType) || !(siteKey === '*' || validSiteKey(siteKey))
+    || !patterns[subjectType]?.test(subjectHash) || reason.length < 2 || reason.length > 300) return null;
+  return { listType, siteKey, subjectType, subjectHash, reason,
+    durationMinutes: input.permanent === true ? 0 : Math.max(1, Math.min(525600, Number(input.durationMinutes) || 60)) };
 }
 
 async function saveIdentityEntry(req, res) {
-  const input = req.body || {};
-  if (!['allow', 'block'].includes(String(input.listType || ''))
-    || !(input.siteKey === '*' || validSiteKey(input.siteKey))
-    || !['visitor', 'bot_identity', 'ua', 'ja4', 'asn'].includes(String(input.subjectType || ''))
-    || !String(input.subjectHash || '').trim() || String(input.subjectHash).length > 300) {
-    return res.status(400).json({ code: 400, message: '名单参数无效' });
-  }
-  const id = await StorageService.saveIdentityEntry({
-    listType: input.listType, siteKey: input.siteKey, subjectType: input.subjectType,
-    subjectHash: String(input.subjectHash).trim(), reason: String(input.reason || '').trim().slice(0, 300),
-    durationMinutes: input.permanent === true ? 0 : Math.max(1, Math.min(525600, Number(input.durationMinutes) || 60))
-  }, actor(req));
-  return res.json({ code: 200, data: { id }, message: '名单项已保存' });
+  const input = normalizeIdentityInput(req.body);
+  if (!input) return res.status(400).json({ code: 400, message: '请检查对象格式并填写至少 2 个字的处置原因' });
+  try { const id = await StorageService.saveIdentityEntry(input, actor(req)); RuleBackupService.scheduleChangedBackup(); return res.json({ code: 200, data: { id }, message: '名单项已保存' }); }
+  catch (error) { if (error.code === 'IDENTITY_CONFLICT') return res.status(409).json({ code: 409, message: error.message }); throw error; }
+}
+
+async function updateIdentityEntry(req, res) {
+  const listType = String(req.params.listType || '');
+  const input = normalizeIdentityInput({ ...req.body, listType });
+  if (!input) return res.status(400).json({ code: 400, message: '名单参数无效' });
+  try { const updated = await StorageService.updateIdentityEntry(listType, Number(req.params.id), input, actor(req));
+    if (updated) RuleBackupService.scheduleChangedBackup();
+    return updated ? res.json({ code: 200, message: '名单项已更新' }) : res.status(404).json({ code: 404, message: '名单项不存在' });
+  } catch (error) { if (error.code === 'IDENTITY_CONFLICT') return res.status(409).json({ code: 409, message: error.message }); throw error; }
+}
+
+async function toggleIdentityEntry(req, res) {
+  const listType = String(req.params.listType || '');
+  if (!['allow', 'block'].includes(listType)) return res.status(400).json({ code: 400, message: '名单类型无效' });
+  const enabled = await StorageService.toggleIdentityEntry(listType, Number(req.params.id), actor(req));
+  if (enabled !== null) RuleBackupService.scheduleChangedBackup();
+  return enabled === null ? res.status(404).json({ code: 404, message: '名单项不存在' })
+    : res.json({ code: 200, data: { enabled }, message: enabled ? '名单项已启用' : '名单项已停用' });
 }
 
 async function deleteIdentityEntry(req, res) {
   const listType = String(req.params.listType || '');
   if (!['allow', 'block'].includes(listType)) return res.status(400).json({ code: 400, message: '名单类型无效' });
   const removed = await StorageService.deleteIdentityEntry(listType, Number(req.params.id), actor(req));
+  if (removed) RuleBackupService.scheduleChangedBackup();
   return removed ? res.json({ code: 200, message: '名单项已删除' })
     : res.status(404).json({ code: 404, message: '名单项不存在' });
 }
@@ -318,11 +354,13 @@ async function createPolicy(req, res) {
   }
   const id = await StorageService.createPolicy({ name: String(input.name).trim().slice(0, 120),
     version: String(input.version), thresholds: { observe: values[0], silentChallenge: values[1], strongChallenge: values[2], deny: values[3] } }, actor(req));
+  RuleBackupService.scheduleChangedBackup();
   return res.json({ code: 200, data: { id }, message: '策略草稿版本已创建，尚未启用' });
 }
 
 async function activatePolicy(req, res) {
   const data = await StorageService.activatePolicy(Number(req.params.id), actor(req));
+  if (data) RuleBackupService.scheduleChangedBackup();
   return data ? res.json({ code: 200, data, message: `策略 ${data.version} 已启用` })
     : res.status(404).json({ code: 404, message: '策略不存在' });
 }
@@ -538,7 +576,7 @@ module.exports = {
   saveIntegration, setSiteControls, setClientStatus, rotateClientSecret,
   riskSummary, suspects, suspectDetail, setSuspectAction, clearSuspectAction,
   rules, previewRule, createRule, setRuleStatus, deleteRule, ruleRevisions, policies, createPolicy, activatePolicy, audits,
-  detectionCapabilities, detectionQuality, pipelineHealth, identityEntries, saveIdentityEntry, deleteIdentityEntry,
+  detectionCapabilities, detectionQuality, pipelineHealth, identityEntries, saveIdentityEntry, updateIdentityEntry, toggleIdentityEntry, deleteIdentityEntry,
   securityOverview, changeCredentials, revokeSession, revokeOtherSessions, revokeAllSessions,
   alertSettings, saveAlertSettings, alertActivity, testAlert,
   ruleBackupSettings, saveRuleBackupSettings, ruleBackupStatus, testRuleBackup, runRuleBackup, retryRuleBackup,

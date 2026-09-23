@@ -52,4 +52,13 @@ test('导航站清单只包含允许的版本证明字段', () => {
   assert.equal(Object.hasOwn(inventory, 'environment'), false);
   assert.equal(Object.hasOwn(inventory, 'secret'), false);
   assert.equal(Object.hasOwn(inventory, 'database'), false);
+  for (const key of ['alicloud-dns-sdk', 'aws-route53-sdk', 'archiver', 'axios', 'botd', 'express', 'isbot', 'node-redis', 'sqlite3', 'tencentcloud-dnspod-sdk', 'tldts', 'ua-parser-js']) {
+    assert.ok(inventory.components.some(item => item.key === key), `缺少导航站组件证明：${key}`);
+  }
+});
+
+test('公共前台只接受 Cloudflare 官方维护的机器人强信号', () => {
+  const worker = fs.readFileSync(path.join(projectRoot, 'ops/public-edge/worker.js'), 'utf8');
+  assert.match(worker, /botManagement\?\.verifiedBot === true \|\| botManagement\?\.signedAgent === true/);
+  assert.match(worker, /X-Edge-Confirmed-Bot/);
 });

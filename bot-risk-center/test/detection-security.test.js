@@ -7,13 +7,17 @@ const test = require('node:test');
 
 const root = path.join(__dirname, '..');
 
-test('机器人识别能力、质量、策略版本和安全设置保留在统一后台', () => {
+test('识别质量与链路健康合并到导航站接入，名单合并到人工规则', () => {
   const html = fs.readFileSync(path.join(root, 'public', 'admin.html'), 'utf8');
   const script = fs.readFileSync(path.join(root, 'public', 'admin.js'), 'utf8');
   const routes = fs.readFileSync(path.join(root, 'src', 'routes', 'index.js'), 'utf8');
-  for (const tab of ['connections', 'suspects', 'detection', 'quality', 'rules', 'alerts', 'maintenance', 'security', 'audits']) {
+  for (const tab of ['connections', 'suspects', 'detection', 'rules', 'alerts', 'maintenance', 'security', 'audits']) {
     assert.match(html, new RegExp(`data-tab="${tab}"`));
   }
+  assert.doesNotMatch(html, /data-tab="quality"/);
+  assert.match(html, /panel-connections[\s\S]+quality-pass-rate[\s\S]+pipeline-body/);
+  assert.match(html, /panel-rules[\s\S]+identity-rules-section/);
+  assert.doesNotMatch(html.match(/id="panel-detection"[^\n]*/)?.[0] || '', /identity-form/);
   assert.match(html, /detection-body/);
   assert.match(html, /quality-pass-rate/);
   assert.match(html, /policies-body/);
@@ -21,6 +25,7 @@ test('机器人识别能力、质量、策略版本和安全设置保留在统�
   assert.match(html, /revoke-all-sessions/);
   assert.match(script, /loadDetection/);
   assert.match(script, /loadQuality/);
+  assert.match(script, /loadIdentityLists/);
   assert.match(script, /loadSecurity/);
   assert.match(routes, /detection\/capabilities/);
   assert.match(routes, /security\/credentials/);
@@ -51,4 +56,19 @@ test('导航站把关键正负机器人信号接入风险中心', () => {
   assert.match(readAccess, /token_replay/);
   assert.match(readAccess, /valid_read_token/);
   assert.match(concurrency, /high_concurrency/);
+});
+
+test('人工名单支持筛选分页、编辑启停、命中统计和冲突保护', () => {
+  const script = fs.readFileSync(path.join(root, 'public', 'admin.js'), 'utf8');
+  const routes = fs.readFileSync(path.join(root, 'src', 'routes', 'index.js'), 'utf8');
+  const storage = fs.readFileSync(path.join(root, 'src', 'services', 'StorageService.js'), 'utf8');
+  const migration = fs.readFileSync(path.join(root, 'migrations', '009_identity_controls.sql'), 'utf8');
+  for (const marker of ['identity-filter-list', 'identity-filter-site', 'identity-filter-keyword', 'identity-prev', 'edit-identity', 'toggle-identity']) assert.match(script, new RegExp(marker));
+  assert.match(routes, /identity-lists\/:listType\/:id\/toggle/);
+  assert.match(routes, /router\.put\('\/admin\/api\/detection\/identity-lists/);
+  assert.match(storage, /IDENTITY_CONFLICT/);
+  assert.match(storage, /hit_count=hit_count\+1/);
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS enabled/);
+  assert.match(migration, /omrilotan\/isbot/);
+  assert.match(migration, /redis\/node-redis/);
 });

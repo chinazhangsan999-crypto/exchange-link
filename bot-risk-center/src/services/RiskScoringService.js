@@ -12,6 +12,8 @@ const SIGNAL_WEIGHTS = Object.freeze({
   cloudflare_confirmed_bot: 100,
   verified_search_bot: 100,
   known_ai_crawler: 100,
+  known_crawler_ua: 35,
+  search_bot_spoofed: 60,
   token_replay: 70,
   sequential_detail_scan: 80,
   high_concurrency: 45,

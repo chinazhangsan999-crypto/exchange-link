@@ -6,6 +6,7 @@ const { GITHUB_API_TOKEN } = require('../config/env');
 
 const REQUEST_TIMEOUT_MS = 8000;
 const SCHEDULER_INTERVAL_MS = 15 * 60_000;
+const CHECK_BATCH_SIZE = 4;
 let timer = null;
 let initialTimer = null;
 let running = false;
@@ -66,9 +67,12 @@ async function checkUpstreams({ force = false } = {}) {
       const due = before.some(item => !item.lastCheckedAt || Date.now() - new Date(item.lastCheckedAt).getTime() >= interval);
       if (!due) return { skipped: true, reason: 'not_due', items: before };
     }
-    for (const project of before) {
-      const release = await fetchLatestRelease(project.repository);
-      await StorageService.updateMaintenanceProject(project.projectKey, release);
+    for (let offset = 0; offset < before.length; offset += CHECK_BATCH_SIZE) {
+      const batch = before.slice(offset, offset + CHECK_BATCH_SIZE);
+      await Promise.all(batch.map(async project => {
+        const release = await fetchLatestRelease(project.repository);
+        await StorageService.updateMaintenanceProject(project.projectKey, release);
+      }));
     }
     await StorageService.refreshAllSiteAdvisories();
     const items = await StorageService.listMaintenanceProjects();

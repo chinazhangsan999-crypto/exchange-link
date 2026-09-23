@@ -48,3 +48,21 @@ test('组件更新表格保留原生单元格布局并使用稳定列宽', () =>
   assert.match(css, /td\.version-stack > \* \{ display: block; \}/);
   assert.doesNotMatch(css, /\.version-stack \{[^}]*display:\s*grid/);
 });
+
+test('组件清单覆盖风险中心、导航站、边缘基础设施与全部参考项目', () => {
+  const root = path.join(__dirname, '..');
+  const migration = fs.readFileSync(path.join(root, 'migrations', '010_maintenance_component_inventory.sql'), 'utf8');
+  const script = fs.readFileSync(path.join(root, 'public', 'admin.js'), 'utf8');
+  const service = fs.readFileSync(path.join(root, 'src', 'services', 'MaintenanceService.js'), 'utf8');
+  for (const project of [
+    'nodejs', 'express', 'node-postgres', 'pino', 'node-redis', 'postgresql', 'redis-server', 'caddy',
+    'cloudflare-workers-sdk', 'cloudflare-workerd', 'botd', 'isbot', 'alicloud-dns-sdk', 'aws-route53-sdk',
+    'tencentcloud-dnspod-sdk', 'fingerprintjs', 'anubis', 'coraza', 'mcaptcha', 'openappsec', 'ja4-nginx',
+    'caddy-defender', 'creepjs', 'safeline', 'bunkerweb', 'goodbots', 'crawler-user-agents'
+  ]) assert.match(migration, new RegExp(`'${project}'`));
+  assert.match(migration, /used_by JSONB/);
+  assert.match(script, /maintenance-scope-filter/);
+  assert.match(script, /item\.usedBy/);
+  assert.match(service, /CHECK_BATCH_SIZE = 4/);
+  assert.match(service, /Promise\.all\(batch\.map/);
+});
