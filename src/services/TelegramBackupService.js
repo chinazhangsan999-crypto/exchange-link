@@ -11,7 +11,8 @@ const { DATABASE_PATH } = require('../config/databasePath');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..');
 const CONFIG_FILE = path.resolve(process.env.TELEGRAM_BACKUP_CONFIG_FILE || path.join(APP_ROOT, 'data', 'telegram-backup.json'));
-const BACKUP_DIR = path.resolve(process.env.TELEGRAM_BACKUP_DIRECTORY || path.join(APP_ROOT, 'backups', 'webring'));
+const BACKUP_DIR = path.resolve(process.env.TELEGRAM_BACKUP_DIRECTORY
+  || path.join(path.dirname(DATABASE_PATH), 'backups', 'webring'));
 const STATUS_FILE = path.join(BACKUP_DIR, '.telegram-backup-status.json');
 const DEFAULT_PART_SIZE_MIB = 18;
 const RETENTION_DAYS = 14;

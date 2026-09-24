@@ -54,7 +54,6 @@ test('手动后台备份使用统一 DB_PATH 并持续写入可公开状态', as
   try {
     const source = path.join(directory, 'runtime', 'navigation.sqlite');
     const configFile = path.join(directory, 'telegram-backup.json');
-    const backupDirectory = path.join(directory, 'artifacts');
     await fs.mkdir(path.dirname(source), { recursive: true });
     await createSQLiteDatabase(source);
     await fs.writeFile(configFile, JSON.stringify({
@@ -76,15 +75,18 @@ test('手动后台备份使用统一 DB_PATH 并持续写入可公开状态', as
         const started = await service.startBackup();
         const completed = await service.createAndUploadBackup();
         const status = await service.getStatus();
-        process.stdout.write(JSON.stringify({ started, completed, status, databasePath: service.DATABASE_PATH }));
+        process.stdout.write(JSON.stringify({
+          started, completed, status,
+          databasePath: service.DATABASE_PATH,
+          backupDirectory: service.BACKUP_DIR
+        }));
       })().catch(error => { console.error(error); process.exit(1); });
     `;
     const { stdout } = await execFileAsync(process.execPath, ['-e', script], {
       env: {
         ...process.env,
         DB_PATH: source,
-        TELEGRAM_BACKUP_CONFIG_FILE: configFile,
-        TELEGRAM_BACKUP_DIRECTORY: backupDirectory
+        TELEGRAM_BACKUP_CONFIG_FILE: configFile
       }
     });
     const result = JSON.parse(stdout);
@@ -95,6 +97,7 @@ test('手动后台备份使用统一 DB_PATH 并持续写入可公开状态', as
     assert.equal(result.status.latest.source.name, 'navigation.sqlite');
     assert.equal(result.status.latest.source.configuredBy, 'DB_PATH');
     assert.equal(result.databasePath, path.resolve(source));
+    assert.equal(result.backupDirectory, path.join(path.dirname(source), 'backups', 'webring'));
     assert.equal(Object.hasOwn(result.status.latest, 'keyBase64'), false, '状态接口不能泄露解密密钥');
     assert.equal(result.status.latest.parts.some(part => Object.hasOwn(part, 'file')), false, '状态接口不能泄露服务器文件路径');
   } finally {
