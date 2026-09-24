@@ -18,6 +18,7 @@ const DecisionService = require('./DecisionService');
 const CredentialService = require('./CredentialService');
 const { SIGNAL_WEIGHTS } = require('./RiskScoringService');
 const DetectionCatalog = require('./DetectionCatalog');
+const { evaluateMaintenanceVersion, sourceForProject } = require('./MaintenanceVersionService');
 
 let pool = null;
 let redis = null;
@@ -1786,38 +1787,57 @@ async function listMaintenanceProjects() {
 
 async function updateMaintenanceProject(projectKey, release) {
   if (!pool) return null;
+  const current = await pool.query(
+    `SELECT project_key,name,repository,integration_mode,installed_version,latest_version,
+            followed_version,ignored_version
+       FROM maintenance_projects WHERE project_key=$1`, [projectKey]
+  );
+  const project = current.rows[0];
+  if (!project) return null;
+  const normalizedProject = {
+    projectKey: project.project_key, name: project.name, repository: project.repository,
+    integrationMode: project.integration_mode, installedVersion: project.installed_version,
+    latestVersion: project.latest_version, followedVersion: project.followed_version,
+    ignoredVersion: project.ignored_version
+  };
+  const followStatus = evaluateMaintenanceVersion(normalizedProject, release);
   const result = await pool.query(
     `UPDATE maintenance_projects SET
        latest_version=$2,latest_release_at=$3,release_url=$4,last_checked_at=NOW(),
-       last_error=$5,
-       follow_status=CASE
-         WHEN $5 <> '' THEN 'error'
-         WHEN regexp_replace(followed_version,'^[vV]','')=regexp_replace($2,'^[vV]','') AND $2 <> '' THEN 'followed'
-         WHEN regexp_replace(ignored_version,'^[vV]','')=regexp_replace($2,'^[vV]','') AND $2 <> '' THEN 'ignored'
-         WHEN regexp_replace(installed_version,'^[vV]','')=regexp_replace($2,'^[vV]','') AND $2 <> '' THEN 'current'
-         WHEN $2 <> '' THEN 'update_available'
-         ELSE 'unknown' END,
+       last_error=$5,follow_status=$6,
        updated_at=NOW()
      WHERE project_key=$1 RETURNING project_key`,
-    [projectKey, release.version || '', release.releasedAt || null, release.url || '', release.error || '']
+    [projectKey, release.version || '', release.releasedAt || null, release.url || '', release.error || '', followStatus]
   );
   return result.rows[0] || null;
 }
 
 async function setMaintenanceProjectStatus(projectKey, action, actor = 'risk-admin') {
   if (!pool || !['followed', 'ignored', 'reset'].includes(action)) return null;
+  let resetStatus = null;
+  if (action === 'reset') {
+    const current = await pool.query(
+      `SELECT project_key,repository,integration_mode,installed_version,latest_version,
+              followed_version,ignored_version FROM maintenance_projects WHERE project_key=$1`, [projectKey]
+    );
+    const row = current.rows[0];
+    if (!row) return null;
+    resetStatus = evaluateMaintenanceVersion({
+      projectKey: row.project_key, repository: row.repository, integrationMode: row.integration_mode,
+      installedVersion: row.installed_version, latestVersion: row.latest_version,
+      followedVersion: '', ignoredVersion: ''
+    }, { version: row.latest_version, source: sourceForProject({ projectKey: row.project_key, integrationMode: row.integration_mode }).kind });
+  }
   const result = await pool.query(
     `UPDATE maintenance_projects SET
-       follow_status=CASE WHEN $2='reset' THEN
-         CASE WHEN latest_version <> '' AND regexp_replace(installed_version,'^[vV]','') <> regexp_replace(latest_version,'^[vV]','') THEN 'update_available' ELSE 'current' END
-         ELSE $2 END,
+       follow_status=CASE WHEN $2='reset' THEN $3 ELSE $2 END,
        followed_version=CASE WHEN $2='followed' THEN latest_version WHEN $2='reset' THEN '' ELSE followed_version END,
        followed_at=CASE WHEN $2='followed' THEN NOW() WHEN $2='reset' THEN NULL ELSE followed_at END,
        ignored_version=CASE WHEN $2='ignored' THEN latest_version WHEN $2='reset' THEN '' ELSE ignored_version END,
        updated_at=NOW()
      WHERE project_key=$1
      RETURNING project_key,name,latest_version,follow_status,followed_at`,
-    [projectKey, action]
+    [projectKey, action, resetStatus || 'unknown']
   );
   if (!result.rows[0]) return null;
   await pool.query(

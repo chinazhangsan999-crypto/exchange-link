@@ -509,6 +509,12 @@
       followed: { label: '已跟进当前版本', className: 'followed' },
       ignored: { label: '已忽略当前版本', className: '' },
       current: { label: '当前已是最新版', className: 'followed' },
+      reference: { label: '参考项目，仅关注', className: '' },
+      monitor_only: { label: '信号来源，仅关注', className: '' },
+      managed: { label: '平台托管，自动维护', className: '' },
+      untracked: { label: '缺少实际运行版本', className: '' },
+      unverifiable: { label: '版本源无法比较', className: '' },
+      version_ahead: { label: '本地版本更新', className: 'followed' },
       unknown: { label: '尚未检查', className: '' }
     }[item.followStatus] || { label: item.followStatus || '未知', className: '' };
   }

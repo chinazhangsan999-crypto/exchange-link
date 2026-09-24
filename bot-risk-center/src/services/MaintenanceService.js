@@ -3,6 +3,7 @@
 const StorageService = require('./StorageService');
 const AlertService = require('./AlertService');
 const { GITHUB_API_TOKEN } = require('../config/env');
+const { sourceForProject } = require('./MaintenanceVersionService');
 
 const REQUEST_TIMEOUT_MS = 8000;
 const SCHEDULER_INTERVAL_MS = 15 * 60_000;
@@ -26,6 +27,21 @@ async function githubJson(url, token = '') {
   return response.json();
 }
 
+async function npmLatest(packageName) {
+  const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`, {
+    headers: { Accept: 'application/json', 'User-Agent': 'webring-bot-risk-center' },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+  });
+  if (!response.ok) throw new Error(`npm Registry ${response.status}`);
+  const data = await response.json();
+  return {
+    version: String(data.version || '').slice(0, 120),
+    releasedAt: data.time?.[data.version] || null,
+    url: `https://www.npmjs.com/package/${encodeURIComponent(packageName)}`,
+    source: 'npm'
+  };
+}
+
 async function fetchLatestRelease(repository, token = '') {
   const encoded = repository.split('/').map(encodeURIComponent).join('/');
   try {
@@ -33,14 +49,15 @@ async function fetchLatestRelease(repository, token = '') {
     return {
       version: String(release.tag_name || release.name || '').slice(0, 120),
       releasedAt: release.published_at || release.created_at || null,
-      url: String(release.html_url || `https://github.com/${repository}/releases`).slice(0, 500)
+      url: String(release.html_url || `https://github.com/${repository}/releases`).slice(0, 500),
+      source: 'github_release'
     };
   } catch (releaseError) {
     try {
       const tags = await githubJson(`https://api.github.com/repos/${encoded}/tags?per_page=1`, token);
       const tag = Array.isArray(tags) ? tags[0] : null;
       if (tag?.name) {
-        return { version: String(tag.name).slice(0, 120), releasedAt: null, url: `https://github.com/${repository}/tags` };
+        return { version: String(tag.name).slice(0, 120), releasedAt: null, url: `https://github.com/${repository}/tags`, source: 'github_tag' };
       }
       const commits = await githubJson(`https://api.github.com/repos/${encoded}/commits?per_page=1`, token);
       const commit = Array.isArray(commits) ? commits[0] : null;
@@ -48,12 +65,26 @@ async function fetchLatestRelease(repository, token = '') {
       return {
         version: `commit-${String(commit.sha).slice(0, 7)}`,
         releasedAt: commit.commit?.committer?.date || commit.commit?.author?.date || null,
-        url: String(commit.html_url || `https://github.com/${repository}/commits`).slice(0, 500)
+        url: String(commit.html_url || `https://github.com/${repository}/commits`).slice(0, 500),
+        source: 'github_commit'
       };
     } catch (tagError) {
       return { version: '', releasedAt: null, url: `https://github.com/${repository}`, error: tagError.message || releaseError.message };
     }
   }
+}
+
+async function fetchLatestVersion(project, token = '') {
+  const source = sourceForProject(project);
+  if (source.kind === 'npm') return npmLatest(source.packageName);
+  if (source.kind === 'runtime_inventory') {
+    return { version: '', releasedAt: null, url: '', source: source.kind };
+  }
+  if (source.kind === 'reference' || source.kind === 'signal_source') {
+    const release = await fetchLatestRelease(project.repository, token);
+    return { ...release, source: source.kind };
+  }
+  return fetchLatestRelease(project.repository, token);
 }
 
 async function checkUpstreams({ force = false } = {}) {
@@ -72,7 +103,7 @@ async function checkUpstreams({ force = false } = {}) {
     for (let offset = 0; offset < before.length; offset += CHECK_BATCH_SIZE) {
       const batch = before.slice(offset, offset + CHECK_BATCH_SIZE);
       await Promise.all(batch.map(async project => {
-        const release = await fetchLatestRelease(project.repository, githubToken);
+        const release = await fetchLatestVersion(project, githubToken);
         await StorageService.updateMaintenanceProject(project.projectKey, release);
       }));
     }
@@ -101,4 +132,4 @@ function stop() {
   initialTimer = null; timer = null;
 }
 
-module.exports = { start, stop, checkUpstreams, fetchLatestRelease };
+module.exports = { start, stop, checkUpstreams, fetchLatestRelease, fetchLatestVersion, npmLatest };
