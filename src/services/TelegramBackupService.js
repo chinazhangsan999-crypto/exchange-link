@@ -7,6 +7,7 @@ const path = require('path');
 const zlib = require('zlib');
 const { pipeline } = require('stream/promises');
 const sqlite3 = require('sqlite3').verbose();
+const { DATABASE_PATH } = require('../config/databasePath');
 
 const APP_ROOT = path.resolve(__dirname, '..', '..');
 const CONFIG_FILE = path.resolve(process.env.TELEGRAM_BACKUP_CONFIG_FILE || path.join(APP_ROOT, 'data', 'telegram-backup.json'));
@@ -15,6 +16,7 @@ const STATUS_FILE = path.join(BACKUP_DIR, '.telegram-backup-status.json');
 const DEFAULT_PART_SIZE_MIB = 18;
 const RETENTION_DAYS = 14;
 let activeBackup = null;
+let activeBackupId = '';
 
 function timestamp(date = new Date()) {
   return new Intl.DateTimeFormat('sv-SE', {
@@ -37,6 +39,45 @@ async function readJson(file, fallback = null) {
     if (error.code === 'ENOENT') return fallback;
     throw error;
   }
+}
+
+function publicBackupState(state) {
+  if (!state) return null;
+  const result = { ...state };
+  delete result.keyBase64;
+  delete result.encryptedFile;
+  delete result.manifestFile;
+  if (Array.isArray(result.parts)) {
+    result.parts = result.parts.map(part => {
+      const safePart = { ...part };
+      delete safePart.file;
+      return safePart;
+    });
+  }
+  return result;
+}
+
+async function writePublicStatus(state) {
+  await writeJsonAtomic(STATUS_FILE, publicBackupState(state));
+}
+
+async function validateDatabaseSource(source = DATABASE_PATH) {
+  let stat;
+  try {
+    await fsp.access(source, fs.constants.R_OK);
+    stat = await fsp.stat(source);
+  } catch (error) {
+    const failure = new Error('运行时数据库不存在或不可读取');
+    failure.code = 'BACKUP_SOURCE_UNAVAILABLE';
+    failure.cause = error;
+    throw failure;
+  }
+  if (!stat.isFile()) {
+    const failure = new Error('运行时数据库路径不是有效文件');
+    failure.code = 'BACKUP_SOURCE_INVALID';
+    throw failure;
+  }
+  return stat;
 }
 
 function normalizeConfig(input = {}, current = {}) {
@@ -210,6 +251,8 @@ function pendingFile(backupId) {
 
 async function uploadArtifacts(config, state) {
   state.status = 'uploading';
+  state.stage = 'uploading_parts';
+  await writePublicStatus(state);
   await writeJsonAtomic(pendingFile(state.backupId), state);
   for (const part of state.parts) {
     if (state.uploadedParts.includes(part.number)) continue;
@@ -217,8 +260,11 @@ async function uploadArtifacts(config, state) {
     state.uploadedParts.push(part.number);
     state.messageIds.push(Number(message.message_id));
     await writeJsonAtomic(pendingFile(state.backupId), state);
+    await writePublicStatus(state);
   }
   if (!state.manifestMessageId) {
+    state.stage = 'uploading_manifest';
+    await writePublicStatus(state);
     const message = await sendDocument(config, state.manifestFile, `${state.backupId} · 恢复清单`);
     state.manifestMessageId = Number(message.message_id);
     await writeJsonAtomic(pendingFile(state.backupId), state);
@@ -240,30 +286,52 @@ async function uploadArtifacts(config, state) {
   ].join('\n');
   const completion = await sendMessage(config, summary);
   state.status = 'completed';
+  state.stage = 'completed';
   state.completedAt = new Date().toISOString();
   state.completionMessageId = Number(completion.message_id);
-  const publicState = { ...state };
-  delete publicState.keyBase64;
+  const publicState = publicBackupState(state);
   await writeJsonAtomic(STATUS_FILE, publicState);
   await fsp.unlink(pendingFile(state.backupId)).catch(() => {});
   return publicState;
 }
 
-async function prepareAndUpload(sourceFile, { removeSourceAfterEncryption = false } = {}) {
-  const config = await loadConfig();
+async function prepareAndUpload(sourceFile, {
+  removeSourceAfterEncryption = false,
+  backupId = '',
+  config: suppliedConfig = null,
+  source = null
+} = {}) {
+  const config = suppliedConfig || await loadConfig();
   if (!config.enabled) return { skipped: true, reason: 'Telegram 备份未启用' };
   if (!config.botToken || !config.chatId) throw new Error('Telegram 备份配置不完整');
   await fsp.mkdir(BACKUP_DIR, { recursive: true, mode: 0o700 });
+  const preparingState = {
+    status: 'running',
+    stage: 'integrity_check',
+    backupId: backupId || `webring-${timestamp()}`,
+    createdAt: new Date().toISOString(),
+    source
+  };
+  await writePublicStatus(preparingState);
   const integrity = await integrityCheck(sourceFile);
   const sourceStat = await fsp.stat(sourceFile);
-  const artifacts = await createEncryptedArtifacts(sourceFile, { outputDirectory: BACKUP_DIR, partSizeMiB: config.partSizeMiB });
+  preparingState.stage = 'encrypting';
+  preparingState.integrity = integrity;
+  await writePublicStatus(preparingState);
+  const artifacts = await createEncryptedArtifacts(sourceFile, {
+    backupId: preparingState.backupId,
+    outputDirectory: BACKUP_DIR,
+    partSizeMiB: config.partSizeMiB
+  });
   const state = {
-    status: 'prepared', backupId: artifacts.backupId, createdAt: new Date().toISOString(), integrity,
+    status: 'prepared', stage: 'prepared', backupId: artifacts.backupId,
+    createdAt: preparingState.createdAt, integrity, source,
     originalBytes: sourceStat.size, keyBase64: artifacts.keyBase64,
     encryptedFile: artifacts.encryptedFile, manifestFile: artifacts.manifestFile,
     manifest: artifacts.manifest, parts: artifacts.parts, uploadedParts: [], messageIds: [], manifestMessageId: null
   };
   await writeJsonAtomic(pendingFile(state.backupId), state);
+  await writePublicStatus(state);
   if (removeSourceAfterEncryption) {
     await fsp.unlink(sourceFile).catch(() => {});
     await fsp.unlink(`${sourceFile}.sha256`).catch(() => {});
@@ -272,29 +340,80 @@ async function prepareAndUpload(sourceFile, { removeSourceAfterEncryption = fals
     return await uploadArtifacts(config, state);
   } catch (error) {
     state.status = 'partial';
+    state.stage = 'upload_failed';
     state.lastError = String(error.message || error).slice(0, 500);
     state.lastAttemptAt = new Date().toISOString();
     await writeJsonAtomic(pendingFile(state.backupId), state);
-    const publicState = { ...state }; delete publicState.keyBase64;
-    await writeJsonAtomic(STATUS_FILE, publicState);
+    await writePublicStatus(state);
     throw error;
   }
 }
 
-async function createAndUploadBackup() {
+async function executeBackup(backupId, suppliedConfig = null) {
+  const config = suppliedConfig || await loadConfig();
+  if (!config.enabled) return { skipped: true, reason: 'Telegram 备份未启用' };
+  if (!config.botToken || !config.chatId) throw new Error('Telegram 备份配置不完整');
+  await fsp.mkdir(BACKUP_DIR, { recursive: true, mode: 0o700 });
+  const state = {
+    status: 'running',
+    stage: 'source_validation',
+    backupId,
+    createdAt: new Date().toISOString(),
+    source: { name: path.basename(DATABASE_PATH), configuredBy: 'DB_PATH' }
+  };
+  let target = '';
+  try {
+    await writePublicStatus(state);
+    const sourceStat = await validateDatabaseSource(DATABASE_PATH);
+    state.source.bytes = sourceStat.size;
+    state.stage = 'snapshot';
+    await writePublicStatus(state);
+    target = path.join(BACKUP_DIR, `${backupId}.db`);
+    await sqliteBackup(DATABASE_PATH, target);
+    return await prepareAndUpload(target, {
+      removeSourceAfterEncryption: true,
+      backupId,
+      config,
+      source: state.source
+    });
+  } catch (error) {
+    const latest = await readJson(STATUS_FILE, null).catch(() => null);
+    const failedState = latest?.backupId === backupId ? { ...state, ...latest } : state;
+    if (failedState.status !== 'partial') failedState.status = 'failed';
+    failedState.stage = failedState.stage || 'failed';
+    failedState.lastError = String(error.message || error).slice(0, 500);
+    failedState.lastAttemptAt = new Date().toISOString();
+    await writePublicStatus(failedState).catch(() => {});
+    if (target) await fsp.unlink(target).catch(() => {});
+    throw error;
+  }
+}
+
+function createAndUploadBackup(options = {}) {
   if (activeBackup) return activeBackup;
-  activeBackup = (async () => {
-    const source = path.join(APP_ROOT, 'webring.db');
-    const target = path.join(BACKUP_DIR, `webring-${timestamp()}.db`);
-    await sqliteBackup(source, target);
-    await integrityCheck(target);
-    return prepareAndUpload(target, { removeSourceAfterEncryption: true });
-  })();
-  try { return await activeBackup; }
-  finally { activeBackup = null; }
+  activeBackupId = `webring-${timestamp()}`;
+  activeBackup = executeBackup(activeBackupId, options.config || null)
+    .finally(() => {
+      activeBackup = null;
+      activeBackupId = '';
+    });
+  return activeBackup;
+}
+
+async function startBackup() {
+  if (activeBackup) return { started: false, running: true, backupId: activeBackupId };
+  const config = await loadConfig();
+  if (!config.enabled) throw new Error('Telegram 备份未启用');
+  if (!config.botToken || !config.chatId) throw new Error('Telegram 备份配置不完整');
+  if (activeBackup) return { started: false, running: true, backupId: activeBackupId };
+  const task = createAndUploadBackup({ config });
+  const backupId = activeBackupId;
+  void task.catch(error => console.error('Telegram 数据库备份失败：', error?.stack || error));
+  return { started: true, running: true, backupId };
 }
 
 async function resumePendingBackups() {
+  if (activeBackup) return [{ skipped: true, reason: '新的数据库备份正在执行', backupId: activeBackupId }];
   const config = await loadConfig();
   if (!config.enabled) return [];
   await fsp.mkdir(BACKUP_DIR, { recursive: true, mode: 0o700 });
@@ -317,12 +436,34 @@ async function testConnection() {
 
 async function getStatus() {
   const config = await loadConfig();
-  return { config: publicConfig(config), latest: await readJson(STATUS_FILE, null) };
+  let latest = await readJson(STATUS_FILE, null);
+  if (!activeBackup && ['running', 'prepared', 'uploading'].includes(latest?.status)) {
+    const hasPendingUpload = latest?.backupId
+      ? await fsp.access(pendingFile(latest.backupId), fs.constants.R_OK).then(() => true).catch(() => false)
+      : false;
+    latest = {
+      ...latest,
+      status: hasPendingUpload ? 'partial' : 'failed',
+      stage: 'interrupted',
+      lastError: hasPendingUpload
+        ? '备份任务因服务重启中断，等待失败分片自动重试'
+        : '备份任务因服务重启中断，请重新发起备份',
+      lastAttemptAt: new Date().toISOString()
+    };
+    await writePublicStatus(latest);
+  }
+  return {
+    config: publicConfig(config),
+    running: Boolean(activeBackup),
+    activeBackupId: activeBackupId || null,
+    latest
+  };
 }
 
 module.exports = {
   BACKUP_DIR,
   CONFIG_FILE,
+  DATABASE_PATH,
   createAndUploadBackup,
   createEncryptedArtifacts,
   getStatus,
@@ -331,5 +472,7 @@ module.exports = {
   prepareAndUpload,
   resumePendingBackups,
   saveConfig,
-  testConnection
+  startBackup,
+  testConnection,
+  validateDatabaseSource
 };

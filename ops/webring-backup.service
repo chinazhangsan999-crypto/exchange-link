@@ -6,4 +6,5 @@ After=network.target
 Type=oneshot
 User=niaiwo
 Group=niaiwo
+EnvironmentFile=-/opt/webring/secrets/webring.env
 ExecStart=/usr/local/sbin/webring-backup

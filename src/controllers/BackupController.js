@@ -27,8 +27,10 @@ async function testConnection(req, res) {
 }
 
 async function runNow(req, res) {
-  try { return ok(res, await BackupService.createAndUploadBackup(), '备份已生成并推送'); }
-  catch (error) { return fail(res, safeApiErrorMessage(error, '备份或推送失败'), 502); }
+  try {
+    const result = await BackupService.startBackup();
+    return ok(res, result, result.started ? '备份任务已启动' : '备份任务正在执行');
+  } catch (error) { return fail(res, safeApiErrorMessage(error, '启动备份任务失败'), 502); }
 }
 
 async function retryPending(req, res) {

@@ -2,6 +2,7 @@
 (() => {
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
   const notify = message => window.toast ? window.toast(message) : console.info(message);
+  let backupPollTimer = null;
 
   async function request(url, options = {}) {
     const response = await fetch(url, {
@@ -9,7 +10,14 @@
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) }
     });
-    const result = await response.json();
+    const body = await response.text();
+    let result;
+    try { result = JSON.parse(body); }
+    catch {
+      const contentType = response.headers.get('content-type') || '';
+      const kind = contentType.includes('text/html') || /^\s*<!doctype|^\s*<html/i.test(body) ? '异常页面' : '非 JSON 响应';
+      throw new Error(`备份服务返回${kind}（HTTP ${response.status}）`);
+    }
     if (result.code !== 200) throw new Error(result.msg || '请求失败');
     return result.data;
   }
@@ -55,7 +63,7 @@
     panel.querySelector('#backup-settings-form').addEventListener('submit', saveBackup);
     panel.querySelector('#alert-settings-form').addEventListener('submit', saveAlerts);
     panel.querySelector('#test-backup-bot').addEventListener('click', event => runButton(event.currentTarget, '测试中…', '/api/admin/backups/test', '备份 Bot 测试成功'));
-    panel.querySelector('#run-backup-now').addEventListener('click', event => runButton(event.currentTarget, '备份并上传中…', '/api/admin/backups/run', '备份已生成并上传'));
+    panel.querySelector('#run-backup-now').addEventListener('click', runBackupNow);
     panel.querySelector('#retry-backup').addEventListener('click', event => runButton(event.currentTarget, '重试中…', '/api/admin/backups/retry', '失败分片重试完成'));
     const style = document.createElement('link'); style.rel = 'stylesheet'; style.href = '/admin/backup.css?v=20260922-alert-layout-1'; document.head.append(style);
   }
@@ -136,24 +144,61 @@
     const area = document.querySelector('#backup-status');
     const config = data?.config || {};
     const latest = data?.latest;
+    const statusLabels = {
+      running: '执行中', prepared: '已准备', uploading: '上传中',
+      completed: '已完成', partial: '部分上传失败', failed: '失败'
+    };
+    const stageLabels = {
+      source_validation: '检查运行时数据库', snapshot: '生成 SQLite 快照',
+      integrity_check: '检查数据库完整性', encrypting: '压缩并加密', prepared: '准备上传',
+      uploading_parts: '上传数据库分片', uploading_manifest: '上传恢复清单',
+      upload_failed: '上传失败', interrupted: '任务被服务重启中断', completed: '备份完成'
+    };
+    const running = Boolean(data?.running) || ['running', 'prepared', 'uploading'].includes(latest?.status);
+    const statusText = latest
+      ? `${statusLabels[latest.status] || latest.status}${running && stageLabels[latest.stage] ? ` · ${stageLabels[latest.stage]}` : ''}`
+      : '尚无记录';
     area.innerHTML = `
       <div><span>备份 Bot</span><strong>${config.botTokenConfigured ? '已配置' : '未配置'}</strong></div>
       <div><span>自动备份</span><strong>${config.enabled ? '已启用' : '未启用'}</strong></div>
-      <div><span>最近状态</span><strong>${escapeHtml(latest?.status || '尚无记录')}</strong></div>
+      <div><span>最近状态</span><strong>${escapeHtml(statusText)}</strong></div>
       <div><span>最近备份</span><strong>${escapeHtml(latest?.backupId || '—')}</strong></div>
       <div><span>完整性</span><strong>${escapeHtml(latest?.integrity || '—')}</strong></div>
       <div><span>分片</span><strong>${latest?.parts ? `${Number(latest.uploadedParts?.length || 0)}/${latest.parts.length}` : '—'}</strong></div>
+      ${latest?.source ? `<div><span>数据库来源</span><strong>${escapeHtml(latest.source.configuredBy || '运行时配置')} · ${escapeHtml(latest.source.name || 'webring.db')}${Number(latest.source.bytes) >= 0 ? ` · ${Math.ceil(Number(latest.source.bytes) / 1024)} KiB` : ''}</strong></div>` : ''}
       ${latest?.lastError ? `<p class="backup-error">最近错误：${escapeHtml(latest.lastError)}</p>` : ''}`;
     const form = document.querySelector('#backup-settings-form');
     form.elements.enabled.checked = Boolean(config.enabled);
     form.elements.chatId.value = config.chatId || '';
     form.elements.partSizeMiB.value = Number(config.partSizeMiB || 18);
     document.querySelector('#backup-token-state').textContent = config.botTokenConfigured ? 'Token 已保存；留空表示不修改。' : '尚未保存独立备份 Bot Token。';
+    const runButton = document.querySelector('#run-backup-now');
+    if (runButton) {
+      runButton.disabled = running;
+      runButton.textContent = running ? '备份任务执行中…' : '立即备份并推送';
+    }
+    clearTimeout(backupPollTimer);
+    backupPollTimer = running ? setTimeout(() => { void loadBackup(); }, 2000) : null;
   }
 
   async function loadBackup() {
-    try { renderBackupStatus(await request('/api/admin/backups/status')); }
+    try {
+      const data = await request('/api/admin/backups/status');
+      renderBackupStatus(data);
+      return data;
+    }
     catch (error) { const area = document.querySelector('#backup-status'); if (area) area.innerHTML = `<p class="backup-error">读取失败：${escapeHtml(error.message)}</p>`; }
+  }
+
+  async function runBackupNow(event) {
+    const button = event.currentTarget;
+    try {
+      button.disabled = true;
+      button.textContent = '正在启动…';
+      const result = await request('/api/admin/backups/run', { method: 'POST' });
+      notify(result.started ? '备份任务已启动，页面将自动刷新进度' : '已有备份任务正在执行');
+    } catch (error) { notify(error.message); }
+    finally { await loadBackup(); }
   }
 
   async function saveBackup(event) {

@@ -8,6 +8,7 @@ const PingService = require('../services/PingService');
 const RiskService = require('../services/RiskService');
 const SiteTrafficService = require('../services/SiteTrafficService');
 const PartnerPageViewService = require('../services/PartnerPageViewService');
+const TelegramBackupService = require('../services/TelegramBackupService');
 const CacheService = require('../services/CacheService');
 const { sendAdminAlert } = require('../services/AlertService');
 const { abortActivePoolTasks, drainActivePoolTasks } = require('../utils/asyncPool');
@@ -17,6 +18,8 @@ let backlinkTask = null;
 let databaseMaintenanceTask = null;
 let deepRevivalTask = null;
 let riskAlertTask = null;
+let telegramBackupTask = null;
+let telegramBackupRetryTask = null;
 const intervals = [];
 const runningJobs = new Set();
 let stopping = false;
@@ -115,6 +118,14 @@ function startJobs() {
     });
   }, { timezone: 'Asia/Shanghai' });
 
+  telegramBackupTask = cron.schedule('30 2 * * *', () => {
+    runTrackedJob('每日 Telegram 数据库备份', () => TelegramBackupService.createAndUploadBackup());
+  }, { timezone: 'Asia/Shanghai' });
+
+  telegramBackupRetryTask = cron.schedule('15,45 * * * *', () => {
+    runTrackedJob('Telegram 数据库备份失败分片重试', () => TelegramBackupService.resumePendingBackups());
+  }, { timezone: 'Asia/Shanghai' });
+
   const cleanupTimer = setInterval(() => {
     runTrackedJob('定时清理过期流水', async () => {
       reportCleanupFailures(await LogModel.cleanupOldLogs());
@@ -153,11 +164,20 @@ async function stopJobs({ drainTimeoutMs = 15000 } = {}) {
   // 先向每个网络任务发出统一取消信号；超时 race 已返回但底层仍未结束的 Worker 也在此集合内。
   const abortedTaskCount = abortActivePoolTasks();
 
-  const cronTasks = [backlinkTask, databaseMaintenanceTask, deepRevivalTask, riskAlertTask].filter(Boolean);
+  const cronTasks = [
+    backlinkTask,
+    databaseMaintenanceTask,
+    deepRevivalTask,
+    riskAlertTask,
+    telegramBackupTask,
+    telegramBackupRetryTask
+  ].filter(Boolean);
   backlinkTask = null;
   databaseMaintenanceTask = null;
   deepRevivalTask = null;
   riskAlertTask = null;
+  telegramBackupTask = null;
+  telegramBackupRetryTask = null;
 
   while (intervals.length) clearInterval(intervals.pop());
 

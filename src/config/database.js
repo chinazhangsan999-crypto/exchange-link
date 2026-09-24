@@ -1,11 +1,9 @@
-const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
 const { dbWriteCoordinator } = require('../services/DbWriteCoordinator');
+const { DATABASE_PATH } = require('./databasePath');
 
-// config/database.js 位于 src/config，默认上退两级指向项目根目录数据库。
-// DB_PATH 可供测试、容器挂载或多实例部署显式覆盖，避免误建到当前工作目录。
-const DB_PATH = path.resolve(process.env.DB_PATH || path.join(__dirname, '..', '..', 'webring.db'));
-const DATABASE_PATH = DB_PATH;
+// 业务、维护与备份必须共享同一个运行时数据库路径，禁止各模块自行拼接 webring.db。
+const DB_PATH = DATABASE_PATH;
 const db = new sqlite3.Database(DB_PATH);
 
 // 在任何查询发出前配置共享连接：遇到写锁最多等待 5 秒，避免高并发日志直接 SQLITE_BUSY。
