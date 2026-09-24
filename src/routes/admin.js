@@ -30,6 +30,9 @@ router.put('/api/admin/integrations/ip-intelligence', AdminController.saveIpInte
 router.get('/api/admin/integrations/bot-risk-center', AdminController.getBotRiskIntegration);
 router.post('/api/admin/integrations/bot-risk-center/test', AdminController.testBotRiskIntegration);
 router.put('/api/admin/integrations/bot-risk-center', AdminController.saveBotRiskIntegration);
+router.get('/api/admin/integrations/browser-access-secret', AdminController.getBrowserAccessSecret);
+router.post('/api/admin/integrations/browser-access-secret/generate', AdminController.generateBrowserAccessSecret);
+router.post('/api/admin/integrations/browser-access-secret/rotate', AdminController.rotateBrowserAccessSecret);
 router.get('/api/admin/analytics/config', AdminController.getAnalyticsConfig);
 router.post('/api/admin/analytics/config', AdminController.saveAnalyticsConfig);
 router.get(['/api/admin/config', '/api/admin/settings'], AdminController.getSettings);

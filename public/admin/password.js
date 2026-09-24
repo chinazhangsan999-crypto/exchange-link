@@ -44,6 +44,15 @@
           <label>站点标识<input name="siteKey" required maxlength="64" pattern="[A-Za-z0-9_-]{3,64}" autocomplete="off" placeholder="webring-main"></label>
           <label>Client ID<input name="clientId" required maxlength="64" pattern="[A-Za-z0-9_-]{3,64}" autocomplete="off" placeholder="风险中心分配的 Client ID"></label>
           <label class="wide">Client Secret<input name="secret" type="password" autocomplete="new-password" placeholder="已配置时留空表示继续使用原密钥"><small id="bot-risk-secret-state">密钥仅保存于服务器受限文件，不会回显。</small><small id="bot-risk-maintenance-state">运行清单与更新建议尚未同步。</small></label>
+          <div class="wide integration-secret-panel">
+            <strong>浏览器通行证密钥</strong>
+            <p id="browser-access-secret-state" class="hint">读取中…</p>
+            <p class="hint">执行模式需要此密钥。密钥由服务器生成并保存在受限文件中，不会显示或发送到浏览器。</p>
+            <div class="settings-actions">
+              <button class="button ghost" type="button" data-action="generate-browser-access-secret">生成密钥</button>
+              <button class="button ghost" type="button" data-action="rotate-browser-access-secret">轮换密钥</button>
+            </div>
+          </div>
           <div class="settings-actions"><button class="button ghost" type="button" data-action="test-bot-risk">测试连接</button><button class="button" type="submit">验证并保存</button></div>
         </form>
       </div>`;
@@ -54,6 +63,8 @@
     holder.querySelector('[data-action="test-ip"]').addEventListener('click', testIpIntelligence);
     holder.querySelector('#bot-risk-center-form').addEventListener('submit', saveBotRisk);
     holder.querySelector('[data-action="test-bot-risk"]').addEventListener('click', testBotRisk);
+    holder.querySelector('[data-action="generate-browser-access-secret"]').addEventListener('click', generateBrowserAccessSecret);
+    holder.querySelector('[data-action="rotate-browser-access-secret"]').addEventListener('click', rotateBrowserAccessSecret);
   }
 
   async function loadIntegrationStatus() {
@@ -110,7 +121,26 @@
       if (maintenanceState) maintenanceState.textContent = risk.lastInventoryAt
         ? `运行清单已上报；更新建议 ${Number(risk.advisoryCount) || 0} 条。`
         : (risk.enabled ? '等待首次运行清单上报。' : '启用后将低频上报版本清单，不影响访客请求。');
+      renderBrowserAccessSecret(risk.browserAccessSecret || {});
     } catch (error) { notify(error.message); }
+  }
+
+  function renderBrowserAccessSecret(status) {
+    const state = document.querySelector('#browser-access-secret-state');
+    const generate = document.querySelector('[data-action="generate-browser-access-secret"]');
+    const rotate = document.querySelector('[data-action="rotate-browser-access-secret"]');
+    if (!state) return;
+    if (!status.configured) {
+      state.textContent = '尚未配置；保存执行模式时系统也会自动生成。';
+      if (generate) generate.hidden = false;
+      if (rotate) rotate.hidden = true;
+      return;
+    }
+    const source = status.source === 'environment' ? '环境变量' : '后台管理';
+    const created = status.createdAt ? ` · 创建于 ${new Date(status.createdAt).toLocaleString('zh-CN')}` : '';
+    state.textContent = `已配置（${source}） · 指纹 ${status.fingerprint || '--'}${created}`;
+    if (generate) generate.hidden = true;
+    if (rotate) rotate.hidden = false;
   }
 
   function payload(form) { return Object.fromEntries(new FormData(form)); }
@@ -170,6 +200,29 @@
       form.elements.secret.value = '';
       notify(form.elements.enabled.checked ? '风险中心接入已保存并即时生效' : '风险中心接入已停用');
       await loadIntegrationStatus();
+    } catch (error) { notify(error.message); }
+    finally { setBusy(button, false); }
+  }
+
+  async function generateBrowserAccessSecret(event) {
+    const button = event.currentTarget;
+    try {
+      setBusy(button, true, '生成中…');
+      const status = await api('/api/admin/integrations/browser-access-secret/generate', { method: 'POST' });
+      renderBrowserAccessSecret(status);
+      notify('浏览器通行证密钥已安全生成');
+    } catch (error) { notify(error.message); }
+    finally { setBusy(button, false); }
+  }
+
+  async function rotateBrowserAccessSecret(event) {
+    if (!confirm('确认轮换浏览器通行证密钥吗？现有通行证将在最长 4 小时的过渡期内继续有效。')) return;
+    const button = event.currentTarget;
+    try {
+      setBusy(button, true, '轮换中…');
+      const status = await api('/api/admin/integrations/browser-access-secret/rotate', { method: 'POST' });
+      renderBrowserAccessSecret(status);
+      notify('浏览器通行证密钥已安全轮换');
     } catch (error) { notify(error.message); }
     finally { setBusy(button, false); }
   }

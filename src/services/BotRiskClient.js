@@ -5,11 +5,11 @@ const fs = require('fs');
 const path = require('path');
 const {
   BOT_RISK_TIMEOUT_MS,
-  BOT_RISK_SYNC_INTERVAL_MS,
-  EDGE_ACCESS_SECRET
+  BOT_RISK_SYNC_INTERVAL_MS
 } = require('../config/env');
 const LocalRiskDecisionCache = require('./LocalRiskDecisionCache');
 const CredentialStore = require('./IntegrationCredentialStore');
+const BrowserAccessSecretStore = require('./BrowserAccessSecretStore');
 
 const MAX_QUEUE_SIZE = 10000;
 const BATCH_SIZE = 100;
@@ -40,7 +40,7 @@ function isPrivateHostname(hostname) {
     || /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
 }
 
-function normalizeConfig(input = {}, current = runtimeConfig) {
+function normalizeConfig(input = {}, current = runtimeConfig, options = {}) {
   const enabledValue = input.enabled === undefined ? current.enabled : input.enabled;
   const enabled = enabledValue === true || ['1', 'true', 'on', 'yes'].includes(String(enabledValue).toLowerCase());
   const connectionType = String(input.connectionType || input.connection_type || current.connectionType || 'https').trim().toLowerCase();
@@ -51,7 +51,8 @@ function normalizeConfig(input = {}, current = runtimeConfig) {
   const mode = String(input.mode || current.mode || 'observe').trim().toLowerCase();
   if (!['internal', 'https'].includes(connectionType)) throw new Error('连接方式只能是内网或 HTTPS 外网');
   if (!['observe', 'enforce'].includes(mode)) throw new Error('运行模式只能是观察或执行');
-  if (mode === 'enforce' && EDGE_ACCESS_SECRET.length < 32) {
+  if (mode === 'enforce' && options.requireAccessSecret !== false
+    && !BrowserAccessSecretStore.status().configured) {
     throw new Error('执行模式需要先在服务器配置至少 32 位 EDGE_ACCESS_SECRET');
   }
   let parsed;
@@ -340,14 +341,16 @@ function start() {
 }
 
 async function testConfig(input) {
-  const config = normalizeConfig(input);
+  const config = normalizeConfig(input, runtimeConfig, { requireAccessSecret: false });
   await signedRequest('GET', '/v1/decisions/delta?cursor=0&limit=1', undefined, config);
   return { connected: true, config };
 }
 
 async function saveAndReconfigure(input) {
+  const candidate = normalizeConfig(input, runtimeConfig, { requireAccessSecret: false });
+  if (candidate.enabled) await signedRequest('GET', '/v1/decisions/delta?cursor=0&limit=1', undefined, candidate);
+  if (candidate.enabled && candidate.mode === 'enforce') await BrowserAccessSecretStore.ensureSecret();
   const config = normalizeConfig(input);
-  if (config.enabled) await signedRequest('GET', '/v1/decisions/delta?cursor=0&limit=1', undefined, config);
   await CredentialStore.saveBotRisk(config);
   if (!stopped) await stop();
   runtimeConfig = config;
@@ -381,6 +384,7 @@ function status() {
     clientId: runtimeConfig.clientId,
     siteKey: runtimeConfig.siteKey,
     secretConfigured: Boolean(runtimeConfig.secret),
+    browserAccessSecret: BrowserAccessSecretStore.status(),
     integrationDisabled,
     queued: queue.length,
     cursor: LocalRiskDecisionCache.getCursor(),
@@ -393,7 +397,10 @@ function status() {
   };
 }
 
-function isEnforced() { return enabled() && runtimeConfig.mode === 'enforce'; }
+function isEnforced() {
+  return enabled() && runtimeConfig.mode === 'enforce'
+    && BrowserAccessSecretStore.status().configured;
+}
 
 module.exports = {
   subjectHash,

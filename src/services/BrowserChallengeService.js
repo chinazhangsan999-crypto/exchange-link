@@ -3,10 +3,10 @@
 const crypto = require('crypto');
 const { LRUCache } = require('lru-cache');
 const {
-  EDGE_ACCESS_SECRET,
   BROWSER_ACCESS_TTL_MS
 } = require('../config/env');
 const BotRiskClient = require('./BotRiskClient');
+const BrowserAccessSecretStore = require('./BrowserAccessSecretStore');
 
 const COOKIE_NAME = 'browser_access_token';
 const CHALLENGE_TTL_MS = 30_000;
@@ -62,12 +62,13 @@ function verifyProof(visitorId, payload = {}, now = Date.now()) {
   return { ok: true, elapsed, difficultyBits: record.difficultyBits };
 }
 
-function signPayload(encodedPayload) {
-  return crypto.createHmac('sha256', EDGE_ACCESS_SECRET).update(encodedPayload).digest('hex');
+function signPayload(encodedPayload, secret) {
+  return crypto.createHmac('sha256', secret).update(encodedPayload).digest('hex');
 }
 
 function issueAccessToken(visitorId, userAgent, level = 'browser', now = Date.now()) {
-  if (EDGE_ACCESS_SECRET.length < 32) throw new Error('浏览器通行证签名密钥未配置');
+  const secret = BrowserAccessSecretStore.getCurrentSecret();
+  if (!secret) throw new Error('浏览器通行证签名密钥未配置');
   const payload = {
     type: 'browser-access',
     visitorId,
@@ -78,18 +79,22 @@ function issueAccessToken(visitorId, userAgent, level = 'browser', now = Date.no
     policy: 'v1'
   };
   const encoded = base64url(JSON.stringify(payload));
-  return `${encoded}.${signPayload(encoded)}`;
+  return `${encoded}.${signPayload(encoded, secret)}`;
 }
 
 function verifyAccessToken(token, visitorId, userAgent, now = Date.now()) {
-  if (!token || EDGE_ACCESS_SECRET.length < 32) return null;
+  const secrets = BrowserAccessSecretStore.getVerificationSecrets(now);
+  if (!token || !secrets.length) return null;
   const dot = String(token).lastIndexOf('.');
   if (dot < 1) return null;
   const encoded = String(token).slice(0, dot);
   const signature = String(token).slice(dot + 1);
-  const expected = signPayload(encoded);
-  if (signature.length !== expected.length
-    || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  const validSignature = secrets.some(secret => {
+    const expected = signPayload(encoded, secret);
+    return signature.length === expected.length
+      && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
+  });
+  if (!validSignature) return null;
   try {
     const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
     if (payload.type !== 'browser-access' || payload.visitorId !== visitorId

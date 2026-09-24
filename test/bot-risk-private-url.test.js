@@ -41,15 +41,14 @@ test('生产环境仅在显式开启时接受 RFC1918 风险中心 HTTP 地址',
   assert.match(publicHttp.stderr, /RFC1918 私网 HTTP/);
 });
 
-test('observe 模式也必须配置浏览器通行证签名密钥', () => {
+test('后台托管密钥启用后，风险模式不再要求环境变量预置通行证密钥', () => {
   const missing = loadEnv({
     BOT_GATE_MODE: 'observe',
     BOT_RISK_CENTER_URL: 'http://10.128.0.3:4100',
     BOT_RISK_ALLOW_PRIVATE_HTTP: '1',
     EDGE_ACCESS_SECRET: ''
   });
-  assert.notEqual(missing.status, 0);
-  assert.match(missing.stderr, /EDGE_ACCESS_SECRET/);
+  assert.equal(missing.status, 0, missing.stderr);
 
   const configured = loadEnv({
     BOT_GATE_MODE: 'observe',

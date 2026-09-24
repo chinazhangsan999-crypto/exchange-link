@@ -37,6 +37,7 @@ const IntegrationState = require('../services/IntegrationStateService');
 const ControlCenterAgentService = require('../services/ControlCenterAgentService');
 const IpIntelligenceService = require('../services/IpIntelligenceService');
 const BotRiskClient = require('../services/BotRiskClient');
+const BrowserAccessSecretStore = require('../services/BrowserAccessSecretStore');
 const WebhookDeliveryModel = require('../models/WebhookDeliveryModel');
 const { sendAdminAlert, sendBarkTestAlert, providerForUrl } = require('../services/AlertService');
 const InspectionAlertService = require('../services/InspectionAlertService');
@@ -345,6 +346,43 @@ async function saveBotRiskIntegration(req, res) {
   } catch (error) {
     console.error('保存风险中心接入失败：', error);
     return fail(res, '保存失败：请核对线路类型、服务地址、站点标识和接入凭据', 400);
+  }
+}
+
+async function getBrowserAccessSecret(req, res) {
+  try { return ok(res, BrowserAccessSecretStore.status()); }
+  catch { return fail(res, '读取浏览器通行证密钥状态失败', 500); }
+}
+
+async function generateBrowserAccessSecret(req, res) {
+  try {
+    const before = BrowserAccessSecretStore.status();
+    const status = await BrowserAccessSecretStore.ensureSecret();
+    console.info('管理员生成浏览器通行证密钥', {
+      clientIp: req.ip,
+      generated: !before.configured,
+      fingerprint: status.fingerprint
+    });
+    return ok(res, status, before.configured ? '浏览器通行证密钥已存在' : '浏览器通行证密钥已安全生成');
+  } catch (error) {
+    console.error('生成浏览器通行证密钥失败：', error);
+    return fail(res, '服务器无法保存浏览器通行证密钥', 500);
+  }
+}
+
+async function rotateBrowserAccessSecret(req, res) {
+  try {
+    const before = BrowserAccessSecretStore.status();
+    const status = await BrowserAccessSecretStore.rotateSecret();
+    console.info('管理员轮换浏览器通行证密钥', {
+      clientIp: req.ip,
+      previousFingerprint: before.fingerprint,
+      fingerprint: status.fingerprint
+    });
+    return ok(res, status, '浏览器通行证密钥已轮换，旧通行证将在过渡期内继续有效');
+  } catch (error) {
+    console.error('轮换浏览器通行证密钥失败：', error);
+    return fail(res, '服务器无法轮换浏览器通行证密钥', 500);
   }
 }
 
@@ -2334,6 +2372,9 @@ module.exports = {
   getBotRiskIntegration,
   testBotRiskIntegration,
   saveBotRiskIntegration,
+  getBrowserAccessSecret,
+  generateBrowserAccessSecret,
+  rotateBrowserAccessSecret,
   getAnalyticsConfig,
   saveAnalyticsConfig,
   getSettings,

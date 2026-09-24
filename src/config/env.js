@@ -126,10 +126,6 @@ if (BOT_RISK_CENTER_ENABLED) {
   }
 }
 
-if (BOT_GATE_MODE !== 'off' && EDGE_ACCESS_SECRET.length < 32) {
-  throw new Error('BOT_GATE_MODE=observe 或 enforce 时必须配置至少 32 字符的 EDGE_ACCESS_SECRET。');
-}
-
 const ADMIN_ORIGIN_PATTERN = IS_PRODUCTION ? /^https:\/\/[^/]+$/i : /^https?:\/\/[^/]+$/i;
 if (ADMIN_FRONTEND_ORIGIN && !ADMIN_ORIGIN_PATTERN.test(ADMIN_FRONTEND_ORIGIN)) {
   throw new Error('ADMIN_FRONTEND_ORIGIN 必须是有效 Origin；生产环境仅允许 HTTPS。');
