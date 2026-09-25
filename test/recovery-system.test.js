@@ -1,7 +1,9 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const EventEmitter = require('node:events');
 const fs = require('node:fs');
+const http2 = require('node:http2');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
@@ -425,6 +427,54 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
   } finally {
     await database.closeDatabase();
     fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Quad9 与 Mullvad 使用 HTTP/2 DoH，并区分传播与解析器故障', async () => {
+  const originalConnect = http2.connect;
+  const requests = [];
+  http2.connect = origin => {
+    const session = new EventEmitter();
+    session.destroyed = false;
+    session.close = () => { session.destroyed = true; };
+    session.destroy = () => { session.destroyed = true; };
+    session.request = headers => {
+      requests.push({ origin, headers });
+      const request = new EventEmitter();
+      request.end = () => queueMicrotask(() => {
+        request.emit('response', { ':status': 200 });
+        request.emit('data', Buffer.alloc(12));
+        request.emit('end');
+      });
+      request.close = () => undefined;
+      return request;
+    };
+    return session;
+  };
+
+  try {
+    const RecoveryService = require('../src/services/RecoveryService');
+    for (const resolver of [
+      { id: 'quad9-unfiltered', label: 'Quad9', endpoint: 'https://dns10.quad9.net/dns-query' },
+      { id: 'mullvad', label: 'Mullvad', endpoint: 'https://dns.mullvad.net/dns-query' }
+    ]) {
+      const result = await RecoveryService.queryDoh(resolver, '_recovery.example.com', 1000);
+      assert.equal(result.ok, true);
+      assert.deepEqual(result.values, []);
+    }
+    assert.equal(requests.length, 2);
+    assert.equal(requests.every(item => item.headers[':method'] === 'GET'), true);
+    assert.equal(requests.every(item => item.headers[':path'].includes('dns=')), true);
+    assert.deepEqual(
+      RecoveryService.classifyDohLine({ ok: true, values: [] }, null, true),
+      { state: 'propagating', label: '等待 DNS 传播' }
+    );
+    assert.deepEqual(
+      RecoveryService.classifyDohLine({ ok: false, errorCode: 'timeout' }, null, false),
+      { state: 'resolver_timeout', label: '解析器超时' }
+    );
+  } finally {
+    http2.connect = originalConnect;
   }
 });
 

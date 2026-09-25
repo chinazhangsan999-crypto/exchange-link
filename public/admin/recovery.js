@@ -477,8 +477,20 @@
         const container = document.querySelector('#recovery-doh-results');
         container.innerHTML = '<div class="recovery-empty">正在检测中国大陆主力、全球主力和扩展容灾线路…</div>';
         const result = await busy(button, '检测中…', () => request(`/api/admin/recovery/bootstrap-groups/${id}/lookup-routes/test`, { method: 'POST', body: '{}' }));
-        container.innerHTML = `<div class="recovery-result"><strong>${escapeHtml(result.group.label)} · 三层查询线路检测</strong><p>检测 ${Number(result.total)} 条，读取成功 ${Number(result.successful)} 条，异常 ${Number(result.failed)} 条。</p><div class="recovery-test-tier-list">${result.tiers.map(tier => `<div><span>P${Number(tier.priorityGroup)} · ${escapeHtml(tier.label)}</span><b>${Number(tier.successful)}/${Number(tier.total)}</b><small>A+B：${tier.abValid ? '有效' : '未验证'} · R1：${tier.r1Valid ? '有效' : '未验证'}</small></div>`).join('')}</div></div>${result.lines.filter(line => !line.ok || !line.txtFound || line.signatureValid === false).map(line => `<div class="recovery-result recovery-result-error"><strong>P${Number(line.priorityGroup)} · ${escapeHtml(line.resolverLabel)} → ${escapeHtml(line.recordName)}</strong><p>${escapeHtml(line.error || 'TXT 签名无效')}</p></div>`).join('')}`;
-        notify(`线路检测完成：成功 ${result.successful}，异常 ${result.failed}`);
+        const summary = [`检测 ${Number(result.total)} 条`, `读取成功 ${Number(result.successful)} 条`];
+        if (Number(result.propagating)) summary.push(`等待传播 ${Number(result.propagating)} 条`);
+        if (Number(result.resolverUnavailable)) summary.push(`解析器不可用 ${Number(result.resolverUnavailable)} 条`);
+        if (Number(result.otherFailed)) summary.push(`其他异常 ${Number(result.otherFailed)} 条`);
+        const graceHint = result.propagationGraceActive ? `<p class="hint">当前处于发布后 ${Number(result.propagationGraceMinutes)} 分钟传播宽限期，“等待传播”不会判定为发布失败。</p>` : '';
+        const tierRows = result.tiers.map(tier => {
+          const notes = [];
+          if (Number(tier.propagating)) notes.push(`传播中 ${Number(tier.propagating)}`);
+          if (Number(tier.resolverUnavailable)) notes.push(`解析器不可用 ${Number(tier.resolverUnavailable)}`);
+          return `<div><span>P${Number(tier.priorityGroup)} · ${escapeHtml(tier.label)}</span><b>${Number(tier.successful)}/${Number(tier.total)}</b><small>A+B：${tier.abValid ? '有效' : '未验证'} · R1：${tier.r1Valid ? '有效' : '未验证'}${notes.length ? ` · ${escapeHtml(notes.join(' · '))}` : ''}</small></div>`;
+        }).join('');
+        const detailRows = result.lines.filter(line => line.state !== 'healthy').map(line => `<div class="recovery-result recovery-result-error"><strong>P${Number(line.priorityGroup)} · ${escapeHtml(line.resolverLabel)} → ${escapeHtml(line.recordName)}</strong><p>${escapeHtml(line.statusLabel || '检测异常')}${line.error && line.error !== line.statusLabel ? `：${escapeHtml(line.error)}` : ''}</p></div>`).join('');
+        container.innerHTML = `<div class="recovery-result"><strong>${escapeHtml(result.group.label)} · 三层查询线路检测</strong><p>${summary.join('，')}。</p>${graceHint}<div class="recovery-test-tier-list">${tierRows}</div></div>${detailRows}`;
+        notify(`线路检测完成：成功 ${result.successful}，传播中 ${result.propagating || 0}，解析器不可用 ${result.resolverUnavailable || 0}`);
         return;
       }
       if (action === 'delete-bootstrap-group' && confirm('确定删除整个 DNS 发布组合吗？组合内目标和查询线路会一起删除，权威 DNS 中已写入的 TXT 不会自动删除。')) { await request(`/api/admin/recovery/bootstrap-groups/${id}`, { method: 'DELETE' }); notify('DNS 发布组合已删除'); return load(); }

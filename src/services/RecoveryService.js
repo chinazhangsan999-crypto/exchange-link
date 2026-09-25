@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const http2 = require('http2');
 const axios = require('axios');
 const RecoveryModel = require('../models/RecoveryModel');
 const CloudflareFrontendModel = require('../models/CloudflareFrontendModel');
@@ -31,6 +32,8 @@ const MAX_AUTOMATED_LOOKUP_ROUTES = 128;
 const TXT_DATA_SIZE = 180;
 const PORTABLE_TXT_BYTES = 240;
 const MAX_ENCODED_SIZE = 4096;
+const DNS_PROPAGATION_GRACE_MS = 30 * 60 * 1000;
+const HTTP2_DOH_RESOLVERS = new Set(['quad9-unfiltered', 'mullvad']);
 const activeReleasePublishes = new Set();
 
 function stableStringify(value) {
@@ -624,6 +627,73 @@ function parseDnsWireTxt(input) {
   return values;
 }
 
+function requestDohHttp2(url, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let request;
+    let timer;
+    let status = 0;
+    const chunks = [];
+    const session = http2.connect(url.origin);
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (!session.destroyed) session.close();
+      if (error) reject(error);
+      else resolve(value);
+    };
+    session.once('error', error => finish(error));
+    try {
+      request = session.request({
+        ':method': 'GET',
+        ':path': `${url.pathname}${url.search}`,
+        accept: 'application/dns-message'
+      });
+      request.on('response', headers => { status = Number(headers[':status']) || 0; });
+      request.on('data', chunk => chunks.push(Buffer.from(chunk)));
+      request.once('error', error => finish(error));
+      request.once('end', () => {
+        if (status < 200 || status >= 300) return finish(new Error(`HTTP ${status || 500}`));
+        return finish(null, Buffer.concat(chunks));
+      });
+      timer = setTimeout(() => {
+        const error = new Error('查询超时');
+        error.code = 'DOH_TIMEOUT';
+        request.close(http2.constants.NGHTTP2_CANCEL);
+        session.destroy();
+        finish(error);
+      }, timeoutMs);
+      request.end();
+    } catch (error) {
+      finish(error);
+    }
+  });
+}
+
+function classifyDohLine(result, signatureValid, propagationGraceActive) {
+  if (!result.ok) {
+    if (result.errorCode === 'timeout') return { state: 'resolver_timeout', label: '解析器超时' };
+    if (result.errorCode === 'protocol') return { state: 'resolver_protocol', label: '解析器协议不兼容' };
+    return { state: 'resolver_unavailable', label: '解析器不可用' };
+  }
+  if (!result.values?.length) {
+    return propagationGraceActive
+      ? { state: 'propagating', label: '等待 DNS 传播' }
+      : { state: 'txt_missing', label: '未读取到 TXT' };
+  }
+  if (signatureValid === false) return { state: 'invalid_signature', label: 'TXT 签名无效' };
+  return { state: 'healthy', label: '读取正常' };
+}
+
+function sqliteUtcTimestamp(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 0;
+  const normalized = /(?:Z|[+-]\d\d:\d\d)$/.test(raw) ? raw : `${raw.replace(' ', 'T')}Z`;
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
 async function queryDoh(resolver, recordName, timeoutMs = 4000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -631,12 +701,26 @@ async function queryDoh(resolver, recordName, timeoutMs = 4000) {
     const url = new URL(resolver.endpoint || resolver.url);
     const wire = dnsWireQuery(recordName);
     url.searchParams.set('dns', wire.toString('base64url'));
-    const response = await fetch(url, { headers: { Accept: 'application/dns-message' }, signal: controller.signal, cache: 'no-store' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const values = parseDnsWireTxt(await response.arrayBuffer());
+    let payload;
+    if (HTTP2_DOH_RESOLVERS.has(resolver.id)) {
+      clearTimeout(timer);
+      payload = await requestDohHttp2(url, timeoutMs);
+    } else {
+      const response = await fetch(url, { headers: { Accept: 'application/dns-message' }, signal: controller.signal, cache: 'no-store' });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      payload = await response.arrayBuffer();
+    }
+    const values = parseDnsWireTxt(payload);
     return { id: resolver.id, label: resolver.label, ok: true, values, shares: assembleShardedTxt(values), envelopes: assembleTxt(values) };
   } catch (error) {
-    return { id: resolver.id, label: resolver.label, ok: false, error: error.name === 'AbortError' ? '查询超时' : String(error.message || '查询失败'), values: [], shares: [], envelopes: [] };
+    const timeout = error.name === 'AbortError' || error.code === 'DOH_TIMEOUT';
+    const message = timeout ? '查询超时' : String(error.message || '查询失败');
+    const protocol = /^HTTP 505$/.test(message);
+    return {
+      id: resolver.id, label: resolver.label, ok: false, error: message,
+      errorCode: timeout ? 'timeout' : protocol ? 'protocol' : 'unavailable',
+      values: [], shares: [], envelopes: []
+    };
   } finally { clearTimeout(timer); }
 }
 
@@ -1368,10 +1452,11 @@ async function lookupRouteHealth(profileId, groups, targets, resolvers, routes) 
 }
 
 async function testLookupRoutesForGroup(groupId, profileId = 1) {
-  const [group, settings, routes] = await Promise.all([
+  const [group, settings, routes, latestRelease] = await Promise.all([
     RecoveryModel.getBootstrapGroup(groupId, profileId),
     RecoveryModel.getSettings(profileId),
-    RecoveryModel.listLookupRoutes(profileId, { enabledOnly: true })
+    RecoveryModel.listLookupRoutes(profileId, { enabledOnly: true }),
+    RecoveryModel.getLatestPublishedRelease(profileId)
   ]);
   if (!group) throw new Error('DNS 发布组合不存在');
   const selected = routes.filter(item => Number(item.group_id) === Number(groupId));
@@ -1384,15 +1469,19 @@ async function testLookupRoutesForGroup(groupId, profileId = 1) {
     id: route.resolver_id, label: route.resolver_label, endpoint: route.endpoint
   }, route.record_name, route.timeout_ms), 12000);
   const internal = settled.map((entry, index) => entry.status === 'fulfilled' ? entry.value : ({ ok: false, error: String(entry.reason?.message || '检测失败'), values: [], shares: [], envelopes: [] }));
+  const publishedAt = sqliteUtcTimestamp(latestRelease?.published_at);
+  const propagationGraceActive = publishedAt > 0 && Date.now() - publishedAt < DNS_PROPAGATION_GRACE_MS;
   const lineResults = selected.map((route, index) => {
     const result = internal[index];
     const validLegacy = (result.envelopes || []).some(item => verifyEnvelope(item.envelope, publicKeys));
+    const classification = classifyDohLine(result, route.share_role === 'LEGACY' ? validLegacy : null, propagationGraceActive);
     return {
       id: Number(route.id), resolverId: route.resolver_id, resolverLabel: route.resolver_label,
       bootstrapId: Number(route.bootstrap_id), bootstrapLabel: route.bootstrap_label, recordName: route.record_name,
       shareRole: route.share_role, priorityGroup: Number(route.priority_group), timeoutMs: Number(route.timeout_ms),
       ok: Boolean(result.ok), txtFound: Boolean(result.values?.length), signatureValid: route.share_role === 'LEGACY' ? validLegacy : null,
-      error: result.error || (!result.values?.length ? '未读取到 TXT' : '')
+      state: classification.state, statusLabel: classification.label,
+      error: result.error || (classification.state === 'healthy' ? '' : classification.label)
     };
   });
   const tiers = LOOKUP_ROUTE_TIERS.map(tier => {
@@ -1405,11 +1494,22 @@ async function testLookupRoutesForGroup(groupId, profileId = 1) {
       key: tier.key, label: tier.label, priorityGroup: tier.priorityGroup,
       total: lines.length, successful: lines.filter(item => item.ok && item.txtFound).length,
       failed: lines.filter(item => !item.ok || !item.txtFound).length,
+      propagating: lines.filter(item => item.state === 'propagating').length,
+      resolverUnavailable: lines.filter(item => item.state.startsWith('resolver_')).length,
       abValid: combined.length > 0, r1Valid: legacyValid
     };
   });
   const successful = lineResults.filter(item => item.ok && item.txtFound).length;
-  const result = { group: { id: Number(group.id), label: group.label, compatibilityMode: group.compatibility_mode }, checkedAt: new Date().toISOString(), total: lineResults.length, successful, failed: lineResults.length - successful, tiers, lines: lineResults };
+  const propagating = lineResults.filter(item => item.state === 'propagating').length;
+  const resolverUnavailable = lineResults.filter(item => item.state.startsWith('resolver_')).length;
+  const otherFailed = lineResults.length - successful - propagating - resolverUnavailable;
+  const result = {
+    group: { id: Number(group.id), label: group.label, compatibilityMode: group.compatibility_mode },
+    checkedAt: new Date().toISOString(), total: lineResults.length, successful,
+    failed: lineResults.length - successful, propagating, resolverUnavailable, otherFailed,
+    propagationGraceActive, propagationGraceMinutes: DNS_PROPAGATION_GRACE_MS / 60000,
+    tiers, lines: lineResults
+  };
   await RecoveryModel.addAudit('lookup.routes.test', { groupId: Number(groupId), total: result.total, successful: result.successful, failed: result.failed, tiers }, result.failed === 0, result.failed ? `${result.failed} 条线路未通过` : '', profileId);
   return result;
 }
@@ -1528,6 +1628,8 @@ module.exports = {
   getPublicManifest,
   overview,
   diagnoseDoh,
+  queryDoh,
+  classifyDohLine,
   saveCloudflareCredentials,
   createDnsChannel,
   updateDnsChannel,
