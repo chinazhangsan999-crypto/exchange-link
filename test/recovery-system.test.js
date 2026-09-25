@@ -221,6 +221,7 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     assert.equal(r1Preview.validation.valid, true);
     assert.equal(r1Preview.summary.create, 8);
     assert.deepEqual(r1Preview.tiers.map(item => [item.priorityGroup, item.expected, item.complete]), [[1, 2, true], [2, 3, true], [3, 3, true]]);
+    assert.deepEqual(r1Preview.creates.filter(item => item.priorityGroup === 1).map(item => [item.resolverId, item.timeoutMs]), [['alidns', 2500], ['dnspod', 5000]]);
     await RecoveryService.applyLookupRoutePlan(r1Group.id, { applyMode: 'fill_missing', configurationRevision: r1Preview.configurationRevision });
     const r1Idempotent = await RecoveryService.buildLookupRoutePlan(r1Group.id, { applyMode: 'fill_missing' });
     assert.deepEqual(r1Idempotent.summary, { create: 0, update: 0, keep: 8, remove: 0, conflict: 0, total: 8 });
@@ -454,6 +455,8 @@ test('Quad9 与 Mullvad 使用 HTTP/2 DoH，并区分传播与解析器故障', 
 
   try {
     const RecoveryService = require('../src/services/RecoveryService');
+    assert.deepEqual(RecoveryService.dohQueryPolicy('dnspod', 2500), { timeoutMs: 5000, maxAttempts: 2, retryDelayMs: 400 });
+    assert.deepEqual(RecoveryService.dohQueryPolicy('alidns', 2500), { timeoutMs: 2500, maxAttempts: 1, retryDelayMs: 400 });
     for (const resolver of [
       { id: 'quad9-unfiltered', label: 'Quad9', endpoint: 'https://dns10.quad9.net/dns-query' },
       { id: 'mullvad', label: 'Mullvad', endpoint: 'https://dns.mullvad.net/dns-query' }
@@ -483,6 +486,41 @@ test('Quad9 与 Mullvad 使用 HTTP/2 DoH，并区分传播与解析器故障', 
     );
   } finally {
     http2.connect = originalConnect;
+  }
+});
+
+test('DNSPod 失败后重试一次，且同一解析商最多并发两条', async () => {
+  const RecoveryService = require('../src/services/RecoveryService');
+  const originalFetch = global.fetch;
+  let attempts = 0;
+  let active = 0;
+  let maxActive = 0;
+  global.fetch = async () => {
+    attempts += 1;
+    if (attempts === 1) throw new Error('fetch failed');
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    active -= 1;
+    return { ok: true, arrayBuffer: async () => Buffer.alloc(12) };
+  };
+
+  try {
+    const retried = await RecoveryService.queryDohWithPolicy({ id: 'dnspod', label: 'DNSPod', endpoint: 'https://doh.pub/dns-query' }, '_recovery.example.com', 2500);
+    assert.equal(retried.ok, true);
+    assert.equal(retried.attempts, 2);
+    assert.equal(retried.effectiveTimeoutMs, 5000);
+
+    attempts = 10;
+    const routes = Array.from({ length: 5 }, (_, index) => ({
+      resolver_id: 'alidns', resolver_label: 'AliDNS', endpoint: 'https://dns.alidns.com/dns-query',
+      record_name: `_recovery-${index}.example.com`, timeout_ms: 2500
+    }));
+    const results = await RecoveryService.queryLookupRoutes(routes);
+    assert.equal(results.every(item => item.ok), true);
+    assert.equal(maxActive <= 2, true);
+  } finally {
+    global.fetch = originalFetch;
   }
 });
 

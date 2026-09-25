@@ -24,7 +24,7 @@ const DOH_RESOLVERS = Object.freeze([
   { id: 'controld-free', label: 'Control D Free', endpoint: 'https://freedns.controld.com/p0' }
 ]);
 const LOOKUP_ROUTE_TIERS = Object.freeze([
-  Object.freeze({ key: 'mainland', label: '中国大陆主力', priorityGroup: 1, timeoutMs: 2500, resolverIds: Object.freeze(['alidns', 'dnspod']) }),
+  Object.freeze({ key: 'mainland', label: '中国大陆主力', priorityGroup: 1, timeoutMs: 2500, resolverTimeoutMs: Object.freeze({ dnspod: 5000 }), resolverIds: Object.freeze(['alidns', 'dnspod']) }),
   Object.freeze({ key: 'global', label: '全球主力', priorityGroup: 2, timeoutMs: 3000, resolverIds: Object.freeze(['cloudflare', 'google', 'quad9-unfiltered']) }),
   Object.freeze({ key: 'extended', label: '扩展容灾', priorityGroup: 3, timeoutMs: 4000, resolverIds: Object.freeze(['adguard-unfiltered', 'controld-free', 'mullvad']) })
 ]);
@@ -34,6 +34,9 @@ const PORTABLE_TXT_BYTES = 240;
 const MAX_ENCODED_SIZE = 4096;
 const DNS_PROPAGATION_GRACE_MS = 30 * 60 * 1000;
 const HTTP2_DOH_RESOLVERS = new Set(['quad9-unfiltered', 'mullvad']);
+const LOOKUP_GLOBAL_CONCURRENCY = 6;
+const LOOKUP_RESOLVER_CONCURRENCY = 2;
+const DNSPOD_RETRY_DELAY_MS = 400;
 const activeReleasePublishes = new Set();
 
 function stableStringify(value) {
@@ -731,6 +734,57 @@ async function queryDoh(resolver, recordName, timeoutMs = 4000) {
   } finally { clearTimeout(timer); }
 }
 
+function lookupTierTimeout(tier, resolverId) {
+  return Number(tier.resolverTimeoutMs?.[resolverId] || tier.timeoutMs);
+}
+
+function dohQueryPolicy(resolverId, configuredTimeoutMs) {
+  const timeoutMs = String(resolverId) === 'dnspod'
+    ? Math.max(5000, Number(configuredTimeoutMs) || 0)
+    : Number(configuredTimeoutMs) || 4000;
+  return { timeoutMs, maxAttempts: String(resolverId) === 'dnspod' ? 2 : 1, retryDelayMs: DNSPOD_RETRY_DELAY_MS };
+}
+
+async function queryDohWithPolicy(resolver, recordName, configuredTimeoutMs) {
+  const policy = dohQueryPolicy(resolver.id, configuredTimeoutMs);
+  const startedAt = Date.now();
+  let result;
+  for (let attempt = 1; attempt <= policy.maxAttempts; attempt += 1) {
+    result = await queryDoh(resolver, recordName, policy.timeoutMs);
+    if (result.ok || attempt === policy.maxAttempts) {
+      return { ...result, attempts: attempt, elapsedMs: Date.now() - startedAt, effectiveTimeoutMs: policy.timeoutMs };
+    }
+    await new Promise(resolve => setTimeout(resolve, policy.retryDelayMs));
+  }
+  return { ...result, attempts: policy.maxAttempts, elapsedMs: Date.now() - startedAt, effectiveTimeoutMs: policy.timeoutMs };
+}
+
+async function queryLookupRoutes(routes) {
+  const queues = new Map();
+  routes.forEach((route, index) => {
+    const key = String(route.resolver_id);
+    if (!queues.has(key)) queues.set(key, []);
+    queues.get(key).push({ route, index });
+  });
+  const results = new Array(routes.length);
+  while ([...queues.values()].some(queue => queue.length)) {
+    const batch = [];
+    for (const queue of queues.values()) batch.push(...queue.splice(0, LOOKUP_RESOLVER_CONCURRENCY));
+    const settled = await runPromisePool(batch, LOOKUP_GLOBAL_CONCURRENCY, ({ route }) => queryDohWithPolicy({
+      id: route.resolver_id, label: route.resolver_label, endpoint: route.endpoint
+    }, route.record_name, route.timeout_ms), 20000);
+    settled.forEach((entry, batchIndex) => {
+      const item = batch[batchIndex];
+      results[item.index] = entry.status === 'fulfilled' ? entry.value : ({
+        ok: false, error: String(entry.reason?.message || '检测失败'), errorCode: 'unavailable',
+        values: [], shares: [], envelopes: [], attempts: 1, elapsedMs: 0,
+        effectiveTimeoutMs: dohQueryPolicy(item.route.resolver_id, item.route.timeout_ms).timeoutMs
+      });
+    });
+  }
+  return results;
+}
+
 async function diagnoseDoh(recordName, profileId = 1, bootstrapId = null) {
   const settings = await RecoveryModel.getSettings(profileId);
   const publicKeys = [
@@ -1301,7 +1355,7 @@ function expectedLookupRoutes(targets, resolvers) {
           tier: tier.key,
           tierLabel: tier.label,
           priorityGroup: tier.priorityGroup,
-          timeoutMs: tier.timeoutMs,
+          timeoutMs: lookupTierTimeout(tier, resolverId),
           sortOrder: sortOrder += 1,
           status: 1
         });
@@ -1327,13 +1381,14 @@ function summarizeLookupTiers(expected, routes) {
     const planned = expected.filter(item => item.tier === tier.key);
     const matched = planned.filter(item => {
       const route = routeMap.get(`${item.resolverId}:${item.bootstrapId}`);
-      return route && Number(route.priority_group) === tier.priorityGroup && Number(route.timeout_ms) === tier.timeoutMs;
+      return route && Number(route.priority_group) === tier.priorityGroup && Number(route.timeout_ms) === item.timeoutMs;
     });
     return {
       key: tier.key,
       label: tier.label,
       priorityGroup: tier.priorityGroup,
       timeoutMs: tier.timeoutMs,
+      resolverTimeouts: Object.fromEntries(tier.resolverIds.map(resolverId => [resolverId, lookupTierTimeout(tier, resolverId)])),
       resolverIds: [...tier.resolverIds],
       expected: planned.length,
       configured: matched.length,
@@ -1472,10 +1527,7 @@ async function testLookupRoutesForGroup(groupId, profileId = 1) {
     { keyId: settings.public_key_id, publicKey: settings.public_key },
     { keyId: settings.next_public_key_id, publicKey: settings.next_public_key }
   ].filter(item => item.keyId && item.publicKey);
-  const settled = await runPromisePool(selected, 6, route => queryDoh({
-    id: route.resolver_id, label: route.resolver_label, endpoint: route.endpoint
-  }, route.record_name, route.timeout_ms), 12000);
-  const internal = settled.map((entry, index) => entry.status === 'fulfilled' ? entry.value : ({ ok: false, error: String(entry.reason?.message || '检测失败'), values: [], shares: [], envelopes: [] }));
+  const internal = await queryLookupRoutes(selected);
   const publishedAt = sqliteUtcTimestamp(latestRelease?.published_at);
   const propagationGraceActive = publishedAt > 0 && Date.now() - publishedAt < DNS_PROPAGATION_GRACE_MS;
   const lineResults = selected.map((route, index) => {
@@ -1488,7 +1540,10 @@ async function testLookupRoutesForGroup(groupId, profileId = 1) {
       shareRole: route.share_role, priorityGroup: Number(route.priority_group), timeoutMs: Number(route.timeout_ms),
       ok: Boolean(result.ok), txtFound: Boolean(result.values?.length), signatureValid: route.share_role === 'LEGACY' ? validLegacy : null,
       state: classification.state, statusLabel: classification.label,
-      error: result.error || (classification.state === 'healthy' ? '' : classification.label)
+      error: result.error || (classification.state === 'healthy' ? '' : classification.label),
+      errorCode: result.errorCode || '', valueCount: Number(result.values?.length || 0),
+      attempts: Number(result.attempts || 1), elapsedMs: Number(result.elapsedMs || 0),
+      effectiveTimeoutMs: Number(result.effectiveTimeoutMs || route.timeout_ms)
     };
   });
   const tiers = LOOKUP_ROUTE_TIERS.map(tier => {
@@ -1510,14 +1565,27 @@ async function testLookupRoutesForGroup(groupId, profileId = 1) {
   const propagating = lineResults.filter(item => item.state === 'propagating').length;
   const resolverUnavailable = lineResults.filter(item => item.state.startsWith('resolver_')).length;
   const otherFailed = lineResults.length - successful - propagating - resolverUnavailable;
+  const validTiers = tiers.filter(tier => tier.abValid || tier.r1Valid);
+  const primaryTierValid = tiers.some(tier => tier.priorityGroup === 1 && (tier.abValid || tier.r1Valid));
+  const status = validTiers.length === 0 ? 'failed' : primaryTierValid ? 'healthy' : 'degraded';
+  const statusLabel = status === 'failed' ? '全部恢复线路不可用' : status === 'degraded' ? '中国大陆线路降级，全球容灾正常' : '三层恢复线路正常';
   const result = {
     group: { id: Number(group.id), label: group.label, compatibilityMode: group.compatibility_mode },
     checkedAt: new Date().toISOString(), total: lineResults.length, successful,
-    failed: lineResults.length - successful, propagating, resolverUnavailable, otherFailed,
+    failed: lineResults.length - successful, propagating, resolverUnavailable, otherFailed, status, statusLabel,
     propagationGraceActive, propagationGraceMinutes: DNS_PROPAGATION_GRACE_MS / 60000,
     tiers, lines: lineResults
   };
-  await RecoveryModel.addAudit('lookup.routes.test', { groupId: Number(groupId), total: result.total, successful: result.successful, failed: result.failed, tiers }, result.failed === 0, result.failed ? `${result.failed} 条线路未通过` : '', profileId);
+  const auditLines = lineResults.map(line => ({
+    resolverId: line.resolverId, recordName: line.recordName, shareRole: line.shareRole,
+    state: line.state, statusLabel: line.statusLabel, errorCode: line.errorCode,
+    valueCount: line.valueCount, attempts: line.attempts, elapsedMs: line.elapsedMs,
+    configuredTimeoutMs: line.timeoutMs, effectiveTimeoutMs: line.effectiveTimeoutMs
+  }));
+  await RecoveryModel.addAudit('lookup.routes.test', {
+    groupId: Number(groupId), total: result.total, successful: result.successful, failed: result.failed,
+    status, statusLabel, tiers, lines: auditLines
+  }, status !== 'failed', status === 'failed' ? statusLabel : status === 'degraded' ? statusLabel : '', profileId);
   return result;
 }
 
@@ -1636,6 +1704,9 @@ module.exports = {
   overview,
   diagnoseDoh,
   queryDoh,
+  queryDohWithPolicy,
+  queryLookupRoutes,
+  dohQueryPolicy,
   classifyDohLine,
   saveCloudflareCredentials,
   createDnsChannel,
