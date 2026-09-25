@@ -26,7 +26,7 @@ const RESOLVER_CATALOG = Object.freeze([
 const AUTHORITATIVE_DNS_CATALOG = Object.freeze([
   ['cloudflare', 'Cloudflare DNS', 'automatic', 255, 240, '支持多个 API 通道自动发布；单字符串 255 字节，系统使用 240 字节安全上限'],
   ['desec', 'deSEC', 'automatic', 255, 240, '支持多个 API Token 通道自动发布；单字符串 255 字节'],
-  ['cloudns', 'ClouDNS', 'automatic', 255, 240, '支持主账号与子账号 API 通道自动发布；单字符串 255 字节'],
+  ['cloudns', 'ClouDNS（HTTP API 需付费套餐）', 'automatic', 255, 240, '自动发布依赖 ClouDNS Premium DNS 或其他包含 HTTP API 的付费套餐；免费套餐只能手动管理 DNS'],
   ['route53', 'AWS Route 53', 'automatic', 255, 240, '支持多个 AWS 凭据通道自动发布；单字符串 255 字节'],
   ['dnspod', '腾讯云 DNSPod', 'automatic', 255, 240, '支持多个腾讯云 API 密钥通道；按 DNS 单字符串 255 字节、系统 240 字节发布'],
   ['aliyun', '阿里云云解析 DNS', 'automatic', 512, 240, '控制台支持最多 512 个字符；系统仍使用跨平台 240 字节安全上限'],

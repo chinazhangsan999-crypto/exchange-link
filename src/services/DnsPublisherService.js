@@ -14,7 +14,7 @@ const AliOpenApi = require('@alicloud/openapi-client');
 const PROVIDERS = Object.freeze({
   cloudflare: { label: 'Cloudflare DNS', automaticPublish: true },
   desec: { label: 'deSEC', automaticPublish: true },
-  cloudns: { label: 'ClouDNS', automaticPublish: true },
+  cloudns: { label: 'ClouDNS（HTTP API 需付费套餐）', automaticPublish: true },
   route53: { label: 'AWS Route 53', automaticPublish: true },
   dnspod: { label: '腾讯云 DNSPod', automaticPublish: true },
   aliyun: { label: '阿里云云解析 DNS', automaticPublish: true },
@@ -150,6 +150,9 @@ async function cloudnsRequest(credentials, pathname, parameters = {}) {
   const payload = await jsonRequest(`https://api.cloudns.net${pathname}`, {
     method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body
   }, 'ClouDNS');
+  if (/don't have access to the HTTP API/i.test(String(payload?.statusDescription || ''))) {
+    throw new Error('ClouDNS 当前套餐不包含 HTTP API，请升级到 Premium DNS 等付费套餐后重试');
+  }
   if (payload?.status === 'Failed') throw new Error(payload.statusDescription || 'ClouDNS API 请求失败');
   return payload;
 }

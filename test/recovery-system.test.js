@@ -8,6 +8,26 @@ const test = require('node:test');
 const vm = require('node:vm');
 const { webcrypto } = require('node:crypto');
 
+test('ClouDNS 免费套餐错误会转换为明确的中文付费提示', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => new Response(JSON.stringify({
+    status: 'Failed',
+    statusDescription: "You don't have access to the HTTP API. Check your plan."
+  }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  try {
+    const DnsPublisherService = require('../src/services/DnsPublisherService');
+    await assert.rejects(
+      DnsPublisherService.verifyChannel('cloudns', {
+        authType: 'auth-id', authId: '68854', authPassword: 'test-password'
+      }),
+      /ClouDNS 当前套餐不包含 HTTP API，请升级到 Premium DNS 等付费套餐后重试/
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式版本', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'webring-recovery-'));
   process.env.NODE_ENV = 'test';
