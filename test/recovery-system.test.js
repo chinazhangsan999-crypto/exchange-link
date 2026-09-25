@@ -603,17 +603,30 @@ test('恢复客户端保持完全独立并仅在导航失败后由 Service Worke
 test('Service Worker 将跳转后的恢复页转换为可离线返回的普通响应', async () => {
   const root = path.join(__dirname, '..');
   const serviceWorker = fs.readFileSync(path.join(root, 'public', 'sw.js'), 'utf8');
+  const recoveryHtml = fs.readFileSync(path.join(root, 'public', 'recovery.html'), 'utf8');
+  const recoveryStyle = fs.readFileSync(path.join(root, 'public', 'recovery.css'), 'utf8');
+  const recoveryCrypto = fs.readFileSync(path.join(root, 'public', 'recovery-crypto.js'), 'utf8');
+  const recoveryScript = fs.readFileSync(path.join(root, 'public', 'recovery.js'), 'utf8');
   const listeners = {};
   const entries = new Map();
   const cache = {
-    addAll: async () => {},
+    addAll: async assets => {
+      for (const asset of assets) {
+        if (String(asset).startsWith('/recovery.css')) entries.set(String(asset), new Response(recoveryStyle));
+        if (String(asset).startsWith('/recovery-crypto.js')) entries.set(String(asset), new Response(recoveryCrypto));
+        if (String(asset).startsWith('/recovery.js')) entries.set(String(asset), new Response(recoveryScript));
+      }
+    },
     put: async (key, response) => entries.set(String(key), response.clone()),
     match: async key => entries.get(String(key))?.clone()
   };
   let fetchImpl = async () => {
-    const response = new Response('<!doctype html><title>网站线路恢复</title>', {
+    const response = new Response(recoveryHtml, {
       status: 200,
-      headers: { 'Content-Type': 'text/html', 'Content-Encoding': 'zstd', 'Content-Length': '99' }
+      headers: {
+        'Content-Type': 'text/html', 'Content-Encoding': 'zstd', 'Content-Length': '99',
+        'Content-Security-Policy': "default-src 'self'"
+      }
     });
     Object.defineProperties(response, {
       redirected: { value: true },
@@ -625,10 +638,11 @@ test('Service Worker 将跳转后的恢复页转换为可离线返回的普通�
     URL,
     Headers,
     Response,
+    crypto: { randomUUID: () => '11111111-2222-4333-8444-555555555555' },
     fetch: (...args) => fetchImpl(...args),
     caches: {
       open: async () => cache,
-      keys: async () => ['nav-cache-v17-offline-shell'],
+      keys: async () => ['nav-cache-v18-inline-recovery'],
       delete: async () => true,
       match: async key => cache.match(key)
     },
@@ -649,7 +663,13 @@ test('Service Worker 将跳转后的恢复页转换为可离线返回的普通�
   assert.equal(recovery.redirected, false);
   assert.equal(recovery.url, '');
   assert.equal(recovery.headers.has('content-encoding'), false);
-  assert.match(await recovery.text(), /网站线路恢复/);
+  assert.match(recovery.headers.get('content-security-policy'), /nonce-11111111222243338444555555555555/);
+  const recoveryBody = await recovery.text();
+  assert.match(recoveryBody, /网站线路恢复/);
+  assert.match(recoveryBody, /<style nonce="11111111222243338444555555555555">/);
+  assert.match(recoveryBody, /window\.RecoveryCrypto/);
+  assert.match(recoveryBody, /void run\(\)/);
+  assert.doesNotMatch(recoveryBody, /src="\/recovery(?:-crypto)?\.js|href="\/recovery\.css/);
 
   fetchImpl = async () => { throw new TypeError('network unavailable'); };
   let offlineResponse;
