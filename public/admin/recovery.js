@@ -488,7 +488,10 @@
           if (Number(tier.resolverUnavailable)) notes.push(`解析器不可用 ${Number(tier.resolverUnavailable)}`);
           return `<div><span>P${Number(tier.priorityGroup)} · ${escapeHtml(tier.label)}</span><b>${Number(tier.successful)}/${Number(tier.total)}</b><small>A+B：${tier.abValid ? '有效' : '未验证'} · R1：${tier.r1Valid ? '有效' : '未验证'}${notes.length ? ` · ${escapeHtml(notes.join(' · '))}` : ''}</small></div>`;
         }).join('');
-        const detailRows = result.lines.filter(line => line.state !== 'healthy').map(line => `<div class="recovery-result recovery-result-error"><strong>P${Number(line.priorityGroup)} · ${escapeHtml(line.resolverLabel)} → ${escapeHtml(line.recordName)}</strong><p>${escapeHtml(line.statusLabel || '检测异常')}${line.error && line.error !== line.statusLabel ? `：${escapeHtml(line.error)}` : ''}</p></div>`).join('');
+        const detailRows = result.lines.filter(line => line.state !== 'healthy').map(line => {
+          const tone = line.state === 'propagating' ? 'waiting' : line.state === 'invalid_signature' ? 'error' : 'warning';
+          return `<div class="recovery-result recovery-result-${tone}"><strong>P${Number(line.priorityGroup)} · ${escapeHtml(line.resolverLabel)} → ${escapeHtml(line.recordName)}</strong><p>${escapeHtml(line.statusLabel || '检测异常')}${line.error && line.error !== line.statusLabel ? `：${escapeHtml(line.error)}` : ''}</p></div>`;
+        }).join('');
         container.innerHTML = `<div class="recovery-result"><strong>${escapeHtml(result.group.label)} · 三层查询线路检测</strong><p>${summary.join('，')}。</p>${graceHint}<div class="recovery-test-tier-list">${tierRows}</div></div>${detailRows}`;
         notify(`线路检测完成：成功 ${result.successful}，传播中 ${result.propagating || 0}，解析器不可用 ${result.resolverUnavailable || 0}`);
         return;

@@ -682,7 +682,14 @@ function classifyDohLine(result, signatureValid, propagationGraceActive) {
       ? { state: 'propagating', label: '等待 DNS 传播' }
       : { state: 'txt_missing', label: '未读取到 TXT' };
   }
-  if (signatureValid === false) return { state: 'invalid_signature', label: 'TXT 签名无效' };
+  const incompleteLegacy = signatureValid === false && !result.envelopes?.length;
+  const incompleteShare = signatureValid === null && !result.shares?.length;
+  if (incompleteLegacy || incompleteShare) {
+    return propagationGraceActive
+      ? { state: 'propagating', label: 'TXT 分片传播中' }
+      : { state: 'incomplete_txt', label: 'TXT 分片不完整' };
+  }
+  if (signatureValid === false) return { state: 'invalid_signature', label: 'TXT 完整但签名无效' };
   return { state: 'healthy', label: '读取正常' };
 }
 
@@ -1492,14 +1499,14 @@ async function testLookupRoutesForGroup(groupId, profileId = 1) {
     const lines = indices.map(index => lineResults[index]);
     return {
       key: tier.key, label: tier.label, priorityGroup: tier.priorityGroup,
-      total: lines.length, successful: lines.filter(item => item.ok && item.txtFound).length,
-      failed: lines.filter(item => !item.ok || !item.txtFound).length,
+      total: lines.length, successful: lines.filter(item => item.state === 'healthy').length,
+      failed: lines.filter(item => item.state !== 'healthy').length,
       propagating: lines.filter(item => item.state === 'propagating').length,
       resolverUnavailable: lines.filter(item => item.state.startsWith('resolver_')).length,
       abValid: combined.length > 0, r1Valid: legacyValid
     };
   });
-  const successful = lineResults.filter(item => item.ok && item.txtFound).length;
+  const successful = lineResults.filter(item => item.state === 'healthy').length;
   const propagating = lineResults.filter(item => item.state === 'propagating').length;
   const resolverUnavailable = lineResults.filter(item => item.state.startsWith('resolver_')).length;
   const otherFailed = lineResults.length - successful - propagating - resolverUnavailable;

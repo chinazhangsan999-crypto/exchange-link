@@ -136,6 +136,11 @@
 #recovery .recovery-manual-actions{display:flex;justify-content:flex-end;margin-top:8px}
 #recovery .recovery-manual-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:start}
 #recovery .recovery-result-error{border-color:#efc7cb;background:#fff8f8}
+#recovery .recovery-result-error p{color:#a32731}
+#recovery .recovery-result-waiting{border-color:#efd79c;background:#fffbef}
+#recovery .recovery-result-waiting p{color:#7a5700}
+#recovery .recovery-result-warning{border-color:#edc18b;background:#fff8ef}
+#recovery .recovery-result-warning p{color:#8b4900}
 #recovery .recovery-manual-value{display:block;margin-top:8px;padding:9px;border:1px solid var(--line);border-radius:8px;background:#f7f9fc;white-space:pre-wrap;overflow-wrap:anywhere;user-select:all}
 #recovery .recovery-audit{max-height:360px;overflow:auto;display:grid;gap:8px}
 #recovery .recovery-audit-item{display:grid;grid-template-columns:150px 180px 1fr;gap:10px;border-bottom:1px solid #eef0f5;padding:9px 0;font-size:12px}

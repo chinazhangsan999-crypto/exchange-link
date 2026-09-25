@@ -473,6 +473,14 @@ test('Quad9 与 Mullvad 使用 HTTP/2 DoH，并区分传播与解析器故障', 
       RecoveryService.classifyDohLine({ ok: false, errorCode: 'timeout' }, null, false),
       { state: 'resolver_timeout', label: '解析器超时' }
     );
+    assert.deepEqual(
+      RecoveryService.classifyDohLine({ ok: true, values: ['part'], envelopes: [], shares: [] }, false, true),
+      { state: 'propagating', label: 'TXT 分片传播中' }
+    );
+    assert.deepEqual(
+      RecoveryService.classifyDohLine({ ok: true, values: ['complete'], envelopes: [{}], shares: [] }, false, true),
+      { state: 'invalid_signature', label: 'TXT 完整但签名无效' }
+    );
   } finally {
     http2.connect = originalConnect;
   }
