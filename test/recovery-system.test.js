@@ -642,7 +642,7 @@ test('Service Worker 将跳转后的恢复页转换为可离线返回的普通�
     fetch: (...args) => fetchImpl(...args),
     caches: {
       open: async () => cache,
-      keys: async () => ['nav-cache-v18-inline-recovery'],
+      keys: async () => ['nav-cache-v19-direct-recovery'],
       delete: async () => true,
       match: async key => cache.match(key)
     },
@@ -670,6 +670,16 @@ test('Service Worker 将跳转后的恢复页转换为可离线返回的普通�
   assert.match(recoveryBody, /window\.RecoveryCrypto/);
   assert.match(recoveryBody, /void run\(\)/);
   assert.doesNotMatch(recoveryBody, /src="\/recovery(?:-crypto)?\.js|href="\/recovery\.css/);
+
+  let directResponse;
+  let directNetworkCalls = 0;
+  fetchImpl = async () => { directNetworkCalls += 1; return new Response('network page'); };
+  listeners.fetch({
+    request: { method: 'GET', mode: 'navigate', url: 'https://example.test/recovery.html?reason=core' },
+    respondWith: promise => { directResponse = promise; }
+  });
+  assert.match(await (await directResponse).text(), /window\.RecoveryCrypto/);
+  assert.equal(directNetworkCalls, 0);
 
   fetchImpl = async () => { throw new TypeError('network unavailable'); };
   let offlineResponse;

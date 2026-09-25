@@ -1,5 +1,5 @@
 /** 星环导航离线恢复缓存：导航失败进入独立恢复页，敏感操作永不缓存。 */
-const CACHE_NAME = 'nav-cache-v18-inline-recovery';
+const CACHE_NAME = 'nav-cache-v19-direct-recovery';
 const RECOVERY_PAGE = '/recovery.html';
 const RECOVERY_STYLE = '/recovery.css?v=20260921-recovery-1';
 const RECOVERY_CRYPTO = '/recovery-crypto.js?v=20260922-recovery-shards-1';
@@ -89,6 +89,10 @@ function isCacheableRequest(request, url) {
 self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
+  if (event.request.mode === 'navigate' && ['/recovery', RECOVERY_PAGE].includes(url.pathname)) {
+    event.respondWith((async () => await caches.match(RECOVERY_PAGE) || fetch(event.request))());
+    return;
+  }
   if (mustUseNetwork(url)) {
     event.respondWith(fetch(event.request));
     return;
