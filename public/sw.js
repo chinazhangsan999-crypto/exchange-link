@@ -1,12 +1,13 @@
 /** 星环导航离线恢复缓存：导航失败进入独立恢复页，敏感操作永不缓存。 */
-const CACHE_NAME = 'nav-cache-v16-resolver-merge';
+const CACHE_NAME = 'nav-cache-v17-offline-shell';
+const RECOVERY_PAGE = '/recovery.html';
 const STATIC_ASSETS = [
   '/', '/index.html', '/read-client.js?v=20260915-read-proof3', '/script.js?v=20260914-post-entry-page-view-all-pages', '/style.css', '/manifest.json',
   '/tooltip.css', '/apply.css', '/apply-category.css', '/no-icons.css',
   '/header-cleanup.css', '/mobile-nav.css', '/enhance.css', '/pwa.css',
   '/icons/icon-192.png', '/icons/icon-512.png',
-  '/recovery.html', '/recovery.css?v=20260921-recovery-1',
-  '/recovery-crypto.js?v=20260922-recovery-shards-1', '/recovery-client.js?v=20260921-recovery-1',
+  '/recovery.css?v=20260921-recovery-1',
+  '/recovery-crypto.js?v=20260922-recovery-shards-1', '/recovery-client.js?v=20260925-offline-recovery-1',
   '/recovery.js?v=20260925-resolver-merge-1'
 ];
 const NEVER_CACHE_PATHS = new Set([
@@ -14,13 +15,26 @@ const NEVER_CACHE_PATHS = new Set([
 ]);
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS)));
-  self.skipWaiting();
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    await cache.addAll(STATIC_ASSETS);
+    const source = await fetch(RECOVERY_PAGE, { cache: 'no-store' });
+    if (!source.ok) throw new Error(`恢复页预缓存失败：HTTP ${source.status}`);
+    const headers = new Headers(source.headers);
+    headers.delete('content-encoding');
+    headers.delete('content-length');
+    const recovery = new Response(await source.arrayBuffer(), { status: 200, headers });
+    await cache.put(RECOVERY_PAGE, recovery);
+    await self.skipWaiting();
+  })());
 });
 
 self.addEventListener('activate', event => {
-  event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)))));
-  self.clients.claim();
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter(key => key !== CACHE_NAME).map(key => caches.delete(key)));
+    await self.clients.claim();
+  })());
 });
 
 function mustUseNetwork(url) {
@@ -57,13 +71,21 @@ self.addEventListener('fetch', event => {
   event.respondWith((async () => {
     try {
       const response = await fetch(event.request);
+      if (event.request.mode === 'navigate' && response.status >= 500) {
+        return await caches.match(RECOVERY_PAGE) || response;
+      }
       if (isSafeCacheResponse(response)) {
         const cache = await caches.open(CACHE_NAME);
         await cache.put(event.request, response.clone());
       }
       return response;
     } catch {
-      if (event.request.mode === 'navigate') return caches.match('/recovery.html');
+      if (event.request.mode === 'navigate') {
+        return await caches.match(RECOVERY_PAGE) || new Response('网站暂时无法连接，请稍后重试。', {
+          status: 503,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+        });
+      }
       const cached = await caches.match(event.request);
       if (cached) return cached;
       throw new Error('离线且没有可用缓存');

@@ -566,7 +566,8 @@ test('恢复客户端保持完全独立并仅在导航失败后由 Service Worke
   const reviewClient = fs.readFileSync(path.join(root, 'public', 'admin', 'review.js'), 'utf8');
   const frontendProxy = fs.readFileSync(path.join(root, 'src', 'middlewares', 'frontendProxy.js'), 'utf8');
 
-  assert.match(serviceWorker, /mode === 'navigate'\) return caches\.match\('\/recovery\.html'\)/);
+  assert.match(serviceWorker, /const RECOVERY_PAGE = '\/recovery\.html'/);
+  assert.match(serviceWorker, /caches\.match\(RECOVERY_PAGE\)/);
   assert.match(serviceWorker, /'\/\.well-known\/route-health\.gif'/);
   assert.doesNotMatch(normalClient, /doh\.pub|dns\.google|dns\.alidns|cloudflare-dns/);
   assert.match(normalClient, /consecutiveCoreFailures < 2/);
@@ -597,4 +598,72 @@ test('恢复客户端保持完全独立并仅在导航失败后由 Service Worke
   assert.match(reviewClient, /recoveryProfileId/);
   assert.match(reviewClient, /每个独立前台必须绑定一套已启用且已发布的恢复方案/);
   assert.match(frontendProxy, /'\/api\/recovery\/'/);
+});
+
+test('Service Worker 将跳转后的恢复页转换为可离线返回的普通响应', async () => {
+  const root = path.join(__dirname, '..');
+  const serviceWorker = fs.readFileSync(path.join(root, 'public', 'sw.js'), 'utf8');
+  const listeners = {};
+  const entries = new Map();
+  const cache = {
+    addAll: async () => {},
+    put: async (key, response) => entries.set(String(key), response.clone()),
+    match: async key => entries.get(String(key))?.clone()
+  };
+  let fetchImpl = async () => {
+    const response = new Response('<!doctype html><title>网站线路恢复</title>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html', 'Content-Encoding': 'zstd', 'Content-Length': '99' }
+    });
+    Object.defineProperties(response, {
+      redirected: { value: true },
+      url: { value: 'https://example.test/recovery' }
+    });
+    return response;
+  };
+  const sandbox = {
+    URL,
+    Headers,
+    Response,
+    fetch: (...args) => fetchImpl(...args),
+    caches: {
+      open: async () => cache,
+      keys: async () => ['nav-cache-v17-offline-shell'],
+      delete: async () => true,
+      match: async key => cache.match(key)
+    },
+    self: {
+      location: { origin: 'https://example.test' },
+      clients: { claim: async () => {} },
+      skipWaiting: async () => {},
+      addEventListener: (name, handler) => { listeners[name] = handler; }
+    }
+  };
+  vm.runInNewContext(serviceWorker, sandbox);
+
+  let installPromise;
+  listeners.install({ waitUntil: promise => { installPromise = promise; } });
+  await installPromise;
+  const recovery = await cache.match('/recovery.html');
+  assert.equal(recovery.status, 200);
+  assert.equal(recovery.redirected, false);
+  assert.equal(recovery.url, '');
+  assert.equal(recovery.headers.has('content-encoding'), false);
+  assert.match(await recovery.text(), /网站线路恢复/);
+
+  fetchImpl = async () => { throw new TypeError('network unavailable'); };
+  let offlineResponse;
+  listeners.fetch({
+    request: { method: 'GET', mode: 'navigate', url: 'https://example.test/' },
+    respondWith: promise => { offlineResponse = promise; }
+  });
+  assert.match(await (await offlineResponse).text(), /网站线路恢复/);
+
+  fetchImpl = async () => new Response('bad gateway', { status: 523 });
+  let edgeFailureResponse;
+  listeners.fetch({
+    request: { method: 'GET', mode: 'navigate', url: 'https://example.test/' },
+    respondWith: promise => { edgeFailureResponse = promise; }
+  });
+  assert.match(await (await edgeFailureResponse).text(), /网站线路恢复/);
 });

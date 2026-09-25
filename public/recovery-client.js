@@ -49,7 +49,7 @@
     const isCore = requestUrl.origin === location.origin && CORE_PATHS.has(requestUrl.pathname);
     try {
       const response = await nativeFetch(input, options);
-      if (isCore && [502, 503, 504].includes(response.status)) { consecutiveCoreFailures += 1; void confirmCoreFailure(); }
+      if (isCore && response.status >= 500) { consecutiveCoreFailures += 1; void confirmCoreFailure(); }
       else if (isCore && response.ok) consecutiveCoreFailures = 0;
       return response;
     } catch (error) {
