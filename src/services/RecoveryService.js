@@ -31,6 +31,7 @@ const MAX_AUTOMATED_LOOKUP_ROUTES = 128;
 const TXT_DATA_SIZE = 180;
 const PORTABLE_TXT_BYTES = 240;
 const MAX_ENCODED_SIZE = 4096;
+const activeReleasePublishes = new Set();
 
 function stableStringify(value) {
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
@@ -915,14 +916,15 @@ async function publishRecord(record, release, profileId = 1, releaseShards = nul
   const channel = await RecoveryModel.getDnsChannel(record.dns_channel_id, profileId);
   if (!channel || Number(channel.status) !== 1) throw new Error(`${record.label} 尚未绑定已启用的 DNS API 通道`);
   if (channel.provider_id !== record.provider_id) throw new Error(`${record.label} 绑定的 API 通道与 DNS 服务商不匹配`);
-  const operation = await DnsPublisherService.createPublishOperation(record.provider_id, credentialsForChannel(channel), {
-    zoneName: record.zone_name,
-    providerZoneId: record.provider_zone_id,
-    recordName: record.record_name,
-    values: chunked.parts,
-    generation: release.generation
-  });
+  let operation;
   try {
+    operation = await DnsPublisherService.createPublishOperation(record.provider_id, credentialsForChannel(channel), {
+      zoneName: record.zone_name,
+      providerZoneId: record.provider_zone_id,
+      recordName: record.record_name,
+      values: chunked.parts,
+      generation: release.generation
+    });
     let diagnosis = [];
     let verified = false;
     for (let attempt = 0; attempt < 3 && !verified; attempt += 1) {
@@ -932,22 +934,32 @@ async function publishRecord(record, release, profileId = 1, releaseShards = nul
         ? result.envelopes.some(item => item.generation === release.generation && item.signatureValid)
         : result.shares?.some(item => item.set === chunked.set && item.role === role));
     }
-    if (!verified) throw new Error('新 TXT 已写入，但多 DoH 回读尚未发现有效的新版本');
+    if (!verified) {
+      const error = '新 TXT 已写入，正在等待公共 DNS 传播；系统将自动复验';
+      await RecoveryModel.saveBootstrapPublishResult(record.id, {
+        status: 'pending_verification', error, generation: release.generation
+      });
+      return {
+        recordId: record.id, groupId: record.group_id || null, recordName: record.record_name,
+        providerId: record.provider_id, channelId: channel.id, role, verified: false,
+        pending: true, error, chunks: chunked.parts.length, byteLimit, diagnosis
+      };
+    }
     await operation.commit();
     await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'verified', generation: release.generation, verified: true });
     return { recordId: record.id, groupId: record.group_id || null, recordName: record.record_name, providerId: record.provider_id, channelId: channel.id, role, verified: true, chunks: chunked.parts.length, byteLimit, diagnosis };
   } catch (error) {
-    await operation.rollback().catch(() => undefined);
+    if (operation) await operation.rollback().catch(() => undefined);
     await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'failed', error: error.message });
     throw error;
   }
 }
 
-async function publishRelease(id, profileId = null) {
+async function publishReleaseUnlocked(id, profileId = null) {
   const release = await RecoveryModel.getRelease(id, profileId);
   if (!release) throw new Error('恢复版本不存在');
   profileId = Number(release.profile_id || profileId || 1);
-  if (!['draft', 'failed'].includes(release.status)) throw new Error('该版本当前不可发布');
+  if (!['draft', 'failed', 'pending'].includes(release.status)) throw new Error('该版本当前不可发布');
   const settings = await RecoveryModel.getSettings(profileId);
   const publicKeys = [
     { keyId: settings.public_key_id, publicKey: settings.public_key },
@@ -978,6 +990,7 @@ async function publishRelease(id, profileId = null) {
       if (!verifyEnvelope(selectedEnvelope, publicKeys)) throw new Error('该 DNS 发布组合的签名清单校验失败');
       results.push({ ...(await publishRecord(record, release, profileId, shardsFor(groupId || 'legacy', selectedEnvelope), selectedEnvelope)), required: Number(record.required_target) === 1 });
     } catch (error) {
+      await RecoveryModel.saveBootstrapPublishResult(record.id, { status: 'failed', error: error.message });
       results.push({
         recordId: record.id, groupId: record.group_id || null, recordName: record.record_name, providerId: record.provider_id,
         role: String(record.share_role || 'LEGACY').toUpperCase(), required: Number(record.required_target) === 1,
@@ -1008,8 +1021,13 @@ async function publishRelease(id, profileId = null) {
   } else if (legacyRecords.length && !legacyResults.some(item => item.verified && item.role === 'LEGACY')) blockers.push('历史独立配置至少需要一个已验证的 R1 记录');
   if (requiredFailures.length) blockers.push(`${requiredFailures.length} 个必需发布目标尚未验证`);
   if (blockers.length) {
-    const warning = `尚未满足发布门槛：${blockers.join('；')}。手动记录写入或故障修复后请重新发布。`;
-    await RecoveryModel.markRelease(id, 'failed', { error: warning });
+    const pendingRecords = results.filter(item => item.pending);
+    const failedRecords = results.filter(item => item.failed);
+    const waitingOnly = pendingRecords.length > 0 && failedRecords.length === 0 && results.every(item => item.verified || item.pending);
+    const warning = waitingOnly
+      ? `TXT 已写入，正在等待公共 DNS 传播；系统每 5 分钟自动复验。${blockers.join('；')}。`
+      : `尚未满足发布门槛：${blockers.join('；')}。手动记录写入或故障修复后请重新发布。`;
+    await RecoveryModel.markRelease(id, waitingOnly ? 'pending' : 'failed', { error: warning });
     await RecoveryModel.addAudit('release.publish.pending', { id, generation: release.generation, blockers, results }, false, warning, profileId);
     return {
       published: false,
@@ -1017,7 +1035,8 @@ async function publishRelease(id, profileId = null) {
       dnsPublished: results.filter(item => item.verified).length,
       records: results,
       manualRecords: results.filter(item => item.manualRequired),
-      failedRecords: results.filter(item => item.failed),
+      failedRecords,
+      pendingRecords,
       warning
     };
   }
@@ -1035,6 +1054,27 @@ async function publishRelease(id, profileId = null) {
       ? '尚未配置 Bootstrap DNS；当前版本只会通过主站同步给已访问用户。'
       : optionalFailures.length ? `正式版本已发布；另有 ${optionalFailures.length} 个可选副本尚未验证。` : ''
   };
+}
+
+async function publishRelease(id, profileId = null) {
+  const releaseId = Number(id);
+  if (activeReleasePublishes.has(releaseId)) throw new Error('该恢复版本正在发布或复验，请稍后再试');
+  activeReleasePublishes.add(releaseId);
+  try { return await publishReleaseUnlocked(releaseId, profileId); }
+  finally { activeReleasePublishes.delete(releaseId); }
+}
+
+async function retryPendingPublishes() {
+  const releases = await RecoveryModel.listPendingReleases();
+  const results = [];
+  for (const release of releases) {
+    try {
+      results.push(await publishRelease(release.id, release.profile_id));
+    } catch (error) {
+      results.push({ releaseId: release.id, published: false, error: error.message });
+    }
+  }
+  return { checked: releases.length, published: results.filter(item => item.published).length, results };
 }
 
 async function rollbackTo(sourceId, profileId = null) {
@@ -1483,6 +1523,7 @@ module.exports = {
   probeAll,
   createDraft,
   publishRelease,
+  retryPendingPublishes,
   rollbackTo,
   getPublicManifest,
   overview,

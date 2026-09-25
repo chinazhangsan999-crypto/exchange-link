@@ -99,7 +99,7 @@
   }
 
   function statusTag(value, labels = {}) {
-    const map = { published: ['已发布', ''], draft: ['草稿', 'warn'], failed: ['失败', 'off'], superseded: ['已替代', 'neutral'], verified: ['已验证', ''], manual_required: ['待手动写入', 'warn'], unpublished: ['未发布', 'neutral'], healthy: ['正常', ''], untested: ['未检测', 'neutral'] };
+    const map = { published: ['已发布', ''], pending: ['等待 DNS 传播', 'warn'], draft: ['草稿', 'warn'], failed: ['失败', 'off'], superseded: ['已替代', 'neutral'], verified: ['已验证', ''], pending_verification: ['等待传播', 'warn'], manual_required: ['待手动写入', 'warn'], unpublished: ['未发布', 'neutral'], healthy: ['正常', ''], untested: ['未检测', 'neutral'] };
     const [text, tone] = map[value] || [labels[value] || value || '未知', 'off'];
     return `<span class="tag ${tone}">${escapeHtml(text)}</span>`;
   }

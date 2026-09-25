@@ -75,6 +75,7 @@ async function cloudflarePublish(credentials, input) {
   const existing = await cloudflareRequest(credentials, 'GET', `/zones/${zone.id}/dns_records?type=TXT&name=${encodeURIComponent(input.recordName)}&per_page=100`);
   const created = [];
   for (const content of input.values) {
+    if (existing.some(item => stripTxtQuotes(item.content) === content)) continue;
     created.push(await cloudflareRequest(credentials, 'POST', `/zones/${zone.id}/dns_records`, {
       type: 'TXT', name: input.recordName, content, ttl: 60,
       comment: `navigation recovery generation ${input.generation}`
@@ -103,14 +104,25 @@ async function desecRequest(credentials, method, pathname, body, allowNotFound =
   });
   if (allowNotFound && response.status === 404) return null;
   const payload = await response.json().catch(() => null);
-  if (!response.ok) throw new Error(payload?.detail || payload?.non_field_errors?.[0] || `deSEC API 返回 HTTP ${response.status}`);
+  if (!response.ok) {
+    const fieldError = payload && typeof payload === 'object'
+      ? Object.entries(payload).find(([, value]) => Array.isArray(value) ? value.length : typeof value === 'string')
+      : null;
+    const message = payload?.detail || payload?.non_field_errors?.[0]
+      || (fieldError ? `${fieldError[0]}：${Array.isArray(fieldError[1]) ? fieldError[1][0] : fieldError[1]}` : '');
+    throw new Error(message ? `deSEC ${message}` : `deSEC API 返回 HTTP ${response.status}`);
+  }
   return payload;
 }
 
 async function desecZones(credentials) {
   const result = await desecRequest(credentials, 'GET', '/domains/?limit=500');
   const items = Array.isArray(result) ? result : (result?.results || []);
-  return items.map(item => ({ id: item.name, name: String(item.name).toLowerCase() }));
+  return items.map(item => ({
+    id: item.name,
+    name: String(item.name).toLowerCase(),
+    minimumTtl: Number(item.minimum_ttl) >= 60 ? Number(item.minimum_ttl) : null
+  }));
 }
 
 function relativeRecordName(recordName, zoneName) {
@@ -121,19 +133,32 @@ function relativeRecordName(recordName, zoneName) {
 
 async function desecPublish(credentials, input) {
   const zones = await desecZones(credentials);
-  if (!zones.some(item => item.name === input.zoneName)) throw new Error(`deSEC 通道中未找到 Zone：${input.zoneName}`);
+  const zone = zones.find(item => item.name === input.zoneName);
+  if (!zone) throw new Error(`deSEC 通道中未找到 Zone：${input.zoneName}`);
+  const zoneDetails = await desecRequest(credentials, 'GET', `/domains/${encodeURIComponent(input.zoneName)}/`);
+  const minimumTtl = Math.max(60, Number(zoneDetails?.minimum_ttl) || Number(zone.minimumTtl) || 60);
   const subname = relativeRecordName(input.recordName, input.zoneName);
   const endpoint = `/domains/${encodeURIComponent(input.zoneName)}/rrsets/${encodeURIComponent(subname)}/TXT/`;
   const existing = await desecRequest(credentials, 'GET', endpoint, undefined, true);
   const preserved = (existing?.records || []).filter(value => !isOwnedTxt(value));
   const next = [...preserved, ...input.values.map(quoteTxt)];
-  const body = { subname: subname === '@' ? '' : subname, type: 'TXT', ttl: 60, records: next };
+  const body = {
+    subname: subname === '@' ? '' : subname,
+    type: 'TXT',
+    ttl: Math.max(Number(existing?.ttl) || 0, minimumTtl),
+    records: next
+  };
   if (existing) await desecRequest(credentials, 'PUT', endpoint, body);
   else await desecRequest(credentials, 'POST', `/domains/${encodeURIComponent(input.zoneName)}/rrsets/`, body);
   return {
     resolvedZoneId: input.zoneName,
     rollback: async () => {
-      if (existing) await desecRequest(credentials, 'PUT', endpoint, existing);
+      if (existing) await desecRequest(credentials, 'PUT', endpoint, {
+        subname: existing.subname,
+        type: existing.type,
+        ttl: existing.ttl,
+        records: existing.records
+      });
       else await desecRequest(credentials, 'DELETE', endpoint);
     },
     commit: async () => undefined

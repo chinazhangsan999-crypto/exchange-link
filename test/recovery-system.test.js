@@ -28,6 +28,76 @@ test('ClouDNS 免费套餐错误会转换为明确的中文付费提示', async 
   }
 });
 
+test('deSEC 发布使用域名最低 TTL，并保留可读字段错误', async () => {
+  const originalFetch = global.fetch;
+  const requests = [];
+  global.fetch = async (url, options = {}) => {
+    requests.push({ url: String(url), method: options.method || 'GET', body: options.body });
+    if (String(url).endsWith('/domains/?limit=500')) {
+      return new Response(JSON.stringify([{ name: 'dnsapi.us.ci', minimum_ttl: 900 }]), {
+        status: 200, headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    if (String(url).endsWith('/domains/dnsapi.us.ci/')) {
+      return new Response(JSON.stringify({ name: 'dnsapi.us.ci', minimum_ttl: 900 }), {
+        status: 200, headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    if ((options.method || 'GET') === 'GET') return new Response(null, { status: 404 });
+    if (options.method === 'POST') {
+      return new Response(JSON.stringify({ subname: '_recovery', type: 'TXT', ttl: 900, records: [] }), {
+        status: 201, headers: { 'Content-Type': 'application/json' }
+      });
+    }
+    return new Response(null, { status: 204 });
+  };
+
+  try {
+    const DnsPublisherService = require('../src/services/DnsPublisherService');
+    const operation = await DnsPublisherService.createPublishOperation('desec', { apiToken: 'desec-token' }, {
+      zoneName: 'dnsapi.us.ci', recordName: '_recovery.dnsapi.us.ci', values: ['r1;set=test'], generation: 1
+    });
+    const createRequest = requests.find(item => item.method === 'POST');
+    assert.equal(JSON.parse(createRequest.body).ttl, 900);
+    await operation.rollback();
+
+    global.fetch = async () => new Response(JSON.stringify({ ttl: ['Ensure this value is greater than or equal to 900.'] }), {
+      status: 400, headers: { 'Content-Type': 'application/json' }
+    });
+    await assert.rejects(
+      DnsPublisherService.createPublishOperation('desec', { apiToken: 'desec-token' }, {
+        zoneName: 'dnsapi.us.ci', recordName: '_recovery.dnsapi.us.ci', values: ['r1;set=test'], generation: 1
+      }),
+      /deSEC ttl：Ensure this value is greater than or equal to 900\./
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('Cloudflare 重试复用已存在的相同 TXT', async () => {
+  const originalFetch = global.fetch;
+  let createCount = 0;
+  global.fetch = async (url, options = {}) => {
+    const target = String(url);
+    if (target.includes('/zones?')) return new Response(JSON.stringify({ success: true, result: [{ id: 'zone-1', name: 'example.com' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (target.includes('/dns_records?')) return new Response(JSON.stringify({ success: true, result: [{ id: 'record-1', content: 'r1;set=test' }] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (options.method === 'POST') createCount += 1;
+    return new Response(JSON.stringify({ success: true, result: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+
+  try {
+    const DnsPublisherService = require('../src/services/DnsPublisherService');
+    const operation = await DnsPublisherService.createPublishOperation('cloudflare', {
+      accountId: '0123456789abcdef0123456789abcdef', apiToken: 'cloudflare-token'
+    }, { zoneName: 'example.com', recordName: '_recovery.example.com', values: ['r1;set=test'], generation: 1 });
+    await operation.commit();
+    assert.equal(createCount, 0);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式版本', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'webring-recovery-'));
   process.env.NODE_ENV = 'test';
@@ -221,6 +291,39 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     assert.deepEqual(draft.dnsEnvelopes[0].envelope.domains.map(item => item.url), ['https://dns-one.example.com']);
     assert.deepEqual(draft.envelope.domains.map(item => item.url), ['https://one.example.com', 'https://two.example.net']);
     assert.equal(draft.dnsEnvelopes[0].envelope.domains.some(item => item.url === 'https://one.example.com'), false);
+    const pendingGroup = await RecoveryService.createBootstrapGroup({
+      label: '等待传播测试', compatibilityMode: 'R1',
+      domains: [{ title: '等待传播入口', url: 'https://pending.example.com', priority: 10, status: 1 }],
+      targets: [{
+        label: '等待传播 TXT', shareRole: 'LEGACY', publishMode: 'automatic',
+        dnsChannelId: cloudflareChannelB.id, zoneName: 'example.com',
+        providerZoneId: 'cf-zone-id', recordName: '_pending.example.com',
+        requiredTarget: 1, status: 1
+      }]
+    });
+    const pendingDraft = await RecoveryService.createDraft();
+    const DnsPublisherService = require('../src/services/DnsPublisherService');
+    const originalCreatePublishOperation = DnsPublisherService.createPublishOperation;
+    let rollbackCount = 0;
+    DnsPublisherService.createPublishOperation = async () => ({
+      commit: async () => undefined,
+      rollback: async () => { rollbackCount += 1; }
+    });
+    try {
+      const pendingResult = await RecoveryService.publishRelease(pendingDraft.id);
+      assert.equal(pendingResult.published, false);
+      assert.equal(pendingResult.release.status, 'pending');
+      assert.equal(pendingResult.pendingRecords.length, 1);
+      assert.equal(rollbackCount, 0);
+      const pendingTarget = (await RecoveryModel.listBootstrapRecords()).find(item => item.group_id === pendingGroup.id);
+      assert.equal(pendingTarget.last_publish_status, 'pending_verification');
+      assert.equal(pendingTarget.last_published_generation, pendingDraft.generation);
+      assert.equal((await RecoveryModel.listPendingReleases()).some(item => item.id === pendingDraft.id), true);
+    } finally {
+      DnsPublisherService.createPublishOperation = originalCreatePublishOperation;
+    }
+    await RecoveryService.deleteBootstrapGroup(pendingGroup.id);
+    await database.run('DELETE FROM recovery_releases WHERE id=?', [pendingDraft.id]);
     await RecoveryService.deleteBootstrapGroup(publishGroup.id);
     assert.equal((await RecoveryModel.listBootstrapRecords()).some(item => item.group_id === publishGroup.id), false);
 

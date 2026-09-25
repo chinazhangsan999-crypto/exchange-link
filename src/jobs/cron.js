@@ -9,6 +9,7 @@ const RiskService = require('../services/RiskService');
 const SiteTrafficService = require('../services/SiteTrafficService');
 const PartnerPageViewService = require('../services/PartnerPageViewService');
 const TelegramBackupService = require('../services/TelegramBackupService');
+const RecoveryService = require('../services/RecoveryService');
 const CacheService = require('../services/CacheService');
 const { sendAdminAlert } = require('../services/AlertService');
 const { abortActivePoolTasks, drainActivePoolTasks } = require('../utils/asyncPool');
@@ -146,6 +147,12 @@ function startJobs() {
   }, 2 * 60 * 60 * 1000);
   pingTimer.unref();
   intervals.push(pingTimer);
+
+  const recoveryDnsVerificationTimer = setInterval(() => {
+    runTrackedJob('恢复 TXT 传播复验', () => RecoveryService.retryPendingPublishes());
+  }, 5 * 60 * 1000);
+  recoveryDnsVerificationTimer.unref();
+  intervals.push(recoveryDnsVerificationTimer);
 
 }
 
