@@ -164,6 +164,25 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     const automatedOverview = await RecoveryService.overview();
     assert.equal(automatedOverview.lookupRouteHealth[r1Group.id].structuralStatus, 'complete');
     assert.equal(automatedOverview.lookupRouteHealth[r1Group.id].routeCount, 8);
+    const largeRouteGroup = await RecoveryService.createBootstrapGroup({
+      label: '九目标三层线路测试', compatibilityMode: 'AB_R1',
+      domains: [{ title: '恢复入口', url: 'https://large-route.example.org', priority: 10, status: 1 }],
+      targets: Array.from({ length: 9 }, (_, index) => ({
+        label: `目标 ${index + 1}`,
+        shareRole: index < 3 ? 'A' : index < 6 ? 'B' : 'LEGACY',
+        publishMode: 'manual',
+        providerId: index % 2 ? 'he' : 'cloudflare',
+        zoneName: 'example.org',
+        recordName: `_recovery-${index + 1}.example.org`,
+        requiredTarget: 1,
+        status: 1
+      }))
+    });
+    const largeRoutePreview = await RecoveryService.buildLookupRoutePlan(largeRouteGroup.id, { applyMode: 'fill_missing' });
+    assert.equal(largeRoutePreview.routeLimit, 128);
+    assert.equal(largeRoutePreview.summary.total, 72);
+    assert.equal(largeRoutePreview.validation.valid, true);
+    await RecoveryService.deleteBootstrapGroup(largeRouteGroup.id);
     await RecoveryService.deleteBootstrapGroup(r1Group.id);
     assert.equal((await RecoveryModel.listDomains()).length, 0);
     await assert.rejects(() => RecoveryService.createDraft(), /至少需要一条已启用的恢复线路/);

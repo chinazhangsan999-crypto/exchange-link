@@ -27,7 +27,7 @@ const LOOKUP_ROUTE_TIERS = Object.freeze([
   Object.freeze({ key: 'global', label: '全球主力', priorityGroup: 2, timeoutMs: 3000, resolverIds: Object.freeze(['cloudflare', 'google', 'quad9-unfiltered']) }),
   Object.freeze({ key: 'extended', label: '扩展容灾', priorityGroup: 3, timeoutMs: 4000, resolverIds: Object.freeze(['adguard-unfiltered', 'controld-free', 'mullvad']) })
 ]);
-const MAX_AUTOMATED_LOOKUP_ROUTES = 64;
+const MAX_AUTOMATED_LOOKUP_ROUTES = 128;
 const TXT_DATA_SIZE = 180;
 const PORTABLE_TXT_BYTES = 240;
 const MAX_ENCODED_SIZE = 4096;
