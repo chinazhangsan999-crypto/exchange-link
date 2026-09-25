@@ -74,6 +74,9 @@ router.delete('/api/admin/recovery/bootstrap-groups/:id', RecoveryController.del
 router.put('/api/admin/recovery/bootstrap/:id', RecoveryController.updateBootstrap);
 router.delete('/api/admin/recovery/bootstrap/:id', RecoveryController.deleteBootstrap);
 router.get('/api/admin/recovery/bootstrap/:id/doh', RecoveryController.diagnoseDoh);
+router.post('/api/admin/recovery/bootstrap-groups/:id/lookup-routes/preview', RecoveryController.previewLookupRoutes);
+router.post('/api/admin/recovery/bootstrap-groups/:id/lookup-routes/apply', RecoveryController.applyLookupRoutes);
+router.post('/api/admin/recovery/bootstrap-groups/:id/lookup-routes/test', RecoveryController.testLookupRoutes);
 router.post('/api/admin/recovery/lookup-routes', RecoveryController.createLookupRoute);
 router.delete('/api/admin/recovery/lookup-routes/:id', RecoveryController.deleteLookupRoute);
 router.put('/api/admin/recovery/cloudflare', RecoveryController.saveCloudflare);

@@ -59,6 +59,12 @@
 #recovery .recovery-publish-group summary,#recovery .recovery-legacy-records summary{cursor:pointer;color:#40547c;font-weight:700;min-height:44px;display:flex;align-items:center}
 #recovery .recovery-target-table{min-width:760px;margin-top:8px}
 #recovery .recovery-group-actions{display:flex;justify-content:flex-end;margin-top:10px}
+#recovery .recovery-route-health{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:12px;padding:11px 12px;border:1px solid #dce3f4;border-radius:12px;background:#fff}
+#recovery .recovery-route-health strong,#recovery .recovery-route-health span{display:block}
+#recovery .recovery-route-health>div>span{margin-top:3px;color:var(--muted);font-size:12px}
+#recovery .recovery-tier-pills{display:flex;justify-content:flex-end;gap:6px;flex-wrap:wrap}
+#recovery .recovery-tier-pill{border:1px solid #c8ead4;border-radius:999px;background:#effaf3;color:#287746;padding:6px 9px;font-size:12px;font-weight:700;font-variant-numeric:tabular-nums}
+#recovery .recovery-tier-pill[data-complete="0"]{border-color:#ecd7a9;background:#fff8e8;color:#906000}
 #recovery .recovery-group-dialog{width:min(1120px,100%);max-width:none;max-height:min(92dvh,900px);overflow:auto}
 #recovery .recovery-group-summary{border:1px solid #cbd8f7;background:#f5f8ff;border-radius:14px;padding:14px;margin-bottom:16px}
 #recovery .recovery-group-summary-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
@@ -78,6 +84,34 @@
 #recovery .recovery-group-domain-summary small{margin-top:3px;color:var(--muted);overflow-wrap:anywhere}
 #recovery .recovery-byte-policy{border-left:4px solid #587ce0;background:#f4f7ff;padding:10px 12px;border-radius:0 10px 10px 0;color:#4d5d7b;line-height:1.6}
 #recovery .recovery-inline-error{border:1px solid #efb9be;background:#fff2f3;color:#a92f3b;border-radius:11px;padding:11px 13px;margin-bottom:14px}
+#recovery .recovery-inline-error ul{margin:7px 0 0;padding-left:20px}
+#recovery .recovery-route-plan-dialog{width:min(920px,100%);max-width:none;max-height:min(90dvh,860px);overflow:auto}
+#recovery .recovery-route-architecture{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:14px 0}
+#recovery .recovery-route-architecture>div{border:1px solid #d8e1f7;border-radius:12px;background:#f7f9ff;padding:12px;min-width:0}
+#recovery .recovery-route-architecture strong,#recovery .recovery-route-architecture span{display:block}
+#recovery .recovery-route-architecture span{margin-top:5px;color:var(--muted);font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+#recovery .recovery-apply-mode{display:grid;gap:8px;border:0;margin:0 0 14px;padding:0}
+#recovery .recovery-apply-mode legend{font-weight:700;margin-bottom:7px}
+#recovery .recovery-apply-mode label{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:start;border:1px solid var(--line);border-radius:11px;padding:11px 12px;cursor:pointer}
+#recovery .recovery-apply-mode input{width:20px;height:20px;margin:1px 0 0}
+#recovery .recovery-apply-mode strong,#recovery .recovery-apply-mode small{display:block}
+#recovery .recovery-apply-mode small{margin-top:4px;color:var(--muted);line-height:1.45}
+#recovery .recovery-route-plan-preview{display:grid;gap:12px;margin:12px 0}
+#recovery .recovery-route-plan-summary{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px}
+#recovery .recovery-route-plan-summary>div{border:1px solid var(--line);border-radius:10px;padding:10px;background:#fbfcff;text-align:center}
+#recovery .recovery-route-plan-summary span,#recovery .recovery-route-plan-summary strong{display:block}
+#recovery .recovery-route-plan-summary span{color:var(--muted);font-size:12px}
+#recovery .recovery-route-plan-summary strong{margin-top:5px;font-size:18px;font-variant-numeric:tabular-nums}
+#recovery .recovery-route-tier-list{display:grid;gap:8px}
+#recovery .recovery-route-tier{display:grid;grid-template-columns:minmax(0,1fr) auto auto;align-items:center;gap:12px;border:1px solid #c8ead4;border-radius:11px;background:#f3fbf6;padding:11px 12px}
+#recovery .recovery-route-tier[data-complete="0"]{border-color:#ecd7a9;background:#fff9ec}
+#recovery .recovery-route-tier strong,#recovery .recovery-route-tier small{display:block}
+#recovery .recovery-route-tier small{margin-top:3px;color:var(--muted);overflow-wrap:anywhere}
+#recovery .recovery-route-tier b{font-variant-numeric:tabular-nums}
+#recovery .recovery-route-tier em{font-style:normal;font-size:12px;font-weight:700}
+#recovery .recovery-test-tier-list{display:grid;gap:7px;margin-top:10px}
+#recovery .recovery-test-tier-list>div{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:4px 12px;border-top:1px solid #edf0f5;padding-top:8px}
+#recovery .recovery-test-tier-list small{grid-column:1/-1;color:var(--muted)}
 #recovery .recovery-role-stack{display:grid;gap:14px;margin-top:14px}
 #recovery .recovery-role-card{border:1px solid var(--line);border-radius:14px;padding:14px;background:#fff}
 #recovery .recovery-role-head{display:flex;justify-content:space-between;gap:12px;align-items:flex-start}
@@ -113,6 +147,6 @@
 #recovery #recovery-bootstrap-modal .form-grid input:not([type="checkbox"]),#recovery #recovery-bootstrap-modal .form-grid select{width:100%;max-width:100%;min-width:0}
 @media(max-width:1440px){#recovery .recovery-status-grid{grid-template-columns:repeat(3,minmax(0,1fr))}#recovery .recovery-grid{grid-template-columns:1fr}}
 @media(max-width:1180px){#recovery .recovery-route-form{grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(150px,.7fr)}#recovery .recovery-route-form>label:nth-child(4){grid-column:1}#recovery .recovery-route-form .button{grid-column:2;justify-self:start}}
-@media(max-width:760px){#recovery .recovery-status-grid{grid-template-columns:1fr 1fr}#recovery .recovery-form,#recovery .recovery-route-form,#recovery .recovery-credential-fields,#recovery .recovery-zone-picker,#recovery .recovery-role-tools,#recovery .recovery-target-fields,#recovery .recovery-inline-control,#recovery .recovery-manual-row,#recovery .recovery-group-domain-fields{grid-template-columns:1fr}#recovery .recovery-form .full,#recovery .recovery-switch,#recovery .recovery-form-actions,#recovery .recovery-credential-fields>.full,#recovery .recovery-route-form>label:nth-child(4),#recovery .recovery-route-form .button,#recovery .recovery-target-fields .full{grid-column:1}#recovery .recovery-actions .button,#recovery .recovery-route-form .button,#recovery .recovery-zone-picker .button,#recovery .recovery-role-tools .button,#recovery .recovery-group-summary-head .button{width:100%;min-height:44px;flex:1 1 145px}#recovery .recovery-audit-item{grid-template-columns:1fr;gap:3px}#recovery .recovery-status-card{padding:13px}#recovery .recovery-profile-bar>*{width:100%}#recovery .recovery-modal{padding:12px}#recovery #recovery-bootstrap-modal .dialog{padding:18px}#recovery .recovery-publish-group-head,#recovery .recovery-role-head,#recovery .recovery-target-head,#recovery .recovery-group-summary-head{display:grid;grid-template-columns:1fr}#recovery .recovery-role-badges{justify-content:flex-start}#recovery .recovery-byte-badge{justify-self:start}}
+@media(max-width:760px){#recovery .recovery-status-grid{grid-template-columns:1fr 1fr}#recovery .recovery-form,#recovery .recovery-route-form,#recovery .recovery-credential-fields,#recovery .recovery-zone-picker,#recovery .recovery-role-tools,#recovery .recovery-target-fields,#recovery .recovery-inline-control,#recovery .recovery-manual-row,#recovery .recovery-group-domain-fields,#recovery .recovery-route-architecture{grid-template-columns:1fr}#recovery .recovery-form .full,#recovery .recovery-switch,#recovery .recovery-form-actions,#recovery .recovery-credential-fields>.full,#recovery .recovery-route-form>label:nth-child(4),#recovery .recovery-route-form .button,#recovery .recovery-target-fields .full{grid-column:1}#recovery .recovery-actions .button,#recovery .recovery-route-form .button,#recovery .recovery-zone-picker .button,#recovery .recovery-role-tools .button,#recovery .recovery-group-summary-head .button,#recovery .recovery-group-actions .button{width:100%;min-height:44px;flex:1 1 145px}#recovery .recovery-audit-item{grid-template-columns:1fr;gap:3px}#recovery .recovery-status-card{padding:13px}#recovery .recovery-profile-bar>*{width:100%}#recovery .recovery-modal{padding:12px}#recovery #recovery-bootstrap-modal .dialog{padding:18px}#recovery .recovery-publish-group-head,#recovery .recovery-role-head,#recovery .recovery-target-head,#recovery .recovery-group-summary-head,#recovery .recovery-route-health{display:grid;grid-template-columns:1fr}#recovery .recovery-role-badges,#recovery .recovery-tier-pills{justify-content:flex-start}#recovery .recovery-byte-badge{justify-self:start}#recovery .recovery-route-plan-summary{grid-template-columns:repeat(2,minmax(0,1fr))}#recovery .recovery-route-tier{grid-template-columns:minmax(0,1fr) auto}#recovery .recovery-route-tier em{grid-column:1/-1}}
 @media(max-width:420px){#recovery .recovery-status-grid{grid-template-columns:1fr}}
 @media(prefers-reduced-motion:reduce){#recovery *{scroll-behavior:auto!important;transition:none!important}}

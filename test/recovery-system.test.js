@@ -137,6 +137,34 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     assert.deepEqual(groupedRecords.map(item => item.publish_mode), ['automatic', 'automatic', 'manual']);
     assert.deepEqual(groupedRecords.map(item => item.required_target), [1, 1, 0]);
     assert.equal(groupedOverview.bootstrapGroupDomains.filter(item => item.group_id === publishGroup.id).length, 2);
+    const r1Group = await RecoveryService.createBootstrapGroup({
+      label: '三层线路自动编排测试', compatibilityMode: 'R1',
+      domains: [{ title: 'R1 入口', url: 'https://r1.example.org', priority: 10, status: 1 }],
+      targets: [{
+        label: 'R1 TXT', shareRole: 'LEGACY', publishMode: 'manual', providerId: 'he',
+        zoneName: 'example.org', recordName: '_recovery-r1.example.org', requiredTarget: 1, status: 1
+      }]
+    });
+    const r1Preview = await RecoveryService.buildLookupRoutePlan(r1Group.id, { applyMode: 'fill_missing' });
+    assert.equal(r1Preview.validation.valid, true);
+    assert.equal(r1Preview.summary.create, 8);
+    assert.deepEqual(r1Preview.tiers.map(item => [item.priorityGroup, item.expected, item.complete]), [[1, 2, true], [2, 3, true], [3, 3, true]]);
+    await RecoveryService.applyLookupRoutePlan(r1Group.id, { applyMode: 'fill_missing', configurationRevision: r1Preview.configurationRevision });
+    const r1Idempotent = await RecoveryService.buildLookupRoutePlan(r1Group.id, { applyMode: 'fill_missing' });
+    assert.deepEqual(r1Idempotent.summary, { create: 0, update: 0, keep: 8, remove: 0, conflict: 0, total: 8 });
+    const r1Routes = (await RecoveryModel.listLookupRoutes()).filter(item => Number(item.group_id) === Number(r1Group.id));
+    await database.run('UPDATE recovery_lookup_routes SET priority_group=4 WHERE id=?', [r1Routes[0].id]);
+    const protectedPreview = await RecoveryService.buildLookupRoutePlan(r1Group.id, { applyMode: 'fill_missing' });
+    assert.equal(protectedPreview.validation.valid, false);
+    assert.equal(protectedPreview.summary.conflict, 1);
+    const syncPreview = await RecoveryService.buildLookupRoutePlan(r1Group.id, { applyMode: 'sync_template' });
+    assert.equal(syncPreview.validation.valid, true);
+    assert.equal(syncPreview.summary.update, 1);
+    await RecoveryService.applyLookupRoutePlan(r1Group.id, { applyMode: 'sync_template', configurationRevision: syncPreview.configurationRevision });
+    const automatedOverview = await RecoveryService.overview();
+    assert.equal(automatedOverview.lookupRouteHealth[r1Group.id].structuralStatus, 'complete');
+    assert.equal(automatedOverview.lookupRouteHealth[r1Group.id].routeCount, 8);
+    await RecoveryService.deleteBootstrapGroup(r1Group.id);
     assert.equal((await RecoveryModel.listDomains()).length, 0);
     await assert.rejects(() => RecoveryService.createDraft(), /至少需要一条已启用的恢复线路/);
     await assert.rejects(() => RecoveryService.createBootstrapGroup({
@@ -299,6 +327,12 @@ test('恢复客户端保持完全独立并仅在导航失败后由 Service Worke
   assert.doesNotMatch(recoveryClient, /location\.replace|meta http-equiv|自动跳转/);
   assert.match(adminClient, /不会读取首页弹窗、节点管理或现有防失联设置/);
   assert.match(adminClient, /DNS \/ Bootstrap 查询线路/);
+  assert.match(adminClient, /自动配置全部线路/);
+  assert.match(adminClient, /中国大陆主力/);
+  assert.match(adminClient, /全球主力/);
+  assert.match(adminClient, /扩展容灾/);
+  assert.match(adminClient, /id="recovery-route-form"/);
+  assert.match(adminClient, /添加查询线路/);
   assert.match(adminClient, /bootstrapGroups = \[\]/);
   assert.match(adminClient, /系统统一采用每条.*字节安全上限/);
   assert.match(adminClient, /直接恢复线路（浏览器本地保存）/);

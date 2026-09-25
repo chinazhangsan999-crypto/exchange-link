@@ -22,6 +22,12 @@ const DOH_RESOLVERS = Object.freeze([
   { id: 'mullvad', label: 'Mullvad DNS', endpoint: 'https://dns.mullvad.net/dns-query' },
   { id: 'controld-free', label: 'Control D Free', endpoint: 'https://freedns.controld.com/p0' }
 ]);
+const LOOKUP_ROUTE_TIERS = Object.freeze([
+  Object.freeze({ key: 'mainland', label: '中国大陆主力', priorityGroup: 1, timeoutMs: 2500, resolverIds: Object.freeze(['alidns', 'dnspod']) }),
+  Object.freeze({ key: 'global', label: '全球主力', priorityGroup: 2, timeoutMs: 3000, resolverIds: Object.freeze(['cloudflare', 'google', 'quad9-unfiltered']) }),
+  Object.freeze({ key: 'extended', label: '扩展容灾', priorityGroup: 3, timeoutMs: 4000, resolverIds: Object.freeze(['adguard-unfiltered', 'controld-free', 'mullvad']) })
+]);
+const MAX_AUTOMATED_LOOKUP_ROUTES = 64;
 const TXT_DATA_SIZE = 180;
 const PORTABLE_TXT_BYTES = 240;
 const MAX_ENCODED_SIZE = 4096;
@@ -1130,6 +1136,244 @@ async function getPublicManifest(frontendOrigin = '') {
   };
 }
 
+function lookupRouteRevision(group, targets, routes, resolvers) {
+  const payload = {
+    group: group ? { id: Number(group.id), mode: group.compatibility_mode, status: Number(group.status) } : null,
+    targets: targets.map(item => ({ id: Number(item.id), role: item.share_role, status: Number(item.status), required: Number(item.required_target), record: item.record_name })),
+    routes: routes.map(item => ({ id: Number(item.id), resolver: item.resolver_id, bootstrap: Number(item.bootstrap_id), priority: Number(item.priority_group), timeout: Number(item.timeout_ms), status: Number(item.status) })),
+    resolvers: resolvers.map(item => ({ id: item.id, endpoint: item.endpoint, enabled: Number(item.enabled) }))
+  };
+  return crypto.createHash('sha256').update(stableStringify(payload)).digest('hex');
+}
+
+function expectedLookupRoutes(targets, resolvers) {
+  const resolverMap = new Map(resolvers.map(item => [item.id, item]));
+  const missingResolvers = [];
+  const expected = [];
+  let sortOrder = 0;
+  for (const tier of LOOKUP_ROUTE_TIERS) {
+    for (const resolverId of tier.resolverIds) {
+      const resolver = resolverMap.get(resolverId);
+      if (!resolver || Number(resolver.enabled) !== 1) {
+        missingResolvers.push({ resolverId, tier: tier.key, label: tier.label });
+        continue;
+      }
+      for (const target of targets) {
+        expected.push({
+          resolverId,
+          resolverLabel: resolver.label,
+          bootstrapId: Number(target.id),
+          bootstrapLabel: target.label,
+          recordName: target.record_name,
+          shareRole: target.share_role,
+          requiredTarget: Number(target.required_target) === 1,
+          tier: tier.key,
+          tierLabel: tier.label,
+          priorityGroup: tier.priorityGroup,
+          timeoutMs: tier.timeoutMs,
+          sortOrder: sortOrder += 1,
+          status: 1
+        });
+      }
+    }
+  }
+  return { expected, missingResolvers };
+}
+
+function validateLookupRouteRoles(group, targets) {
+  const roles = new Set(targets.map(item => item.share_role));
+  const mode = String(group?.compatibility_mode || 'CUSTOM').toUpperCase();
+  const errors = [];
+  if (['AB_R1', 'AB'].includes(mode) && (!roles.has('A') || !roles.has('B'))) errors.push('发布组合缺少 A 或 B 分片目标');
+  if (['AB_R1', 'R1'].includes(mode) && !roles.has('LEGACY')) errors.push('发布组合缺少 R1 兼容目标');
+  if (mode === 'CUSTOM' && !roles.has('LEGACY') && !(roles.has('A') && roles.has('B'))) errors.push('自定义组合至少需要完整的 A+B 或 R1 目标');
+  return errors;
+}
+
+function summarizeLookupTiers(expected, routes) {
+  const routeMap = new Map(routes.filter(item => Number(item.status) === 1).map(item => [`${item.resolver_id}:${Number(item.bootstrap_id)}`, item]));
+  return LOOKUP_ROUTE_TIERS.map(tier => {
+    const planned = expected.filter(item => item.tier === tier.key);
+    const matched = planned.filter(item => {
+      const route = routeMap.get(`${item.resolverId}:${item.bootstrapId}`);
+      return route && Number(route.priority_group) === tier.priorityGroup && Number(route.timeout_ms) === tier.timeoutMs;
+    });
+    return {
+      key: tier.key,
+      label: tier.label,
+      priorityGroup: tier.priorityGroup,
+      timeoutMs: tier.timeoutMs,
+      resolverIds: [...tier.resolverIds],
+      expected: planned.length,
+      configured: matched.length,
+      complete: planned.length > 0 && matched.length === planned.length
+    };
+  });
+}
+
+function serializeLookupPlanRoute(item) {
+  return {
+    id: item.id ? Number(item.id) : undefined,
+    resolverId: item.resolverId || item.resolver_id,
+    resolverLabel: item.resolverLabel || item.resolver_label || '',
+    bootstrapId: Number(item.bootstrapId || item.bootstrap_id),
+    bootstrapLabel: item.bootstrapLabel || item.bootstrap_label || '',
+    recordName: item.recordName || item.record_name || '',
+    shareRole: item.shareRole || item.share_role || '',
+    tier: item.tier || '',
+    tierLabel: item.tierLabel || '',
+    priorityGroup: Number(item.priorityGroup || item.priority_group),
+    timeoutMs: Number(item.timeoutMs || item.timeout_ms),
+    sortOrder: Number(item.sortOrder || item.sort_order || 0),
+    status: Number(item.status === undefined ? 1 : item.status)
+  };
+}
+
+async function buildLookupRoutePlan(groupId, input = {}, profileId = 1) {
+  const applyMode = String(input.applyMode || 'fill_missing').trim().toLowerCase();
+  if (!['fill_missing', 'sync_template'].includes(applyMode)) throw new Error('查询线路应用方式不正确');
+  const [group, allTargets, resolvers, allRoutes] = await Promise.all([
+    RecoveryModel.getBootstrapGroup(groupId, profileId),
+    RecoveryModel.listBootstrapRecords({ profileId }),
+    RecoveryModel.listResolvers(),
+    RecoveryModel.listLookupRoutes(profileId)
+  ]);
+  if (!group) throw new Error('DNS 发布组合不存在');
+  const groupTargets = allTargets.filter(item => Number(item.group_id) === Number(groupId));
+  const enabledTargets = groupTargets.filter(item => Number(item.status) === 1);
+  if (!enabledTargets.length) throw new Error('发布组合没有已启用的 Bootstrap TXT 目标');
+  const targetIds = new Set(groupTargets.map(item => Number(item.id)));
+  const currentRoutes = allRoutes.filter(item => targetIds.has(Number(item.bootstrap_id)));
+  const { expected, missingResolvers } = expectedLookupRoutes(enabledTargets, resolvers);
+  if (expected.length > MAX_AUTOMATED_LOOKUP_ROUTES) throw new Error(`自动线路共 ${expected.length} 条，超过单组合 ${MAX_AUTOMATED_LOOKUP_ROUTES} 条上限，请减少发布目标或使用手动配置`);
+  const revision = lookupRouteRevision(group, groupTargets, currentRoutes, resolvers);
+  const currentByKey = new Map(currentRoutes.map(item => [`${item.resolver_id}:${Number(item.bootstrap_id)}`, item]));
+  const expectedKeys = new Set(expected.map(item => `${item.resolverId}:${item.bootstrapId}`));
+  const creates = [], updates = [], keeps = [], conflicts = [];
+  for (const item of expected) {
+    const current = currentByKey.get(`${item.resolverId}:${item.bootstrapId}`);
+    if (!current) { creates.push(item); continue; }
+    const exact = Number(current.priority_group) === item.priorityGroup && Number(current.timeout_ms) === item.timeoutMs && Number(current.status) === 1;
+    if (exact) keeps.push({ ...item, id: Number(current.id) });
+    else if (applyMode === 'sync_template') updates.push({ ...item, id: Number(current.id), previousPriorityGroup: Number(current.priority_group), previousTimeoutMs: Number(current.timeout_ms) });
+    else conflicts.push({ ...item, id: Number(current.id), previousPriorityGroup: Number(current.priority_group), previousTimeoutMs: Number(current.timeout_ms), reason: '现有手动线路的优先级或超时与三层标准不同' });
+  }
+  const removes = applyMode === 'sync_template'
+    ? currentRoutes.filter(item => !expectedKeys.has(`${item.resolver_id}:${Number(item.bootstrap_id)}`)).map(serializeLookupPlanRoute)
+    : [];
+  const roleErrors = validateLookupRouteRoles(group, enabledTargets);
+  const validationErrors = [
+    ...roleErrors,
+    ...missingResolvers.map(item => `${item.label}缺少已启用的 ${item.resolverId} 查询服务`),
+    ...conflicts.map(item => `${item.resolverLabel} → ${item.recordName} 与标准优先级或超时冲突`)
+  ];
+  const projectedRoutes = [
+    ...keeps.map(item => ({ resolver_id: item.resolverId, bootstrap_id: item.bootstrapId, priority_group: item.priorityGroup, timeout_ms: item.timeoutMs, status: 1 })),
+    ...creates.map(item => ({ resolver_id: item.resolverId, bootstrap_id: item.bootstrapId, priority_group: item.priorityGroup, timeout_ms: item.timeoutMs, status: 1 })),
+    ...updates.map(item => ({ resolver_id: item.resolverId, bootstrap_id: item.bootstrapId, priority_group: item.priorityGroup, timeout_ms: item.timeoutMs, status: 1 }))
+  ];
+  const tiers = summarizeLookupTiers(expected, validationErrors.length ? currentRoutes : projectedRoutes);
+  return {
+    group: { id: Number(group.id), label: group.label, compatibilityMode: group.compatibility_mode },
+    architecture: 'three_tier_full',
+    applyMode,
+    configurationRevision: revision,
+    expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    targetCount: enabledTargets.length,
+    routeLimit: MAX_AUTOMATED_LOOKUP_ROUTES,
+    tiers,
+    creates: creates.map(serializeLookupPlanRoute),
+    updates: updates.map(serializeLookupPlanRoute),
+    keeps: keeps.map(serializeLookupPlanRoute),
+    removes,
+    conflicts: conflicts.map(serializeLookupPlanRoute),
+    validation: { valid: validationErrors.length === 0 && tiers.every(item => item.complete), errors: validationErrors },
+    summary: { create: creates.length, update: updates.length, keep: keeps.length, remove: removes.length, conflict: conflicts.length, total: expected.length }
+  };
+}
+
+async function applyLookupRoutePlan(groupId, input = {}, profileId = 1) {
+  const plan = await buildLookupRoutePlan(groupId, input, profileId);
+  if (!input.configurationRevision || input.configurationRevision !== plan.configurationRevision) throw new Error('配置已经发生变化，请重新预览后再应用');
+  if (!plan.validation.valid) throw new Error(plan.validation.errors[0] || '三层查询线路校验未通过');
+  await RecoveryModel.applyLookupRoutePlan({
+    creates: plan.creates,
+    updates: plan.updates,
+    deleteIds: plan.removes.map(item => item.id)
+  }, profileId);
+  await RecoveryModel.addAudit('lookup.routes.apply', {
+    groupId: Number(groupId), architecture: plan.architecture, applyMode: plan.applyMode,
+    create: plan.summary.create, update: plan.summary.update, keep: plan.summary.keep, remove: plan.summary.remove
+  }, true, '', profileId);
+  return buildLookupRoutePlan(groupId, { applyMode: 'fill_missing' }, profileId);
+}
+
+async function lookupRouteHealth(profileId, groups, targets, resolvers, routes) {
+  const result = {};
+  for (const group of groups) {
+    const groupTargets = targets.filter(item => Number(item.group_id) === Number(group.id) && Number(item.status) === 1);
+    const targetIds = new Set(groupTargets.map(item => Number(item.id)));
+    const groupRoutes = routes.filter(item => targetIds.has(Number(item.bootstrap_id)));
+    const { expected, missingResolvers } = expectedLookupRoutes(groupTargets, resolvers);
+    const tiers = summarizeLookupTiers(expected, groupRoutes);
+    const errors = [...validateLookupRouteRoles(group, groupTargets), ...missingResolvers.map(item => `${item.label}缺少${item.resolverId}`)];
+    const completeCount = tiers.filter(item => item.complete).length;
+    result[group.id] = {
+      groupId: Number(group.id), routeCount: groupRoutes.length, tiers,
+      structuralStatus: errors.length || completeCount === 0 ? 'incomplete' : completeCount === tiers.length ? 'complete' : 'degraded',
+      errors
+    };
+  }
+  return result;
+}
+
+async function testLookupRoutesForGroup(groupId, profileId = 1) {
+  const [group, settings, routes] = await Promise.all([
+    RecoveryModel.getBootstrapGroup(groupId, profileId),
+    RecoveryModel.getSettings(profileId),
+    RecoveryModel.listLookupRoutes(profileId, { enabledOnly: true })
+  ]);
+  if (!group) throw new Error('DNS 发布组合不存在');
+  const selected = routes.filter(item => Number(item.group_id) === Number(groupId));
+  if (!selected.length) throw new Error('该发布组合尚未配置查询线路');
+  const publicKeys = [
+    { keyId: settings.public_key_id, publicKey: settings.public_key },
+    { keyId: settings.next_public_key_id, publicKey: settings.next_public_key }
+  ].filter(item => item.keyId && item.publicKey);
+  const settled = await runPromisePool(selected, 6, route => queryDoh({
+    id: route.resolver_id, label: route.resolver_label, endpoint: route.endpoint
+  }, route.record_name, route.timeout_ms), 12000);
+  const internal = settled.map((entry, index) => entry.status === 'fulfilled' ? entry.value : ({ ok: false, error: String(entry.reason?.message || '检测失败'), values: [], shares: [], envelopes: [] }));
+  const lineResults = selected.map((route, index) => {
+    const result = internal[index];
+    const validLegacy = (result.envelopes || []).some(item => verifyEnvelope(item.envelope, publicKeys));
+    return {
+      id: Number(route.id), resolverId: route.resolver_id, resolverLabel: route.resolver_label,
+      bootstrapId: Number(route.bootstrap_id), bootstrapLabel: route.bootstrap_label, recordName: route.record_name,
+      shareRole: route.share_role, priorityGroup: Number(route.priority_group), timeoutMs: Number(route.timeout_ms),
+      ok: Boolean(result.ok), txtFound: Boolean(result.values?.length), signatureValid: route.share_role === 'LEGACY' ? validLegacy : null,
+      error: result.error || (!result.values?.length ? '未读取到 TXT' : '')
+    };
+  });
+  const tiers = LOOKUP_ROUTE_TIERS.map(tier => {
+    const indices = selected.map((route, index) => Number(route.priority_group) === tier.priorityGroup ? index : -1).filter(index => index >= 0);
+    const shares = indices.flatMap(index => internal[index].shares || []);
+    const combined = combineShards(shares).filter(item => verifyEnvelope(item.envelope, publicKeys));
+    const legacyValid = indices.some(index => (internal[index].envelopes || []).some(item => verifyEnvelope(item.envelope, publicKeys)));
+    const lines = indices.map(index => lineResults[index]);
+    return {
+      key: tier.key, label: tier.label, priorityGroup: tier.priorityGroup,
+      total: lines.length, successful: lines.filter(item => item.ok && item.txtFound).length,
+      failed: lines.filter(item => !item.ok || !item.txtFound).length,
+      abValid: combined.length > 0, r1Valid: legacyValid
+    };
+  });
+  const successful = lineResults.filter(item => item.ok && item.txtFound).length;
+  const result = { group: { id: Number(group.id), label: group.label, compatibilityMode: group.compatibility_mode }, checkedAt: new Date().toISOString(), total: lineResults.length, successful, failed: lineResults.length - successful, tiers, lines: lineResults };
+  await RecoveryModel.addAudit('lookup.routes.test', { groupId: Number(groupId), total: result.total, successful: result.successful, failed: result.failed, tiers }, result.failed === 0, result.failed ? `${result.failed} 条线路未通过` : '', profileId);
+  return result;
+}
+
 async function overview(profileId = 1) {
   await ensureLegacyCloudflareChannel(profileId);
   const [profiles, settings, domains, bootstrapGroups, bootstrapGroupDomains, bootstraps, routes, releases, keys, audit, frontendWorkers, resolvers, dnsProviders, dnsChannels] = await Promise.all([
@@ -1144,6 +1388,7 @@ async function overview(profileId = 1) {
   );
   const credential = RecoveryCredentialStore.cloudflareConfig();
   const central = IntegrationCredentialStore.cloudflareApiEdgeConfig();
+  const routeHealth = await lookupRouteHealth(profileId, bootstrapGroups, bootstraps, resolvers, routes);
   return {
     profiles: profiles.map(item => ({ ...item, ready: Number(item.enabled) === 1 && Boolean(item.public_key_id) })),
     selectedProfileId: Number(settings?.id || profileId),
@@ -1170,6 +1415,7 @@ async function overview(profileId = 1) {
     dnsChannels: dnsChannels.map(serializeDnsChannel),
     txtPolicy: { portableBytes: PORTABLE_TXT_BYTES, maxEncodedBytes: MAX_ENCODED_SIZE, maxPartsPerRole: 50, legacyDataBytes: TXT_DATA_SIZE },
     lookupRoutes: routes,
+    lookupRouteHealth: routeHealth,
     publicPreviewOrigin: previewWorker ? `https://${previewWorker.hostname}` : '',
     audit
   };
@@ -1224,6 +1470,9 @@ module.exports = {
   validateBootstrapConfiguration,
   validateBootstrapGroupInput,
   validateLookupRouteInput,
+  buildLookupRoutePlan,
+  applyLookupRoutePlan,
+  testLookupRoutesForGroup,
   updateSettings,
   ensureCurrentKey,
   generateNextKey,

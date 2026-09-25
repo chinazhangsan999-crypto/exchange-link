@@ -141,6 +141,18 @@ const deleteLookupRoute = action(async (req, res) => {
   await RecoveryModel.deleteLookupRoute(idOf(req.params.id), profileIdOf(req));
   return ok(res, null, 'DNS/TXT 查询线路已删除');
 });
+const previewLookupRoutes = action(async (req, res) => ok(res,
+  await RecoveryService.buildLookupRoutePlan(idOf(req.params.id), req.body || {}, profileIdOf(req)),
+  '三层查询线路预览已生成'
+));
+const applyLookupRoutes = action(async (req, res) => ok(res,
+  await RecoveryService.applyLookupRoutePlan(idOf(req.params.id), req.body || {}, profileIdOf(req)),
+  '三层查询线路已应用'
+));
+const testLookupRoutes = action(async (req, res) => ok(res,
+  await RecoveryService.testLookupRoutesForGroup(idOf(req.params.id), profileIdOf(req)),
+  '三层查询线路检测完成'
+));
 
 module.exports = {
   getPublicManifest,
@@ -172,5 +184,8 @@ module.exports = {
   rollbackRelease,
   diagnoseDoh,
   createLookupRoute,
-  deleteLookupRoute
+  deleteLookupRoute,
+  previewLookupRoutes,
+  applyLookupRoutes,
+  testLookupRoutes
 };
