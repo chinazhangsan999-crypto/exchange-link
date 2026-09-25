@@ -489,6 +489,8 @@
           const notes = [];
           if (Number(tier.propagating)) notes.push(`传播中 ${Number(tier.propagating)}`);
           if (Number(tier.resolverUnavailable)) notes.push(`解析器不可用 ${Number(tier.resolverUnavailable)}`);
+          if (Number(tier.auxiliaryFailed)) notes.push(`DNSPod 辅助线路异常 ${Number(tier.auxiliaryFailed)}`);
+          if ((tier.abValid || tier.r1Valid) && Number(tier.successful) < Number(tier.total)) notes.push('已通过跨解析器分片合并验签');
           return `<div><span>P${Number(tier.priorityGroup)} · ${escapeHtml(tier.label)}</span><b>${Number(tier.successful)}/${Number(tier.total)}</b><small>A+B：${tier.abValid ? '有效' : '未验证'} · R1：${tier.r1Valid ? '有效' : '未验证'}${notes.length ? ` · ${escapeHtml(notes.join(' · '))}` : ''}</small></div>`;
         }).join('');
         const detailRows = result.lines.filter(line => line.state !== 'healthy').map(line => {

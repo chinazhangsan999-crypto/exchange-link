@@ -1,7 +1,7 @@
 /** 故障时才运行：本地签名清单 -> 动态图片测活 -> 多 DoH -> 手动前往。 */
 (() => {
   const LEGACY_RESOLVERS = [
-    { resolverId: 'dnspod', resolverLabel: 'DNSPod', endpoint: 'https://doh.pub/dns-query', format: 'wire', priority: 1, timeoutMs: 2500 },
+    { resolverId: 'dnspod', resolverLabel: 'DNSPod', endpoint: 'https://doh.pub/dns-query', format: 'wire', priority: 1, timeoutMs: 5000 },
     { resolverId: 'alidns', resolverLabel: 'AliDNS', endpoint: 'https://dns.alidns.com/dns-query', format: 'wire', priority: 1, timeoutMs: 2500 },
     { resolverId: 'cloudflare', resolverLabel: 'Cloudflare', endpoint: 'https://cloudflare-dns.com/dns-query', format: 'wire', priority: 2, timeoutMs: 3000 },
     { resolverId: 'google', resolverLabel: 'Google Public DNS', endpoint: 'https://dns.google/dns-query', format: 'wire', priority: 2, timeoutMs: 3000 }
@@ -103,11 +103,28 @@
       const response = await fetch(url, { headers: { Accept: 'application/dns-message' }, signal: controller.signal, cache: 'no-store' });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const values = parseDnsWireTxt(await response.arrayBuffer());
-      return { route, envelopes: window.RecoveryCrypto.assembleTxt(values), shares: window.RecoveryCrypto.assembleShards(values) };
+      return { route, values, envelopes: window.RecoveryCrypto.assembleTxt(values), shares: window.RecoveryCrypto.assembleShards(values) };
     } catch (error) {
       log(`${route.resolverLabel} 查询 ${route.bootstrapName} 失败：${error.name === 'AbortError' ? '超时' : error.message}`);
-      return { route, envelopes: [], shares: [] };
+      return { route, values: [], envelopes: [], shares: [] };
     } finally { clearTimeout(timer); }
+  }
+
+  function aggregateResults(results) {
+    const valuesByRecord = new Map();
+    for (const result of results) {
+      const key = result.route.bootstrapName;
+      if (!valuesByRecord.has(key)) valuesByRecord.set(key, new Set());
+      for (const value of result.values || []) valuesByRecord.get(key).add(value);
+    }
+    const envelopes = [];
+    const shares = [];
+    for (const values of valuesByRecord.values()) {
+      const uniqueValues = [...values];
+      envelopes.push(...window.RecoveryCrypto.assembleTxt(uniqueValues));
+      shares.push(...window.RecoveryCrypto.assembleShards(uniqueValues));
+    }
+    return { envelopes, shares };
   }
 
   async function newestVerifiedFromDoh(state) {
@@ -116,13 +133,13 @@
     if (!routes.length) { log('本地清单未保存 DNS/TXT 查询线路'); return null; }
     status('已保存线路均不可用，正在从多个 DNS 解析源查询最新地址…');
     const accepted = [];
-    const collectedShares = [];
     const priorities = [...new Set(routes.map(item => Math.max(1, Number(item.priority) || 1)))].sort((a, b) => a - b);
     for (const priority of priorities) {
       const results = await Promise.all(routes.filter(item => Math.max(1, Number(item.priority) || 1) === priority).map(queryDoh));
-      results.forEach(item => collectedShares.push(...item.shares));
       const candidates = results.flatMap(item => item.envelopes.map(value => ({ ...value, resolver: item.route.resolverLabel, name: item.route.bootstrapName })));
-      const combined = await window.RecoveryCrypto.combineShards(collectedShares);
+      const aggregated = aggregateResults(results);
+      aggregated.envelopes.forEach(value => candidates.push({ ...value, resolver: '同名 TXT 多解析器合并', name: 'Bootstrap TXT' }));
+      const combined = await window.RecoveryCrypto.combineShards(aggregated.shares);
       combined.forEach(value => candidates.push({ ...value, resolver: '跨权威 DNS A/B 组合', name: 'Bootstrap TXT' }));
       for (const candidate of candidates) {
         const shape = window.RecoveryCrypto.validateEnvelopeShape(candidate.envelope, state.project, state.highestDnsGeneration || 0);

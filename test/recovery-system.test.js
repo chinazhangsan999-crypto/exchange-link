@@ -8,7 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
-const { webcrypto } = require('node:crypto');
+const { webcrypto, createHash } = require('node:crypto');
 
 test('ClouDNS 免费套餐错误会转换为明确的中文付费提示', async () => {
   const originalFetch = global.fetch;
@@ -429,6 +429,39 @@ test('恢复系统可生成、验签、分片并在无 DNS 时发布本地正式
     await database.closeDatabase();
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('同优先级解析器可按记录合并不完整 TXT 分片并保持 A/B 边界', () => {
+  const RecoveryService = require('../src/services/RecoveryService');
+  const core = {
+    schema: 3, project: 'resolver-merge-test', generation: 9,
+    releaseId: 'release-9', keyId: 'key-9', issuedAt: 1, expiresAt: 9999999999,
+    domains: [{ title: '备用站', url: 'https://backup.example.com', priority: 1 }]
+  };
+  const envelope = {
+    ...core,
+    manifestHash: createHash('sha256').update(RecoveryService.stableStringify(core)).digest('hex'),
+    signature: 'test-signature'
+  };
+  const shards = RecoveryService.shardEnvelope(envelope, 240, 'stable-test-secret');
+  const split = values => [values.filter((_value, index) => index % 2 === 0), values.filter((_value, index) => index % 2 === 1)];
+  const [aAli, aDnsPod] = split(shards.A.parts);
+  const [bAli, bDnsPod] = split(shards.B.parts);
+  const routes = [
+    { bootstrap_id: 1, record_name: '_recovery-a.example.com' },
+    { bootstrap_id: 1, record_name: '_recovery-a.example.com' },
+    { bootstrap_id: 2, record_name: '_recovery-b.example.com' },
+    { bootstrap_id: 2, record_name: '_recovery-b.example.com' }
+  ];
+  const results = [aAli, aDnsPod, bAli, bDnsPod].map(values => ({ ok: true, values }));
+
+  assert.equal(results.every(result => RecoveryService.assembleShardedTxt(result.values).length === 0), true);
+  const aggregated = RecoveryService.aggregateLookupPayloads(routes, results);
+  assert.equal(aggregated.recordCount, 2);
+  assert.equal(aggregated.shares.length, 2);
+  const combined = RecoveryService.combineShards(aggregated.shares);
+  assert.equal(combined.length, 1);
+  assert.deepEqual(combined[0].envelope, envelope);
 });
 
 test('Quad9 与 Mullvad 使用 HTTP/2 DoH，并区分传播与解析器故障', async () => {

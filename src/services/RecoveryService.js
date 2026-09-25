@@ -585,6 +585,28 @@ function combineShards(shares) {
   return envelopes;
 }
 
+function aggregateLookupPayloads(routes, results, indices = routes.map((_route, index) => index)) {
+  const valuesByRecord = new Map();
+  for (const index of indices) {
+    const route = routes[index];
+    const result = results[index];
+    if (!route || !result?.ok) continue;
+    const key = `${Number(route.bootstrap_id || 0)}:${String(route.record_name || '')}`;
+    if (!valuesByRecord.has(key)) valuesByRecord.set(key, new Set());
+    for (const value of result.values || []) valuesByRecord.get(key).add(String(value));
+  }
+  const envelopes = [];
+  const shares = [];
+  let valueCount = 0;
+  for (const values of valuesByRecord.values()) {
+    const uniqueValues = [...values];
+    valueCount += uniqueValues.length;
+    envelopes.push(...assembleTxt(uniqueValues));
+    shares.push(...assembleShardedTxt(uniqueValues));
+  }
+  return { envelopes, shares, recordCount: valuesByRecord.size, valueCount };
+}
+
 function dnsWireQuery(recordName) {
   const labels = recordName.split('.');
   const question = Buffer.concat([
@@ -1548,9 +1570,9 @@ async function testLookupRoutesForGroup(groupId, profileId = 1) {
   });
   const tiers = LOOKUP_ROUTE_TIERS.map(tier => {
     const indices = selected.map((route, index) => Number(route.priority_group) === tier.priorityGroup ? index : -1).filter(index => index >= 0);
-    const shares = indices.flatMap(index => internal[index].shares || []);
-    const combined = combineShards(shares).filter(item => verifyEnvelope(item.envelope, publicKeys));
-    const legacyValid = indices.some(index => (internal[index].envelopes || []).some(item => verifyEnvelope(item.envelope, publicKeys)));
+    const aggregated = aggregateLookupPayloads(selected, internal, indices);
+    const combined = combineShards(aggregated.shares).filter(item => verifyEnvelope(item.envelope, publicKeys));
+    const legacyValid = aggregated.envelopes.some(item => verifyEnvelope(item.envelope, publicKeys));
     const lines = indices.map(index => lineResults[index]);
     return {
       key: tier.key, label: tier.label, priorityGroup: tier.priorityGroup,
@@ -1558,6 +1580,8 @@ async function testLookupRoutesForGroup(groupId, profileId = 1) {
       failed: lines.filter(item => item.state !== 'healthy').length,
       propagating: lines.filter(item => item.state === 'propagating').length,
       resolverUnavailable: lines.filter(item => item.state.startsWith('resolver_')).length,
+      auxiliaryFailed: lines.filter(item => item.resolverId === 'dnspod' && item.state !== 'healthy').length,
+      aggregatedRecords: aggregated.recordCount, aggregatedValues: aggregated.valueCount,
       abValid: combined.length > 0, r1Valid: legacyValid
     };
   });
@@ -1706,6 +1730,7 @@ module.exports = {
   queryDoh,
   queryDohWithPolicy,
   queryLookupRoutes,
+  aggregateLookupPayloads,
   dohQueryPolicy,
   classifyDohLine,
   saveCloudflareCredentials,
