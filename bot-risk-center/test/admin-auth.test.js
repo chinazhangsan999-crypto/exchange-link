@@ -32,3 +32,9 @@ test('管理员可修改账号密码且新密码使用独立 scrypt 盐值', asy
   assert.match(hash, /^scrypt\$[a-f0-9]{32}\$[a-f0-9]{128}$/);
   assert.notEqual(hash, await AdminAuthService.passwordHash('new-secure-password'));
 });
+
+test('管理员密码规则允许八位首次密码', async () => {
+  const session = await AdminAuthService.createSession('admin', 'admin123');
+  const changed = await AdminAuthService.changeCredentials(session, 'admin123', 'admin', 'admin123');
+  assert.equal(changed.username, 'admin');
+});

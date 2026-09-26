@@ -129,8 +129,8 @@ async function changeCredentials(session, currentPassword, nextUsername, nextPas
   if (!session || !await validCredentials(session.username, currentPassword)) return null;
   const username = String(nextUsername || '').trim();
   const password = String(nextPassword || '');
-  if (!/^[A-Za-z0-9_.@-]{3,64}$/.test(username) || password.length < 10 || password.length > 256) {
-    throw new Error('新账号需为 3–64 位，新密码需为 10–256 位');
+  if (!/^[A-Za-z0-9_.@-]{3,64}$/.test(username) || password.length < 8 || password.length > 256) {
+    throw new Error('新账号需为 3–64 位，新密码需为 8–256 位');
   }
   const result = await StorageService.updateAdminCredential({ username, passwordHash: await passwordHash(password) }, {
     actor: session.username, ...requestContext(context)
